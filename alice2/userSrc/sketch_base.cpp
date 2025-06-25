@@ -83,9 +83,21 @@ public:
         }
 
         // Test 3D text rendering (billboard text in world space)
+        // These texts will change size as you move the camera closer/farther
         renderer.setColor(Vec3(1.0f, 1.0f, 0.0f)); // Yellow text
-        renderer.drawText("Hello 3D World!", Vec3(0, 3, 0), 0.5f);
-        renderer.drawText("STB TrueType", Vec3(2, 1, 2), 0.3f);
+        renderer.drawText("Old: Size varies with distance", Vec3(0, 3, 0), 0.5f);
+        renderer.drawText("Old: Far text", Vec3(2, 1, 8), 0.5f);
+
+        // Test screen-space sizing - these should maintain consistent pixel size
+        // These texts will maintain the same apparent size regardless of camera distance
+        renderer.setColor(Vec3(1.0f, 0.5f, 1.0f)); // Magenta text
+        renderer.drawTextScreenSpace("New: Fixed 24px (Near)", Vec3(-3, 0, 1), 24.0f, camera);
+        renderer.drawTextScreenSpace("New: Fixed 24px (Far)", Vec3(5, 0, 8), 24.0f, camera);
+
+        // Add some reference text at different distances for comparison
+        renderer.setColor(Vec3(0.5f, 1.0f, 0.5f)); // Light green
+        renderer.drawTextScreenSpace("Fixed 16px", Vec3(0, -2, 2), 16.0f, camera);
+        renderer.drawTextScreenSpace("Fixed 32px", Vec3(0, -3, 4), 32.0f, camera);
 
         // Test 2D text rendering (screen overlay)
         renderer.setColor(Vec3(0.0f, 1.0f, 1.0f)); // Cyan text
