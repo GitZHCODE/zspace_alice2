@@ -81,6 +81,23 @@ public:
             Vec3 color(1.0f, 0.2f, 0.8f); // Pink color
             renderer.drawLine(start, end, color, 2.0f); // Start, end, color, width
         }
+
+        // Test 3D text rendering (billboard text in world space)
+        renderer.setColor(Vec3(1.0f, 1.0f, 0.0f)); // Yellow text
+        renderer.drawText("Hello 3D World!", Vec3(0, 3, 0), 0.5f);
+        renderer.drawText("STB TrueType", Vec3(2, 1, 2), 0.3f);
+
+        // Test 2D text rendering (screen overlay)
+        renderer.setColor(Vec3(0.0f, 1.0f, 1.0f)); // Cyan text
+        renderer.drawString("2D Overlay Text", 10, 30);
+        renderer.drawString("FPS: 60", 10, 50);
+
+        // Test different colors and sizes
+        renderer.setColor(Vec3(1.0f, 0.5f, 0.0f)); // Orange text
+        renderer.drawText("Large Text", Vec3(-2, 0, 1), 0.8f);
+
+        renderer.setColor(Vec3(0.5f, 1.0f, 0.5f)); // Light green text
+        renderer.drawText("Small", Vec3(1, -1, 0), 0.2f);
     }
 
     void cleanup() override {
