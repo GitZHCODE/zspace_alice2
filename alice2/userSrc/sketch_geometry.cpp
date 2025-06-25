@@ -34,8 +34,8 @@ public:
 
     // Sketch lifecycle
     void setup() override {
-        // Set a dark blue background
-        scene().setBackgroundColor(Vec3(0.1f, 0.1f, 0.3f));
+        // Set a white background
+        scene().setBackgroundColor(Vec3(0.95f, 0.95f, 0.95f));
         std::cout << "Geometry Sketch loaded - Background set to dark blue" << std::endl;
 
         // Example: Enable grid
@@ -110,6 +110,20 @@ public:
             Vec3 end((i + 1) * 3.0f - 3.0f, 0, 1);
             renderer.drawLine(start, end, Vec3(1.0f, 1.0f, 0.5f), 3.0f);
         }
+
+        // 2D text rendering (screen overlay)
+        renderer.setColor(Vec3(0.0f, 0.0f, 0.0f));
+        renderer.drawString(getName(), 10, 30);
+        renderer.drawString(getDescription(), 10, 50);
+
+        renderer.setColor(Vec3(1.0f, 0.0f, 0.5f));
+        renderer.drawString("FPS: " + std::to_string((Application::getInstance()->getFPS())), 10, 70);
+
+        renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
+        renderer.drawString("'ESC' - Exit ", 10, 200);
+        renderer.drawString("'F'   - Extend view ", 10, 220);
+        renderer.drawString("'N'   - Switch to the next sketch ", 10, 240);
+        renderer.drawString("'P'   - Switch to the previous sketch ", 10, 260);
     }
 
     void cleanup() override {

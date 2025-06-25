@@ -82,34 +82,23 @@ public:
             renderer.drawLine(start, end, color, 2.0f); // Start, end, color, width
         }
 
-        // Test 3D text rendering (billboard text in world space)
-        // These texts will change size as you move the camera closer/farther
-        renderer.setColor(Vec3(1.0f, 1.0f, 0.0f)); // Yellow text
-        renderer.drawText("Old: Size varies with distance", Vec3(0, 3, 0), 0.5f);
-        renderer.drawText("Old: Far text", Vec3(2, 1, 8), 0.5f);
+        // 2D text rendering (screen overlay)
+        renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
+        renderer.drawString(getName(), 10, 30);
+        renderer.drawString(getDescription(), 10, 50);
 
-        // Test screen-space sizing - these should maintain consistent pixel size
-        // These texts will maintain the same apparent size regardless of camera distance
-        renderer.setColor(Vec3(1.0f, 0.5f, 1.0f)); // Magenta text
-        renderer.drawTextScreenSpace("New: Fixed 24px (Near)", Vec3(-3, 0, 1), 24.0f, camera);
-        renderer.drawTextScreenSpace("New: Fixed 24px (Far)", Vec3(5, 0, 8), 24.0f, camera);
+        renderer.setColor(Vec3(0.0f, 1.0f, 1.0f));
+        renderer.drawString("FPS: " + std::to_string((Application::getInstance()->getFPS())), 10, 70);
 
-        // Add some reference text at different distances for comparison
-        renderer.setColor(Vec3(0.5f, 1.0f, 0.5f)); // Light green
-        renderer.drawTextScreenSpace("Fixed 16px", Vec3(0, -2, 2), 16.0f, camera);
-        renderer.drawTextScreenSpace("Fixed 32px", Vec3(0, -3, 4), 32.0f, camera);
+        renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
+        renderer.drawString("'ESC' - Exit ", 10, 200);
+        renderer.drawString("'F'   - Extend view ", 10, 220);
+        renderer.drawString("'N'   - Switch to the next sketch ", 10, 240);
+        renderer.drawString("'P'   - Switch to the previous sketch ", 10, 260);
 
-        // Test 2D text rendering (screen overlay)
-        renderer.setColor(Vec3(0.0f, 1.0f, 1.0f)); // Cyan text
-        renderer.drawString("2D Overlay Text", 10, 30);
-        renderer.drawString("FPS: 60", 10, 50);
-
-        // Test different colors and sizes
-        renderer.setColor(Vec3(1.0f, 0.5f, 0.0f)); // Orange text
-        renderer.drawText("Large Text", Vec3(-2, 0, 1), 0.8f);
-
-        renderer.setColor(Vec3(0.5f, 1.0f, 0.5f)); // Light green text
-        renderer.drawText("Small", Vec3(1, -1, 0), 0.2f);
+        // Test 3D text rendering (billboard text in world space with screen-space sizing)
+        renderer.setColor(Vec3(1.0f, 0.0f, 0.5f)); // Yellow text
+        renderer.drawText("Hello from alice2 !", Vec3(0, 0, 2.0f), 1.2f);
     }
 
     void cleanup() override {
@@ -121,26 +110,6 @@ public:
     bool onKeyPress(unsigned char key, int x, int y) override {
         // Handle keyboard input
         switch (key) {
-            case 'r':
-            case 'R':
-                // Example: Reset camera (override default behavior)
-                camera().setPosition(Vec3(5, 5, 5));
-                camera().lookAt(Vec3(0, 0, 0));
-                std::cout << "User sketch: Camera reset" << std::endl;
-                return true; // Handled - don't process default reset
-
-            case 'P':
-                {
-                    Vec3 pos = camera().getPosition();
-                    std::cout << std::to_string(pos.x)
-                        << ", " << std::to_string(pos.y)
-                        << ", " << std::to_string(pos.z) << std::endl;
-
-                    pos.x += 0.1f;
-                    camera().setPosition(pos);
-                    return true; // Handled
-                }
-
             case 27: // ESC key
                 // Example: Exit application
                 return false; // Not handled - allow default exit

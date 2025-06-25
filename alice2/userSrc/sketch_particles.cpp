@@ -140,6 +140,20 @@ public:
         // Draw some reference lines
         renderer.drawLine(Vec3(-2, 0, 0), Vec3(2, 0, 0), Vec3(0.3f, 0.3f, 0.3f), 1.0f);
         renderer.drawLine(Vec3(0, -2, 0), Vec3(0, 2, 0), Vec3(0.3f, 0.3f, 0.3f), 1.0f);
+
+        // 2D text rendering (screen overlay)
+        renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
+        renderer.drawString(getName(), 10, 30);
+        renderer.drawString(getDescription(), 10, 50);
+
+        renderer.setColor(Vec3(0.0f, 1.0f, 1.0f));
+        renderer.drawString("FPS: " + std::to_string((Application::getInstance()->getFPS())), 10, 70);
+
+        renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
+        renderer.drawString("'ESC' - Exit ", 10, 200);
+        renderer.drawString("'F'   - Extend view ", 10, 220);
+        renderer.drawString("'N'   - Switch to the next sketch ", 10, 240);
+        renderer.drawString("'P'   - Switch to the previous sketch ", 10, 260);
     }
 
     void cleanup() override
