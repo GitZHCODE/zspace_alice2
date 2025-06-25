@@ -81,6 +81,24 @@ public:
             Vec3 color(1.0f, 0.2f, 0.8f); // Pink color
             renderer.drawLine(start, end, color, 2.0f); // Start, end, color, width
         }
+
+        // 2D text rendering (screen overlay)
+        renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
+        renderer.drawString(getName(), 10, 30);
+        renderer.drawString(getDescription(), 10, 50);
+
+        renderer.setColor(Vec3(0.0f, 1.0f, 1.0f));
+        renderer.drawString("FPS: " + std::to_string((Application::getInstance()->getFPS())), 10, 70);
+
+        renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
+        renderer.drawString("'ESC' - Exit ", 10, 200);
+        renderer.drawString("'F'   - Extend view ", 10, 220);
+        renderer.drawString("'N'   - Switch to the next sketch ", 10, 240);
+        renderer.drawString("'P'   - Switch to the previous sketch ", 10, 260);
+
+        // Test 3D text rendering (billboard text in world space with screen-space sizing)
+        renderer.setColor(Vec3(1.0f, 0.0f, 0.5f)); // Yellow text
+        renderer.drawText("Hello from alice2 !", Vec3(0, 0, 2.0f), 1.2f);
     }
 
     void cleanup() override {
@@ -92,26 +110,6 @@ public:
     bool onKeyPress(unsigned char key, int x, int y) override {
         // Handle keyboard input
         switch (key) {
-            case 'r':
-            case 'R':
-                // Example: Reset camera (override default behavior)
-                camera().setPosition(Vec3(5, 5, 5));
-                camera().lookAt(Vec3(0, 0, 0));
-                std::cout << "User sketch: Camera reset" << std::endl;
-                return true; // Handled - don't process default reset
-
-            case 'P':
-                {
-                    Vec3 pos = camera().getPosition();
-                    std::cout << std::to_string(pos.x)
-                        << ", " << std::to_string(pos.y)
-                        << ", " << std::to_string(pos.z) << std::endl;
-
-                    pos.x += 0.1f;
-                    camera().setPosition(pos);
-                    return true; // Handled
-                }
-
             case 27: // ESC key
                 // Example: Exit application
                 return false; // Not handled - allow default exit
