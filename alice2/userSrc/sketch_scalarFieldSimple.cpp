@@ -17,7 +17,8 @@ private:
     std::vector<std::pair<Vec3, Vec3>> m_isolines;
     float m_time;
     bool m_fieldGenerated;
-    bool d_iso;
+    bool d_iso = false;
+    bool d_values = false;
 
 public:
     SimpleScalarFieldSketch() 
@@ -50,20 +51,28 @@ public:
         scene().setShowAxes(true);
         scene().setAxesLength(5.0f);
 
-        // Generate a simple circle field
+        // Generate a simple circle field using new API
         try {
-            std::cout << "Creating ScalarField2D..." << std::endl;
-            m_scalarField = ScalarField2D();
+            std::cout << "Creating ScalarField2D with modern API..." << std::endl;
+            // Create field with custom bounds and resolution
+            m_scalarField = ScalarField2D(Vec3(-10, -10, 0), Vec3(10, 10, 0), 100, 100);
             std::cout << "ScalarField2D created successfully" << std::endl;
-            
+
             std::cout << "Clearing field..." << std::endl;
-            m_scalarField.clearField();
+            m_scalarField.clear_field();
             std::cout << "Field cleared" << std::endl;
-            
-            std::cout << "Adding circle SDF..." << std::endl;
-            m_scalarField.addCircleSDF(Vec3(0, 0, 0), 25.0f);
-            std::cout << "Circle SDF added successfully" << std::endl;
-            
+
+            std::cout << "Applying circle SDF..." << std::endl;
+            m_scalarField.apply_scalar_circle(Vec3(0, 0, 0), 25.0f);
+            std::cout << "Circle SDF applied successfully" << std::endl;
+
+            // Test the new getter methods
+            auto [res_x, res_y] = m_scalarField.get_resolution();
+            auto [min_bounds, max_bounds] = m_scalarField.get_bounds();
+            std::cout << "Field resolution: " << res_x << "x" << res_y << std::endl;
+            std::cout << "Field bounds: (" << min_bounds.x << "," << min_bounds.y << ") to ("
+                      << max_bounds.x << "," << max_bounds.y << ")" << std::endl;
+
             m_fieldGenerated = true;
         }
         catch (const std::exception& e) {
@@ -78,12 +87,17 @@ public:
 
     void draw(Renderer& renderer, Camera& camera) override {
         // Draw a test point to verify rendering works
-        renderer.drawPoint(Vec3(0, 0, 10), Vec3(1.0f, 0.0f, 0.0f), 10.0f);
+        renderer.drawPoint(Vec3(0, 0, 0), Vec3(1.0f, 0.0f, 0.0f), 10.0f);
         
         if (m_fieldGenerated) {
             try {
-                // Draw only a few field points as a test
-                m_scalarField.drawFieldPoints(renderer);
+                // Draw field points using new API
+                m_scalarField.draw_points(renderer, 1); // Every 6th point for performance
+
+                // Optionally draw some scalar values as text
+                if (d_values) { // Every 3 seconds
+                    m_scalarField.draw_values(renderer, 10); // Show values at sparse grid
+                }
             }
             catch (const std::exception& e) {
                 std::cout << "Error drawing field: " << e.what() << std::endl;
@@ -106,8 +120,11 @@ public:
         renderer.drawString("Field Generated: " + std::string(m_fieldGenerated ? "YES" : "NO"), 10, 100);
 
         renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
-        renderer.drawString("'R' - Regenerate field", 10, 140);
-        renderer.drawString("'C' - Regenerate iso contours", 10, 160);
+        renderer.drawString("Controls:", 10, 140);
+        renderer.drawString("'R' - Regenerate field", 10, 160);
+        renderer.drawString("'B' - Test boolean operations", 10, 180);
+        renderer.drawString("'C' - Regenerate iso contours", 10, 200);
+        renderer.drawString("'V' - Shwo field values", 10, 220);
     }
 
     void cleanup() override {
@@ -120,9 +137,9 @@ public:
             case 'r':
             case 'R':
                 try {
-                    std::cout << "Regenerating field..." << std::endl;
-                    m_scalarField.clearField();
-                    m_scalarField.addCircleSDF(Vec3(0, 0, 0), 25.0f);
+                    std::cout << "Regenerating field with new API..." << std::endl;
+                    m_scalarField.clear_field();
+                    m_scalarField.apply_scalar_circle(Vec3(0, 0, 0), 1.0f);
                     m_fieldGenerated = true;
                     std::cout << "Field regenerated successfully" << std::endl;
                 }
@@ -131,11 +148,30 @@ public:
                     m_fieldGenerated = false;
                 }
                 return true;
+
+            case 'b':
+            case 'B':
+                try {
+                    std::cout << "Testing boolean operations..." << std::endl;
+                    ScalarField2D other_field(Vec3(-50, -50, 0), Vec3(50, 50, 0), 80, 80);
+                    other_field.apply_scalar_square(Vec3(15, 15, 0), Vec3(20, 10, 0), 0.3f);
+                    m_scalarField.boolean_smin(other_field, 5.0f);
+                    std::cout << "Boolean smooth union applied" << std::endl;
+                }
+                catch (const std::exception& e) {
+                    std::cout << "Error in boolean operation: " << e.what() << std::endl;
+                }
+                return true;
             case 'c':
             case 'C':
             //m_scalarField.computeIsocontours(0.5, m_isolines);
             d_iso = true;
             return true;
+
+            case 'v':
+            case 'V':
+                d_values = !d_values;
+                return true;
 
         }
         return false;
