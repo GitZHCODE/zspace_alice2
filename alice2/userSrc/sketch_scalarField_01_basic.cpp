@@ -67,7 +67,7 @@ public:
     // Sketch lifecycle
     void setup() override {
         scene().setBackgroundColor(Vec3(0.05f, 0.05f, 0.1f));
-        scene().setShowGrid(true);
+        scene().setShowGrid(false);
         scene().setGridSize(25.0f);
         scene().setGridDivisions(4);
         scene().setShowAxes(true);
@@ -138,13 +138,11 @@ private:
     }
     
     void drawAnimatedContours(Renderer& renderer) {
-        // Draw multiple contour levels with sine-wave offset
+        // Draw single contour line
         renderer.setColor(Vec3(1.0f, 1.0f, 1.0f)); // White contours
-        
-        for (int i = 0; i < 8; ++i) {
-            float threshold = -10.0f + i * 2.5f + m_contourOffset;
-            m_scalarField.drawIsocontours(renderer, threshold);
-        }
+
+        float threshold = 0.0f + m_contourOffset;
+        m_scalarField.drawIsocontours(renderer, threshold);
     }
     
     void drawGeometricCenters(Renderer& renderer) {
@@ -197,7 +195,7 @@ private:
         // Controls
         renderer.setColor(Vec3(0.7f, 0.7f, 0.7f));
         renderer.drawString("Controls:", 10, 180);
-        renderer.drawString("SPACE - Toggle Circle/Rectangle", 10, 200);
+        renderer.drawString("'G' - Toggle Circle/Rectangle", 10, 200);
         renderer.drawString("'C' - Toggle Contours", 10, 220);
         renderer.drawString("'F' - Toggle Field Visualization", 10, 240);
         renderer.drawString("'V' - Toggle Value Display", 10, 260);
@@ -213,7 +211,8 @@ public:
     // Input handling
     bool onKeyPress(unsigned char key, int x, int y) override {
         switch (key) {
-            case ' ': // Space - Toggle between circle and rectangle
+            case 'g':
+            case 'G': // G key - Toggle between circle and rectangle
                 if (b_computeCircle) {
                     b_computeCircle = false;
                     b_computeRect = true;

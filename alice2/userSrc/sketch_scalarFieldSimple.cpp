@@ -196,6 +196,6 @@ public:
 };
 
 // Register the sketch with alice2
-ALICE2_REGISTER_SKETCH_AUTO(SimpleScalarFieldSketch)
+//ALICE2_REGISTER_SKETCH_AUTO(SimpleScalarFieldSketch)
 
 #endif // __MAIN__

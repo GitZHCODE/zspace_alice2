@@ -54,14 +54,17 @@ public:
         , d_drawValues(false)
         , d_drawContours(true)
         , d_drawTower(false)
-        , m_rectCenter(-15, -10, 0)
+        , m_rectCenter(0, 0, 0)
         , m_circleCenter(15, 10, 0)
         , m_rectSize(20.0f, 15.0f, 0.0f)
         , m_circleRadius(12.0f)
         , m_blendFactor(2.0f)
     {
-        // Initialize tower levels: every 3 units from Z=0 to Z=12
-        m_towerLevels = {0.0f, 3.0f, 6.0f, 9.0f, 12.0f};
+        // Initialize tower levels: 20 floors with 3-unit spacing (Z=0 to Z=57)
+        m_towerLevels.clear();
+        for (int i = 0; i < 20; ++i) {
+            m_towerLevels.push_back(i * 3.0f);
+        }
         m_towerContours.resize(m_towerLevels.size());
     }
     
@@ -83,7 +86,7 @@ public:
     // Sketch lifecycle
     void setup() override {
         scene().setBackgroundColor(Vec3(0.05f, 0.05f, 0.1f));
-        scene().setShowGrid(true);
+        scene().setShowGrid(false);
         scene().setGridSize(25.0f);
         scene().setGridDivisions(4);
         scene().setShowAxes(true);
@@ -91,7 +94,7 @@ public:
         
         std::cout << "Scalar Field 03: SDF Blending & Tower loaded" << std::endl;
         std::cout << "Field dimensions: 100x100 grid, bounds (-50,-50) to (50,50)" << std::endl;
-        std::cout << "Rectangle center: (-15, -10), Circle center: (15, 10)" << std::endl;
+        std::cout << "Rectangle center: (0, 0), Circle center: (15, 10)" << std::endl;
         
         // Initialize base fields
         generateBaseFields();
@@ -101,7 +104,7 @@ public:
         m_time += deltaTime;
         
         // Animate blend factor
-        m_blendFactor = 2.0f + std::sin(m_time * 0.5f) * 1.5f;
+        m_blendFactor = 2.0f + std::sin(m_time * 0.8f) * 1.5f;
         
         // Regenerate blended field if computation is enabled
         if (b_computeBlend) {
@@ -145,7 +148,7 @@ private:
     
     void generateBlendedField() {
         // Start with lower field (rectangle)
-        m_blended_field = m_field_lower;
+        m_blended_field = ScalarField2D(m_field_lower);
         
         // Apply smooth minimum blending with upper field (circle)
         m_blended_field.boolean_smin(m_field_upper, m_blendFactor);
@@ -154,7 +157,7 @@ private:
     void generateTowerContours() {
         // Extract contours at each tower level
         for (size_t i = 0; i < m_towerLevels.size(); ++i) {
-            float threshold = -5.0f + i * 2.0f; // Adjust threshold for each level
+            float threshold = 0.1f; // Adjust threshold for each level
             ContourData contours = m_blended_field.get_contours(threshold);
             m_towerContours[i] = contours.line_segments;
         }
@@ -203,42 +206,39 @@ private:
     }
     
     void drawTowerVisualization(Renderer& renderer) {
-        renderer.pushMatrix();
-        Mat4 towerTransform = Mat4::translation(Vec3(25, 0, 0));
-        renderer.multMatrix(towerTransform);
-        
-        // Draw tower contours at different Z levels
+        // Draw tower contours at different Z levels without matrix transformations
+        // Position tower further away to prevent overlap
+        Vec3 towerOffset(60, 0, 0);
+
         for (size_t i = 0; i < m_towerLevels.size(); ++i) {
             float z = m_towerLevels[i];
-            
-            // Color gradient from blue (bottom) to red (top)
+
+            // Color gradient from magenta (bottom) to purple (top)
             float t = static_cast<float>(i) / (m_towerLevels.size() - 1);
-            Vec3 color = Vec3(t, 0.2f, 1.0f - t);
+            Vec3 color = Vec3(1.0f, 0.2f * (1.0f - t), 1.0f - 0.3f * t); // Magenta to purple
             renderer.setColor(color);
-            
-            // Draw contours at this level
+
+            // Draw contours at this level with tower offset
             for (const auto& segment : m_towerContours[i]) {
-                Vec3 start = segment.first + Vec3(0, 0, z);
-                Vec3 end = segment.second + Vec3(0, 0, z);
+                Vec3 start = segment.first + towerOffset + Vec3(0, 0, z);
+                Vec3 end = segment.second + towerOffset + Vec3(0, 0, z);
                 renderer.drawLine(start, end, color, 2.0f);
             }
-            
-            // Draw level indicator
-            renderer.drawText("Z=" + std::to_string(static_cast<int>(z)), 
-                            Vec3(-40, -40, z), 0.8f);
+
+            // Draw level indicator every 5 levels to reduce clutter
+            if (i % 5 == 0) {
+                renderer.drawText("Z=" + std::to_string(static_cast<int>(z)),
+                                towerOffset + Vec3(-40, -40, z), 0.8f);
+            }
         }
-        
-        renderer.popMatrix();
     }
     
     void drawContours(Renderer& renderer, const ScalarField2D& field) {
         renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
-        
-        // Draw multiple contour levels
-        for (int i = 0; i < 6; ++i) {
-            float threshold = -8.0f + i * 3.0f;
-            field.drawIsocontours(renderer, threshold);
-        }
+
+        // Draw single contour line
+        float threshold = 0.0f;
+        field.drawIsocontours(renderer, threshold);
     }
     
     void drawGeometry(Renderer& renderer) {
@@ -246,11 +246,6 @@ private:
         renderer.setColor(Vec3(0.2f, 0.2f, 1.0f));
         renderer.drawPoint(m_rectCenter, Vec3(0.2f, 0.2f, 1.0f), 8.0f);
         renderer.drawText("RECT", m_rectCenter + Vec3(0, 0, 5), 1.0f);
-        
-        // Draw circle center in red
-        renderer.setColor(Vec3(1.0f, 0.2f, 0.2f));
-        renderer.drawPoint(m_circleCenter, Vec3(1.0f, 0.2f, 0.2f), 8.0f);
-        renderer.drawText("CIRCLE", m_circleCenter + Vec3(0, 0, 5), 1.0f);
     }
     
     void drawUI(Renderer& renderer) {

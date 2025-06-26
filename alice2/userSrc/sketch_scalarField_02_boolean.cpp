@@ -56,7 +56,7 @@ public:
         , d_drawContours(true)
         , d_previewUnion(false)
         , d_previewSubtract(false)
-        , m_rectCenter(-15, -10, 0)
+        , m_rectCenter(0, 0, 0)
         , m_circleCenter(15, 10, 0)
         , m_rectSize(20.0f, 15.0f, 0.0f)  // Half-size for 40x30 total
     {
@@ -82,7 +82,7 @@ public:
     // Sketch lifecycle
     void setup() override {
         scene().setBackgroundColor(Vec3(0.05f, 0.05f, 0.1f));
-        scene().setShowGrid(true);
+        scene().setShowGrid(false);
         scene().setGridSize(25.0f);
         scene().setGridDivisions(4);
         scene().setShowAxes(true);
@@ -90,7 +90,7 @@ public:
         
         std::cout << "Scalar Field 02: Boolean Operations loaded" << std::endl;
         std::cout << "Field dimensions: 100x100 grid, bounds (-50,-50) to (50,50)" << std::endl;
-        std::cout << "Rectangle center: (-15, -10), Circle center: (15, 10)" << std::endl;
+        std::cout << "Rectangle center: (0, 0), Circle center: (15, 10)" << std::endl;
         
         // Initialize base rectangle field
         generateBaseField();
@@ -161,16 +161,16 @@ private:
         Vec3 rectMax = m_rectCenter + m_rectSize;
         
         // Top-left (union)
-        m_cornerCircles.push_back({Vec3(rectMin.x - 5, rectMax.y + 5, 0), 8.0f, true});
+        m_cornerCircles.push_back({Vec3(rectMin.x, rectMax.y, 0), 12.0f, true});
         
         // Top-right (subtract)
-        m_cornerCircles.push_back({Vec3(rectMax.x + 5, rectMax.y + 5, 0), 8.0f, false});
+        m_cornerCircles.push_back({Vec3(rectMax.x, rectMax.y, 0), 12.0f, false});
         
         // Bottom-left (subtract)
-        m_cornerCircles.push_back({Vec3(rectMin.x - 5, rectMin.y - 5, 0), 8.0f, false});
+        m_cornerCircles.push_back({Vec3(rectMin.x, rectMin.y, 0), 12.0f, false});
         
         // Bottom-right (union)
-        m_cornerCircles.push_back({Vec3(rectMax.x + 5, rectMin.y - 5, 0), 8.0f, true});
+        m_cornerCircles.push_back({Vec3(rectMax.x, rectMin.y, 0), 12.0f, true});
     }
     
     void generateBaseField() {
@@ -182,15 +182,16 @@ private:
     void generateBooleanField() {
         // Start with base rectangle
         m_resultField = m_baseField;
-        
+
         // Apply boolean operations with each corner circle
         for (const auto& circle : m_cornerCircles) {
             // Generate circle field
             m_circleField.clear_field();
             m_circleField.apply_scalar_circle(circle.position, circle.radius);
-            
-            // Apply boolean operation
-            if (circle.isUnion) {
+
+            // Apply boolean operation based on radius: small radius = union, large radius = subtract
+            bool useUnion = circle.radius < 8.0f; // Threshold at base radius
+            if (useUnion) {
                 m_resultField.boolean_union(m_circleField);
             } else {
                 m_resultField.boolean_subtract(m_circleField);
@@ -200,12 +201,10 @@ private:
     
     void drawContours(Renderer& renderer, const ScalarField2D& field) {
         renderer.setColor(Vec3(1.0f, 1.0f, 1.0f)); // White contours
-        
-        // Draw multiple contour levels
-        for (int i = 0; i < 6; ++i) {
-            float threshold = -8.0f + i * 3.0f;
-            field.drawIsocontours(renderer, threshold);
-        }
+
+        // Draw single contour line
+        float threshold = 0.0f;
+        field.drawIsocontours(renderer, threshold);
     }
     
     void drawGeometry(Renderer& renderer) {
@@ -214,22 +213,20 @@ private:
         renderer.drawPoint(m_rectCenter, Vec3(0.2f, 0.2f, 1.0f), 8.0f);
         renderer.drawText("RECT", m_rectCenter + Vec3(0, 0, 5), 1.0f);
         
-        // Draw circle center in red
-        renderer.setColor(Vec3(1.0f, 0.2f, 0.2f));
-        renderer.drawPoint(m_circleCenter, Vec3(1.0f, 0.2f, 0.2f), 8.0f);
-        renderer.drawText("CIRCLE", m_circleCenter + Vec3(0, 0, 5), 1.0f);
-        
-        // Draw corner circles with different colors based on operation
+        // Draw corner circles with different colors based on radius-determined operation
         for (size_t i = 0; i < m_cornerCircles.size(); ++i) {
             const auto& circle = m_cornerCircles[i];
-            
-            if (circle.isUnion) {
-                // Green for union operations
+
+            // Determine operation based on radius: small radius = union, large radius = subtract
+            bool useUnion = circle.radius < 8.0f;
+
+            if (useUnion) {
+                // Green for union operations (small radius)
                 renderer.setColor(Vec3(0.2f, 1.0f, 0.2f));
                 renderer.drawPoint(circle.position, Vec3(0.2f, 1.0f, 0.2f), 6.0f);
                 renderer.drawText("U", circle.position + Vec3(0, 0, 3), 0.8f);
             } else {
-                // Red for subtract operations
+                // Red for subtract operations (large radius)
                 renderer.setColor(Vec3(1.0f, 0.2f, 0.2f));
                 renderer.drawPoint(circle.position, Vec3(1.0f, 0.2f, 0.2f), 6.0f);
                 renderer.drawText("S", circle.position + Vec3(0, 0, 3), 0.8f);

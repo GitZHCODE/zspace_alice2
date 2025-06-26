@@ -8,14 +8,16 @@ All sketches follow consistent design patterns:
 
 ### Field Specifications
 - **Dimensions**: 100x100 grid with world bounds (-50, -50) to (50, 50)
-- **Coordinate System**: Consistent geometric centers for comparison
-- **Naming Conventions**: 
+- **Coordinate System**: Rectangle centers at (0, 0, 0), Circle centers at (15, 10, 0)
+- **Grid Display**: Disabled for cleaner visualization
+- **Naming Conventions**:
   - Computation controls: prefix with "b_" (e.g., `b_computeCircle`)
   - Visualization controls: prefix with "d_" (e.g., `d_drawField`)
 
 ### Standard Controls
 - **d_drawField**: Toggle scalar field visualization
 - **d_drawValues**: Toggle value display as 3D text
+- **Single Contour Lines**: Clean, focused contour visualization
 - **FPS Display**: Real-time performance monitoring
 - **Clear UI**: On-screen instructions and status indicators
 
@@ -29,12 +31,12 @@ All sketches follow consistent design patterns:
 **Features**:
 - Circle and rectangle scalar field generation
 - Smooth animations using sin/cos functions for radius and dimensions
-- Animated contour extraction with sine-wave offset values
+- Single animated contour line with sine-wave offset values
 - 3D text labels at geometric centers ("CIRCLE" or "RECT")
 - Real-time switching between field types
 
 **Controls**:
-- `SPACE`: Toggle between circle and rectangle modes
+- `G`: Toggle between circle and rectangle modes
 - `C`: Toggle contour visualization
 - `F`: Toggle field point visualization
 - `V`: Toggle scalar value display
@@ -53,11 +55,12 @@ All sketches follow consistent design patterns:
 **Purpose**: Demonstrate boolean operations between geometric shapes
 
 **Features**:
-- Base rectangle field (40x30 units) at center (-15, -10)
+- Base rectangle field (40x30 units) at center (0, 0)
 - Four corner circles with animated radii
-- Strategic boolean operations:
-  - Top-left and bottom-right corners: `boolean_union`
-  - Top-right and bottom-left corners: `boolean_subtract`
+- Dynamic boolean operations based on radius:
+  - Small radius circles: `boolean_union` (green indicators)
+  - Large radius circles: `boolean_subtract` (red indicators)
+- Single contour line visualization
 - Visual indicators showing operation types (U for union, S for subtract)
 - Preview modes for individual operation types
 
@@ -84,10 +87,11 @@ All sketches follow consistent design patterns:
 **Features**:
 - Two overlapping fields: rectangle (lower) and circle (upper)
 - Smooth minimum (smin) blending with adjustable blend factor
-- Multi-level contour extraction at Z-levels: 0, 3, 6, 9, 12
-- Tower visualization: stacked contours showing 3D slicing effect
-- Side-by-side display: original field + tower visualization
+- Multi-level contour extraction at 20 Z-levels: 0, 3, 6, 9, ..., 57
+- Tower visualization: stacked contours with magenta-to-purple gradient
+- Side-by-side display with improved separation to prevent overlap
 - Interactive blend factor adjustment
+- Single contour line visualization for main field
 
 **Controls**:
 - `B`: Toggle blend computation
@@ -113,11 +117,13 @@ All sketches follow consistent design patterns:
 - Base setup similar to Sketch 3 with rotated upper rectangle (30°)
 - Animated 2D sun direction vector with visual arrow indicator
 - Dynamic boolean operations based on sun exposure:
-  - High exposure faces (>0.7): More subtract circles
-  - Medium exposure faces (0.3-0.7): Mixed operations
-  - Low exposure faces (<0.3): More union circles
+  - High exposure faces (>0.7): Subtract circles on boundary edges
+  - Medium exposure faces (0.3-0.7): Union circles on boundary edges
+  - Low exposure faces (<0.3): Multiple union circles on boundary edges
+- Circle positioning directly on rectangle boundary edges (no offset)
+- Fixed radius circles (no animation) for cleaner visualization
 - Face normal calculation and dot product exposure determination
-- Tower contour visualization from Sketch 3
+- Tower contour visualization with 20 levels and magenta-to-purple gradient
 - Manual sun direction control with arrow keys
 
 **Controls**:
