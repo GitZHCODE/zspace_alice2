@@ -14,6 +14,7 @@ using namespace alice2;
 class SimpleScalarFieldSketch : public ISketch {
 private:
     ScalarField2D m_scalarField;
+    ScalarField2D m_scalarField_other;
     std::vector<std::pair<Vec3, Vec3>> m_isolines;
     float m_time;
     bool m_fieldGenerated;
@@ -56,14 +57,12 @@ public:
             std::cout << "Creating ScalarField2D with modern API..." << std::endl;
             // Create field with custom bounds and resolution
             m_scalarField = ScalarField2D(Vec3(-10, -10, 0), Vec3(10, 10, 0), 100, 100);
+            m_scalarField_other = ScalarField2D(Vec3(-10, -10, 0), Vec3(10, 10, 0), 100, 100);
             std::cout << "ScalarField2D created successfully" << std::endl;
 
-            std::cout << "Clearing field..." << std::endl;
-            m_scalarField.clear_field();
-            std::cout << "Field cleared" << std::endl;
-
             std::cout << "Applying circle SDF..." << std::endl;
-            m_scalarField.apply_scalar_circle(Vec3(0, 0, 0), 25.0f);
+            // m_scalarField.clear_field();
+            // m_scalarField.apply_scalar_circle(Vec3(0, 0, 0), 5.0f);
             std::cout << "Circle SDF applied successfully" << std::endl;
 
             // Test the new getter methods
@@ -83,6 +82,17 @@ public:
 
     void update(float deltaTime) override {
         m_time += deltaTime;
+
+        float r = 5.0f + std::sin(m_time) * 2.0f;
+        m_scalarField_other.apply_scalar_circle(Vec3(0, 0, 0), r);
+
+        float x = std::sin(m_time) + 5.0f;
+        float y = std::cos(m_time) + 5.0f;
+        m_scalarField.apply_scalar_rect(Vec3(0, 0, 0), Vec3(x, y, 0), 0.0f);
+        m_scalarField.boolean_smin(m_scalarField_other, 0.2f);
+
+        m_scalarField.boolean_union(m_scalarField_other);
+        m_scalarField.boolean_subtract(m_scalarField_other);
     }
 
     void draw(Renderer& renderer, Camera& camera) override {
@@ -105,7 +115,12 @@ public:
         }
 
         if(d_iso)
-            m_scalarField.drawIsocontours(renderer, 0.5f);
+        {
+            for (int i = 0; i < 10; ++i) {
+                m_scalarField.drawIsocontours(renderer, 0.5f + i * i * 0.5f);
+            }
+            // m_scalarField.drawIsocontours(renderer, 0.5f);
+        }
 
 
         // 2D text rendering
@@ -122,7 +137,7 @@ public:
         renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
         renderer.drawString("Controls:", 10, 140);
         renderer.drawString("'R' - Regenerate field", 10, 160);
-        renderer.drawString("'B' - Test boolean operations", 10, 180);
+        renderer.drawString("'B' - Apply voronoi", 10, 180);
         renderer.drawString("'C' - Regenerate iso contours", 10, 200);
         renderer.drawString("'V' - Shwo field values", 10, 220);
     }
@@ -152,11 +167,13 @@ public:
             case 'b':
             case 'B':
                 try {
-                    std::cout << "Testing boolean operations..." << std::endl;
-                    ScalarField2D other_field(Vec3(-50, -50, 0), Vec3(50, 50, 0), 80, 80);
-                    other_field.apply_scalar_square(Vec3(15, 15, 0), Vec3(20, 10, 0), 0.3f);
-                    m_scalarField.boolean_smin(other_field, 5.0f);
-                    std::cout << "Boolean smooth union applied" << std::endl;
+                    m_scalarField.addVoronoi({
+                        Vec3(+0, +0, 0),
+                        Vec3(+2, +2, 0), 
+                        Vec3(-2, -2, 0),
+                        Vec3(-1, +1, 0),
+                        Vec3(+1, -1, 0),
+                        });
                 }
                 catch (const std::exception& e) {
                     std::cout << "Error in boolean operation: " << e.what() << std::endl;
