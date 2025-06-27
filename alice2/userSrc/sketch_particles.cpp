@@ -224,6 +224,6 @@ private:
 };
 
 // Register the sketch with alice2
-ALICE2_REGISTER_SKETCH_AUTO(ParticleSketch)
+//ALICE2_REGISTER_SKETCH_AUTO(ParticleSketch)
 
 #endif // __MAIN__

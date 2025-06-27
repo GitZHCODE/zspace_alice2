@@ -155,6 +155,6 @@ public:
 };
 
 // Register the sketch with alice2
-ALICE2_REGISTER_SKETCH_AUTO(GeometrySketch)
+//ALICE2_REGISTER_SKETCH_AUTO(GeometrySketch)
 
 #endif // __MAIN__
