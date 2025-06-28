@@ -14,6 +14,19 @@ public:
     EmptySketch() = default;
     ~EmptySketch() = default;
 
+    // Sketch information
+    std::string getName() const override {
+        return "Empty Sketch";
+    }
+
+    std::string getDescription() const override {
+        return "A minimal empty sketch template";
+    }
+
+    std::string getAuthor() const override {
+        return "alice2 User";
+    }
+
     // Sketch lifecycle
     void setup() override {
         // Initialize your sketch here
