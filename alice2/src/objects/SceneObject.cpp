@@ -17,7 +17,6 @@ namespace alice2 {
         , m_opacity(1.0f)
         , m_boundsMin(-1, -1, -1)
         , m_boundsMax(1, 1, 1)
-        , m_userData(nullptr)
     {
     }
 
@@ -101,47 +100,6 @@ namespace alice2 {
 
         distance = tmin > 0 ? tmin : tmax;
         return distance > 0;
-    }
-
-    void SceneObject::setParent(std::shared_ptr<SceneObject> parent) {
-        auto currentParent = m_parent.lock();
-        if (currentParent == parent) return;
-
-        if (currentParent) {
-            currentParent->removeChild(shared_from_this());
-        }
-
-        m_parent = parent;
-        if (parent) {
-            parent->addChild(shared_from_this());
-        }
-
-        // Update transform hierarchy
-        if (parent) {
-            m_transform.setParent(&parent->m_transform);
-        } else {
-            m_transform.setParent(nullptr);
-        }
-    }
-
-    void SceneObject::addChild(std::shared_ptr<SceneObject> child) {
-        if (!child || child.get() == this) return;
-
-        auto it = std::find(m_children.begin(), m_children.end(), child);
-        if (it == m_children.end()) {
-            m_children.push_back(child);
-            child->m_parent = shared_from_this();
-            child->m_transform.setParent(&m_transform);
-        }
-    }
-
-    void SceneObject::removeChild(std::shared_ptr<SceneObject> child) {
-        auto it = std::find(m_children.begin(), m_children.end(), child);
-        if (it != m_children.end()) {
-            (*it)->m_parent.reset();
-            (*it)->m_transform.setParent(nullptr);
-            m_children.erase(it);
-        }
     }
 
 } // namespace alice2

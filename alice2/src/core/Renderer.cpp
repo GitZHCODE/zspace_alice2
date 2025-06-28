@@ -1,6 +1,7 @@
 #include "Renderer.h"
 #include "Camera.h"
 #include "FontRenderer.h"
+#include "ShaderManager.h"
 #include <iostream>
 #include <cmath>
 
@@ -26,6 +27,8 @@ namespace alice2 {
         , m_lightDirection(0.0f, -1.0f, -1.0f)
         , m_lightColor(1.0f, 1.0f, 1.0f)
         , m_fontRenderer(std::make_unique<FontRenderer>())
+        , m_shaderManager(std::make_unique<ShaderManager>())
+        , m_currentCamera(nullptr)
     {
     }
 
@@ -49,6 +52,12 @@ namespace alice2 {
         if (!m_fontRenderer->loadDefaultFont(16.0f)) {
             std::cerr << "Renderer: Warning - Failed to load default font" << std::endl;
             // Continue anyway - text rendering will just be disabled
+        }
+
+        // Initialize shader manager
+        if (!m_shaderManager->initialize()) {
+            std::cerr << "Renderer: Failed to initialize ShaderManager" << std::endl;
+            return false;
         }
 
         m_initialized = true;
@@ -102,6 +111,7 @@ namespace alice2 {
             Vec3 pos = camera.getPosition();
             std::cout << "[RENDERER] setCamera: position=(" << pos.x << ", " << pos.y << ", " << pos.z << ")" << std::endl;
         }
+        m_currentCamera = &camera;
         setupProjection(camera);
         setupView(camera);
     }
@@ -156,6 +166,30 @@ namespace alice2 {
 
     void Renderer::loadIdentity() {
         glLoadIdentity();
+    }
+
+    Mat4 Renderer::getCurrentModelViewMatrix() const {
+        GLfloat matrix[16];
+        glGetFloatv(GL_MODELVIEW_MATRIX, matrix);
+        Mat4 result;
+        for (int i = 0; i < 16; i++) {
+            result.m[i] = matrix[i];
+        }
+        return result;
+    }
+
+    Mat4 Renderer::getCurrentProjectionMatrix() const {
+        GLfloat matrix[16];
+        glGetFloatv(GL_PROJECTION_MATRIX, matrix);
+        Mat4 result;
+        for (int i = 0; i < 16; i++) {
+            result.m[i] = matrix[i];
+        }
+        return result;
+    }
+
+    Mat4 Renderer::getCurrentModelViewProjectionMatrix() const {
+        return getCurrentProjectionMatrix() * getCurrentModelViewMatrix();
     }
 
     void Renderer::setColor(const Vec3& color, float alpha) {
@@ -441,6 +475,229 @@ namespace alice2 {
         }
 
         m_fontRenderer->drawString(text, x, y, m_currentColor, m_currentAlpha);
+    }
+
+    void Renderer::drawPoints(const Vec3* points, int count) {
+        if (!points || count <= 0) return;
+
+        glBegin(GL_POINTS);
+        for (int i = 0; i < count; i++) {
+            glVertex3f(points[i].x, points[i].y, points[i].z);
+        }
+        glEnd();
+    }
+
+    void Renderer::drawLines(const Vec3* points, int count) {
+        if (!points || count <= 0) return;
+
+        glBegin(GL_LINES);
+        for (int i = 0; i < count; i++) {
+            glVertex3f(points[i].x, points[i].y, points[i].z);
+        }
+        glEnd();
+    }
+
+    void Renderer::drawTriangles(const Vec3* vertices, int vertexCount, const int* indices, int indexCount) {
+        if (!vertices || vertexCount <= 0) return;
+
+        glBegin(GL_TRIANGLES);
+
+        if (indices && indexCount > 0) {
+            // Use indexed rendering
+            for (int i = 0; i < indexCount; i++) {
+                int index = indices[i];
+                if (index >= 0 && index < vertexCount) {
+                    glVertex3f(vertices[index].x, vertices[index].y, vertices[index].z);
+                }
+            }
+        } else {
+            // Use direct vertex array
+            for (int i = 0; i < vertexCount; i++) {
+                glVertex3f(vertices[i].x, vertices[i].y, vertices[i].z);
+            }
+        }
+
+        glEnd();
+    }
+
+    void Renderer::drawMesh(const Vec3* vertices, const Vec3* normals, const Vec3* colors, int vertexCount,
+                           const int* indices, int indexCount, bool enableLighting) {
+        if (!vertices || vertexCount <= 0 || !m_shaderManager) return;
+
+        auto meshShader = m_shaderManager->getMeshShader();
+        if (!meshShader || !meshShader->isValid()) {
+            // Fallback to immediate mode rendering
+            drawTriangles(vertices, vertexCount, indices, indexCount);
+            return;
+        }
+
+        meshShader->use();
+
+        // Get current matrices from OpenGL state
+        Mat4 modelViewMatrix = getCurrentModelViewMatrix();
+        Mat4 projectionMatrix = getCurrentProjectionMatrix();
+        Mat4 mvpMatrix = projectionMatrix * modelViewMatrix;
+
+        // DIAGNOSTIC: Print matrix values (limited output)
+        static int debugCallCount = 0;
+        if (debugCallCount < 1) {
+            std::cout << "[RENDERER] Matrix diagnostic: MVP[0]=" << mvpMatrix.m[0] << std::endl;
+            debugCallCount++;
+        }
+
+        // Calculate normal matrix (inverse transpose of upper-left 3x3 of model-view matrix)
+        // For uniform scaling, we can use the model-view matrix directly
+        Mat4 normalMatrix = modelViewMatrix;
+
+        // Set uniforms
+        meshShader->setUniform("u_modelViewProjectionMatrix", mvpMatrix);
+        meshShader->setUniform("u_modelViewMatrix", modelViewMatrix);
+        meshShader->setUniform("u_normalMatrix", normalMatrix);
+
+        meshShader->setUniform("u_lightDirection", m_lightDirection);
+        meshShader->setUniform("u_lightColor", m_lightColor);
+        meshShader->setUniform("u_ambientLight", m_ambientLight);
+        meshShader->setUniform("u_enableLighting", enableLighting);
+
+        // Get attribute locations
+        GLint positionLoc = meshShader->getAttributeLocation("a_position");
+        GLint normalLoc = meshShader->getAttributeLocation("a_normal");
+        GLint colorLoc = meshShader->getAttributeLocation("a_color");
+
+        // DIAGNOSTIC: Print attribute locations (limited output)
+        static int attrDebugCount = 0;
+        if (attrDebugCount < 1) {
+            std::cout << "[RENDERER] Attribute locations: position=" << positionLoc
+                      << ", normal=" << normalLoc << ", color=" << colorLoc << std::endl;
+            attrDebugCount++;
+        }
+
+        // Enable vertex attributes
+        if (positionLoc != -1) {
+            glEnableVertexAttribArray(positionLoc);
+            glVertexAttribPointer(positionLoc, 3, GL_FLOAT, GL_FALSE, 0, vertices);
+        }
+
+        if (normalLoc != -1 && normals) {
+            glEnableVertexAttribArray(normalLoc);
+            glVertexAttribPointer(normalLoc, 3, GL_FLOAT, GL_FALSE, 0, normals);
+        }
+
+        if (colorLoc != -1 && colors) {
+            glEnableVertexAttribArray(colorLoc);
+            glVertexAttribPointer(colorLoc, 3, GL_FLOAT, GL_FALSE, 0, colors);
+        }
+
+        // Draw
+        std::cout << "[RENDERER] Drawing mesh: vertexCount=" << vertexCount << ", indexCount=" << indexCount << std::endl;
+        if (indices && indexCount > 0) {
+            std::cout << "[RENDERER] Using glDrawElements with " << indexCount << " indices" << std::endl;
+            glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, indices);
+        } else {
+            std::cout << "[RENDERER] Using glDrawArrays with " << vertexCount << " vertices" << std::endl;
+            glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+        }
+
+        // Check for OpenGL errors
+        GLenum error = glGetError();
+        if (error != GL_NO_ERROR) {
+            std::cout << "[RENDERER] OpenGL error after draw: " << error << std::endl;
+        }
+
+        // Disable vertex attributes
+        if (positionLoc != -1) glDisableVertexAttribArray(positionLoc);
+        if (normalLoc != -1) glDisableVertexAttribArray(normalLoc);
+        if (colorLoc != -1) glDisableVertexAttribArray(colorLoc);
+
+        meshShader->unuse();
+    }
+
+    void Renderer::drawMeshWireframe(const Vec3* vertices, const Vec3* colors, int vertexCount,
+                                    const int* indices, int indexCount) {
+        // Debug output (limited)
+        static int wireframeCallCount = 0;
+        if (wireframeCallCount < 1) {
+            std::cout << "[RENDERER] drawMeshWireframe called: vertexCount=" << vertexCount << ", indexCount=" << indexCount << std::endl;
+            wireframeCallCount++;
+        }
+
+        if (!vertices || vertexCount <= 0 || !m_shaderManager) {
+            std::cout << "[RENDERER] drawMeshWireframe: Early return - vertices=" << (vertices ? "valid" : "null")
+                      << ", vertexCount=" << vertexCount << ", shaderManager=" << (m_shaderManager ? "valid" : "null") << std::endl;
+            return;
+        }
+
+        auto wireframeShader = m_shaderManager->getWireframeShader();
+        if (!wireframeShader || !wireframeShader->isValid()) {
+            std::cout << "[RENDERER] drawMeshWireframe: Wireframe shader invalid, using fallback" << std::endl;
+            // Fallback to immediate mode rendering
+            setWireframe(true);
+            drawTriangles(vertices, vertexCount, indices, indexCount);
+            return;
+        }
+
+        std::cout << "[RENDERER] drawMeshWireframe: Using wireframe shader" << std::endl;
+
+        wireframeShader->use();
+
+        // Get current matrices from OpenGL state
+        Mat4 modelViewMatrix = getCurrentModelViewMatrix();
+        Mat4 projectionMatrix = getCurrentProjectionMatrix();
+        Mat4 mvpMatrix = projectionMatrix * modelViewMatrix;
+
+        // Set uniforms
+        wireframeShader->setUniform("u_modelViewProjectionMatrix", mvpMatrix);
+
+        // Get attribute locations
+        GLint positionLoc = wireframeShader->getAttributeLocation("a_position");
+        GLint colorLoc = wireframeShader->getAttributeLocation("a_color");
+
+        // DIAGNOSTIC: Print attribute locations
+        static int wireframeAttrDebugCount = 0;
+        if (wireframeAttrDebugCount < 3) {
+            std::cout << "[RENDERER] Wireframe attribute locations: position=" << positionLoc
+                      << ", color=" << colorLoc << std::endl;
+            wireframeAttrDebugCount++;
+        }
+
+        // Enable vertex attributes
+        if (positionLoc != -1) {
+            glEnableVertexAttribArray(positionLoc);
+            glVertexAttribPointer(positionLoc, 3, GL_FLOAT, GL_FALSE, 0, vertices);
+        }
+
+        if (colorLoc != -1 && colors) {
+            glEnableVertexAttribArray(colorLoc);
+            glVertexAttribPointer(colorLoc, 3, GL_FLOAT, GL_FALSE, 0, colors);
+        }
+
+        // Set wireframe mode
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
+        // Draw
+        std::cout << "[RENDERER] drawMeshWireframe: Drawing..." << std::endl;
+        if (indices && indexCount > 0) {
+            std::cout << "[RENDERER] drawMeshWireframe: Using glDrawElements with " << indexCount << " indices" << std::endl;
+            glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, indices);
+        } else {
+            std::cout << "[RENDERER] drawMeshWireframe: Using glDrawArrays with " << vertexCount << " vertices" << std::endl;
+            glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+        }
+
+        // Check for OpenGL errors
+        GLenum error = glGetError();
+        if (error != GL_NO_ERROR) {
+            std::cout << "[RENDERER] drawMeshWireframe: OpenGL error after draw: " << error << std::endl;
+        }
+
+        // Restore fill mode
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+        // Disable vertex attributes
+        if (positionLoc != -1) glDisableVertexAttribArray(positionLoc);
+        if (colorLoc != -1) glDisableVertexAttribArray(colorLoc);
+
+        wireframeShader->unuse();
     }
 
 } // namespace alice2

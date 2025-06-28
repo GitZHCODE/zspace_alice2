@@ -86,9 +86,13 @@ namespace alice2 {
         }
         
         // Render all objects
+        std::cout << "[SCENE] Rendering " << m_objects.size() << " objects" << std::endl;
         for (auto& object : m_objects) {
             if (object && object->isVisible()) {
+                std::cout << "[SCENE] Rendering object: " << object->getName() << " (visible: " << object->isVisible() << ")" << std::endl;
                 object->render(renderer, camera);
+            } else {
+                std::cout << "[SCENE] Skipping object: " << (object ? object->getName() : "null") << " (visible: " << (object ? object->isVisible() : false) << ")" << std::endl;
             }
         }
     }
