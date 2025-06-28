@@ -55,19 +55,6 @@ public:
         // Handle mouse movement
         return false;
     }
-
-    // Sketch information
-    std::string getName() const override {
-        return "Empty Sketch";
-    }
-
-    std::string getDescription() const override {
-        return "An empty template sketch for alice2";
-    }
-
-    std::string getAuthor() const override {
-        return "alice2 User";
-    }
 };
 
 // Register the sketch with alice2 (both old and new systems)
