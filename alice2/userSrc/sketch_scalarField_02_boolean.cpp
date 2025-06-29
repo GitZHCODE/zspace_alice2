@@ -319,6 +319,6 @@ public:
 };
 
 // Register the sketch with alice2
-ALICE2_REGISTER_SKETCH_AUTO(ScalarField02BooleanSketch)
+//ALICE2_REGISTER_SKETCH_AUTO(ScalarField02BooleanSketch)
 
 #endif // __MAIN__

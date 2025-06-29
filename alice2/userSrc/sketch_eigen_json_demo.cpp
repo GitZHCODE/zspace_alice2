@@ -208,6 +208,6 @@ private:
 };
 
 // Register the sketch
-ALICE2_REGISTER_SKETCH_AUTO(EigenJsonDemo)
+//ALICE2_REGISTER_SKETCH_AUTO(EigenJsonDemo)
 
 #endif // __MAIN__

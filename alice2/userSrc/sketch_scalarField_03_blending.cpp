@@ -406,6 +406,6 @@ public:
 };
 
 // Register the sketch with alice2
-ALICE2_REGISTER_SKETCH_AUTO(ScalarField03BlendingSketch)
+//ALICE2_REGISTER_SKETCH_AUTO(ScalarField03BlendingSketch)
 
 #endif // __MAIN__

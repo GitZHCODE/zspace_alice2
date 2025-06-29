@@ -680,6 +680,6 @@ public:
 };
 
 // Register the sketch with alice2
-ALICE2_REGISTER_SKETCH_AUTO(ScalarField04DirectionalSketch)
+//ALICE2_REGISTER_SKETCH_AUTO(ScalarField04DirectionalSketch)
 
 #endif // __MAIN__
