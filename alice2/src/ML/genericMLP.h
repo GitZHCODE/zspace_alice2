@@ -9,8 +9,7 @@
 #include <vector>
 #include <cmath>
 #include <fstream>
-// alice2 includes for renderer support
-#include "../include/alice2.h"
+#include "alice2.h"
 
 using namespace alice2;
 
