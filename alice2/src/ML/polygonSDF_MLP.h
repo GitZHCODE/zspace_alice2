@@ -5,24 +5,29 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
-
-#include <vector>
-#include <cmath>
-#include <fstream>
-#include <alice2.h>
-
-#include <ML/genericMLP.h>
-#include <computeGeom/scalarField.h>
 #include <fstream>
 #include <charconv>
 #include <limits>
-#include <cmath>
 
+#include <alice2.h>
+#include <ML/genericMLP.h>
+#include <computeGeom/scalarField.h>
+
+/**
+ * PolygonSDF_MLP: Multi-Layer Perceptron for learning polygon SDF approximation
+ *
+ * This class separates concerns into:
+ * - Data generation and management
+ * - SDF computation and analysis
+ * - MLP training and optimization
+ * - Visualization support (minimal interface)
+ */
 class PolygonSDF_MLP : public MLP
 {
 public:
     using MLP::MLP;
 
+    // === Data Management ===
     std::vector<Vec3> polygon;
     std::vector<Vec3> trainingSamples;
     std::vector<float> sdfGT;
@@ -32,136 +37,195 @@ public:
     std::vector<Vec3> fittedCenters;
     std::vector<float> fittedRadii;
 
-    int number_sdf;
-    double radius = 8.;
+    // === Training Parameters ===
+    int number_sdf = 8;
+    double radius = 8.0;
     float smoothK = 3.0f;
     Vec3 sunDir = Vec3(1, 1, 0);
-
-    ScalarField2D generatedField;
     int epoch = 0;
 
-    void GenerateField(std::vector<float> &x)
+    // === Field Generation ===
+    ScalarField2D generatedField;
+
+    // === PUBLIC API METHODS ===
+
+    /**
+     * Generate scalar field from MLP output
+     */
+    void generate_field(std::vector<float>& x)
     {
         auto out = forward(x);
-
         std::vector<Vec3> centers(number_sdf);
         std::vector<float> radii(number_sdf);
-
-        decodeOutput(out, centers, radii);
-
-        GenerateField(centers, radii);
+        decode_output(out, centers, radii);
+        generate_field(centers, radii);
     }
 
-    void GenerateField(std::vector<Vec3> &centers, std::vector<float> &radii)
+    /**
+     * Generate scalar field from explicit centers and radii
+     */
+    void generate_field(std::vector<Vec3>& centers, std::vector<float>& radii)
     {
-        // for (auto& r : radii)r = radius;
         generatedField.clearField();
-        //  generatedField.addVoronoi(trainingSamples);
 
-        std::pair<int, int> RES = generatedField.get_resolution();
-        std::vector<float> fieldValues = generatedField.get_values();
-        std::vector<Vec3> fieldPoints = generatedField.get_points();
+        std::pair<int, int> resolution = generatedField.get_resolution();
+        std::vector<float> field_values = generatedField.get_values();
+        std::vector<Vec3> field_points = generatedField.get_points();
 
-        for (size_t i = 0; i < fieldValues.size(); ++i)
-            fieldValues[i] = blendOrientedBoxSDFs(fieldPoints[i], centers, radii);
-
-        rescaleToRange(fieldValues);
-        generatedField.set_values(fieldValues);
-        //generatedField.normalise();
-    }
-
-void rescaleToRange(std::vector<float>& values,
-                    float targetMin = -1.0f,
-                    float targetMax =  1.0f)
-{
-    if (values.empty()) return;
-
-    // find per‐sign extrema
-    float minVal[2] = {
-        std::numeric_limits<float>::infinity(),
-        std::numeric_limits<float>::infinity()
-    };
-    float maxVal[2] = {
-        -std::numeric_limits<float>::infinity(),
-        -std::numeric_limits<float>::infinity()
-    };
-
-    for (float v : values) {
-        int idx = (v >= 0.0f ? 0 : 1);
-        minVal[idx] = std::min(minVal[idx], v);
-        maxVal[idx] = std::max(maxVal[idx], v);
-    }
-
-    // avoid zero‐division
-    float range[2] = {
-        std::max(maxVal[0] - minVal[0], 1e-6f),
-        std::max(maxVal[1] - minVal[1], 1e-6f)
-    };
-
-    // remap each value:
-    //  - positives  → [0, targetMax]
-    //  - negatives  → [targetMin, 0]
-    for (float& v : values) {
-        if (v >= 0.0f) {
-            float t = (v - minVal[0]) / range[0];          // in [0,1]
-            v = std::lerp(0.0f,      targetMax, t);         // → [0, targetMax]
+        for (size_t i = 0; i < field_values.size(); ++i) {
+            field_values[i] = blend_oriented_box_sdfs(field_points[i], centers, radii);
         }
-        else {
-            float t = (v - minVal[1]) / range[1];          // in [0,1]
-            v = std::lerp(targetMin, 0.0f,      t);         // → [targetMin, 0]
+
+        rescale_to_range(field_values);
+        generatedField.set_values(field_values);
+    }
+
+    /**
+     * Generate training data from polygon
+     */
+    void sample_points(std::vector<Vec3>& training_samples, std::vector<float>& sdf_gt,
+                      std::vector<Vec3>& poly)
+    {
+        training_samples.clear();
+        sdf_gt.clear();
+
+        for (float x = -50; x <= 50; x += 5.0f) {
+            for (float y = -50; y <= 50; y += 5.0f) {
+                Vec3 pt(x, y, 0);
+                if (is_inside_polygon(pt, poly)) {
+                    training_samples.push_back(pt);
+                    sdf_gt.push_back(polygon_sdf(pt, poly));
+                }
+            }
+        }
+
+        std::cout << "Generated " << training_samples.size() << " training samples" << std::endl;
+    }
+
+    // === LEGACY API SUPPORT (for backward compatibility) ===
+    void GenerateField(std::vector<float>& x) { generate_field(x); }
+    void GenerateField(std::vector<Vec3>& centers, std::vector<float>& radii) { generate_field(centers, radii); }
+    void samplePoints(std::vector<Vec3>& ts, std::vector<float>& sdf, std::vector<Vec3>& poly) { sample_points(ts, sdf, poly); }
+
+    // === CORE SDF COMPUTATION METHODS ===
+
+    /**
+     * Rescale field values to target range while preserving sign
+     */
+    void rescale_to_range(std::vector<float>& values, float target_min = -1.0f, float target_max = 1.0f)
+    {
+        if (values.empty()) return;
+
+        // Find per-sign extrema
+        float min_val[2] = {
+            std::numeric_limits<float>::infinity(),
+            std::numeric_limits<float>::infinity()
+        };
+        float max_val[2] = {
+            -std::numeric_limits<float>::infinity(),
+            -std::numeric_limits<float>::infinity()
+        };
+
+        for (float v : values) {
+            int idx = (v >= 0.0f ? 0 : 1);
+            min_val[idx] = std::min(min_val[idx], v);
+            max_val[idx] = std::max(max_val[idx], v);
+        }
+
+        // Avoid zero-division
+        float range[2] = {
+            std::max(max_val[0] - min_val[0], 1e-6f),
+            std::max(max_val[1] - min_val[1], 1e-6f)
+        };
+
+        // Remap each value:
+        // - positives → [0, target_max]
+        // - negatives → [target_min, 0]
+        for (float& v : values) {
+            if (v >= 0.0f) {
+                float t = (v - min_val[0]) / range[0];
+                v = std::lerp(0.0f, target_max, t);
+            } else {
+                float t = (v - min_val[1]) / range[1];
+                v = std::lerp(target_min, 0.0f, t);
+            }
         }
     }
-}
 
-    float blendOrientedBoxSDFs(Vec3 pt, std::vector<Vec3> &centers, std::vector<float> &angles, float width = 8.0f, float height = 6.0f, float k = 3.0f)
+    /**
+     * Blend multiple oriented box SDFs
+     */
+    float blend_oriented_box_sdfs(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& angles,
+                                 float width = 8.0f, float height = 6.0f, float k = 3.0f)
     {
         float d = 1e6;
-        for (int i = 0; i < centers.size(); i++)
-        {
-            float dist = orientedBoxSDF(pt, centers[i], width, height, angles[i]);
+        for (size_t i = 0; i < centers.size(); i++) {
+            float dist = oriented_box_sdf(pt, centers[i], width, height, angles[i]);
             d = std::min(d, dist);
-            ; // smin(d, dist, k);
         }
         return d;
     }
 
-    float orientedBoxSDF(Vec3 pt, Vec3 center, float width, float height, float angleRad)
+    /**
+     * Oriented box SDF computation
+     */
+    float oriented_box_sdf(Vec3 pt, Vec3 center, float width, float height, float angle_rad)
     {
         Vec3 d = pt - center;
 
-        float cosA = cos(angleRad);
-        float sinA = sin(angleRad);
+        float cos_a = cos(angle_rad);
+        float sin_a = sin(angle_rad);
 
-        float localX = d.x * cosA + d.y * sinA;
-        float localY = -d.x * sinA + d.y * cosA;
+        float local_x = d.x * cos_a + d.y * sin_a;
+        float local_y = -d.x * sin_a + d.y * cos_a;
 
-        float dx = fabs(localX) - width * 0.5f;
-        float dy = fabs(localY) - height * 0.5f;
+        float dx = fabs(local_x) - width * 0.5f;
+        float dy = fabs(local_y) - height * 0.5f;
 
         float ax = std::max(dx, 0.0f);
         float ay = std::max(dy, 0.0f);
 
-        float insideDist = std::min(std::max(dx, dy), 0.0f);
-        return sqrtf(ax * ax + ay * ay) + insideDist;
+        float inside_dist = std::min(std::max(dx, dy), 0.0f);
+        return sqrtf(ax * ax + ay * ay) + inside_dist;
     }
 
-    void decodeOutput(const std::vector<float> &out, std::vector<Vec3> &centers, std::vector<float> &angles)
+    // === LEGACY API SUPPORT ===
+    void rescaleToRange(std::vector<float>& values, float target_min = -1.0f, float target_max = 1.0f) {
+        rescale_to_range(values, target_min, target_max);
+    }
+    float blendOrientedBoxSDFs(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& angles,
+                              float width, float height, float k) {
+        return blend_oriented_box_sdfs(pt, centers, angles, width, height, k);
+    }
+    float orientedBoxSDF(Vec3 pt, Vec3 center, float width, float height, float angle_rad) {
+        return oriented_box_sdf(pt, center, width, height, angle_rad);
+    }
+
+
+
+    // === MLP OUTPUT PROCESSING ===
+
+    /**
+     * Decode MLP output into centers and angles
+     */
+    void decode_output(const std::vector<float>& out, std::vector<Vec3>& centers, std::vector<float>& angles)
     {
         centers.resize(number_sdf);
         angles.resize(number_sdf);
-        for (int i = 0; i < number_sdf; i++)
-        {
+
+        for (int i = 0; i < number_sdf; i++) {
             int idx = i * 4;
             centers[i] = Vec3(out[idx + 0], out[idx + 1], 0);
 
             Vec3 dir(out[idx + 2], out[idx + 3], 0);
-            //   dir = gradientAt_polygonSDF(centers[i], polygon);
-
             dir.normalize();
-            // dir = dir ^ Vec3(0, 0, 1);
-
             angles[i] = atan2(dir.y, dir.x);
         }
+    }
+
+    // === LEGACY API SUPPORT ===
+    void decodeOutput(const std::vector<float>& out, std::vector<Vec3>& centers, std::vector<float>& angles) {
+        decode_output(out, centers, angles);
     }
 
     float evaluateLoss(std::vector<Vec3> &centers, std::vector<float> &angles)
@@ -185,8 +249,8 @@ void rescaleToRange(std::vector<float>& values,
             lossesByType[0][i] = err * err;
 
             // Loss 1: angular alignment (squared angle)
-            Vec3 grad = gradientAt(pt, centers, angles);            // gradient of blendedSDF
-            Vec3 grad_polygon = gradientAt_polygonSDF(pt, polygon); // gradient of polygonSDF;
+            Vec3 grad = gradient_at(pt, centers, angles);            // gradient of blendedSDF
+            Vec3 grad_polygon = gradient_at_polygon_sdf(pt, polygon); // gradient of polygonSDF;
             grad.normalize();
             grad = grad.cross(Vec3(0, 0, 1));
             grad_polygon.normalize();
@@ -248,48 +312,9 @@ void rescaleToRange(std::vector<float>& values,
         return evaluateLoss(centers, angles);
     }
 
-    float blendCircleSDFs(Vec3 pt, std::vector<Vec3> &centers, std::vector<float> &radii, float k)
-    {
-        float d = 1e6;
-        for (int i = 0; i < centers.size(); i++)
-        {
-            float dist = pt.distanceTo(centers[i]) - radii[i];
-            d = ScalarFieldUtils::smooth_min(d, dist, k);
-        }
-        return d;
-    }
 
-    Vec3 gradientAt(Vec3 pt, std::vector<Vec3> &centers, std::vector<float> &angles, float h = 0.1f)
-    {
-        float dx = blendOrientedBoxSDFs(pt + Vec3(h, 0, 0), centers, angles) -
-                   blendOrientedBoxSDFs(pt - Vec3(h, 0, 0), centers, angles);
 
-        float dy = blendOrientedBoxSDFs(pt + Vec3(0, h, 0), centers, angles) -
-                   blendOrientedBoxSDFs(pt - Vec3(0, h, 0), centers, angles);
 
-        Vec3 ret(dx, dy, 0);
-        ret.normalize();
-        return ret;
-    }
-
-    Vec3 gradientAt_polygonSDF(const Vec3 &pt, std::vector<Vec3> &polygon, float h = 0.1f)
-    {
-        float dx = polygonSDF(pt + Vec3(h, 0, 0), polygon) -
-                   polygonSDF(pt - Vec3(h, 0, 0), polygon);
-
-        float dy = polygonSDF(pt + Vec3(0, h, 0), polygon) -
-                   polygonSDF(pt - Vec3(0, h, 0), polygon);
-
-        Vec3 ret(dx, dy, 0);
-        ret.normalize();
-        return ret;
-    }
-    float angleBetween(Vec3 &a, Vec3 &b)
-    {
-        float dot = a.x * b.x + a.y * b.y;
-        float det = a.x * b.y - a.y * b.x;
-        return atan2(det, dot); // angle in radians
-    }
 
     void computeGradient(std::vector<float> &x, std::vector<float> &dummy, std::vector<float> &gradOut) override
     {
@@ -318,37 +343,40 @@ void rescaleToRange(std::vector<float>& values,
         }
     }
 
-    bool isInsidePolygon(const Vec3 &p, std::vector<Vec3> &poly)
+    // === POLYGON SDF COMPUTATION ===
+
+    /**
+     * Check if point is inside polygon using winding number
+     */
+    bool is_inside_polygon(const Vec3& p, std::vector<Vec3>& poly)
     {
-        int windingNumber = 0;
+        int winding_number = 0;
 
-        for (int i = 0; i < poly.size(); i++)
-        {
-            Vec3 &a = poly[i];
-            Vec3 &b = poly[(i + 1) % poly.size()];
+        for (size_t i = 0; i < poly.size(); i++) {
+            Vec3& a = poly[i];
+            Vec3& b = poly[(i + 1) % poly.size()];
 
-            if (a.y <= p.y)
-            {
+            if (a.y <= p.y) {
                 if (b.y > p.y && ((b - a).cross(p - a)).z > 0)
-                    ++windingNumber;
-            }
-            else
-            {
+                    ++winding_number;
+            } else {
                 if (b.y <= p.y && ((b - a).cross(p - a)).z < 0)
-                    --windingNumber;
+                    --winding_number;
             }
         }
 
-        return (windingNumber != 0);
+        return (winding_number != 0);
     }
 
-    float polygonSDF(const Vec3 &p, std::vector<Vec3> &poly)
+    /**
+     * Compute signed distance to polygon
+     */
+    float polygon_sdf(const Vec3& p, std::vector<Vec3>& poly)
     {
-        float minDist = 1e6;
+        float min_dist = 1e6;
         int n = poly.size();
 
-        for (int i = 0; i < n; i++)
-        {
+        for (int i = 0; i < n; i++) {
             Vec3 a = poly[i];
             Vec3 b = poly[(i + 1) % n];
 
@@ -358,154 +386,204 @@ void rescaleToRange(std::vector<float>& values,
             float t = std::max(0.0f, std::min(1.0f, (ab.dot(ap)) / (ab.dot(ab))));
             Vec3 proj = a + ab * t;
             float d = p.distanceTo(proj);
-            minDist = std::min(minDist, d);
+            min_dist = std::min(min_dist, d);
         }
 
-        return minDist * (isInsidePolygon(p, poly) ? -1.0f : 1.0f);
+        return min_dist * (is_inside_polygon(p, poly) ? -1.0f : 1.0f);
     }
 
-    // Utility functions
+    // === GRADIENT COMPUTATION ===
 
-    void samplePoints(std::vector<Vec3> &trainingSamples, std::vector<float> &sdfGT, std::vector<Vec3> &polygon)
+    /**
+     * Compute gradient at point for blended SDF
+     */
+    Vec3 gradient_at(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& angles, float h = 0.1f)
     {
-        // collect input-output pairs of information
+        float dx = blend_oriented_box_sdfs(pt + Vec3(h, 0, 0), centers, angles) -
+                   blend_oriented_box_sdfs(pt - Vec3(h, 0, 0), centers, angles);
 
-        trainingSamples.clear();
-        sdfGT.clear();
+        float dy = blend_oriented_box_sdfs(pt + Vec3(0, h, 0), centers, angles) -
+                   blend_oriented_box_sdfs(pt - Vec3(0, h, 0), centers, angles);
 
-        for (float x = -50; x <= 50; x += 5.0f)
-        {
-            for (float y = -50; y <= 50; y += 5.0f)
-            {
-                Vec3 pt(x, y, 0);
-                if (isInsidePolygon(pt, polygon))
-                {
-                    trainingSamples.push_back(pt);            // input exmaples
-                    sdfGT.push_back(polygonSDF(pt, polygon)); // known output expected for the input
-                }
-            }
-        }
-
-        std::cout << "Training samples: " << trainingSamples.size() << std::endl;
+        Vec3 ret(dx, dy, 0);
+        ret.normalize();
+        return ret;
     }
 
-    // Visualization methods using alice2 renderer
+    /**
+     * Compute gradient at point for polygon SDF
+     */
+    Vec3 gradient_at_polygon_sdf(const Vec3& pt, std::vector<Vec3>& poly, float h = 0.1f)
+    {
+        float dx = polygon_sdf(pt + Vec3(h, 0, 0), poly) -
+                   polygon_sdf(pt - Vec3(h, 0, 0), poly);
 
-    void drawLossText(Renderer& renderer, float startY = 150)
+        float dy = polygon_sdf(pt + Vec3(0, h, 0), poly) -
+                   polygon_sdf(pt - Vec3(0, h, 0), poly);
+
+        Vec3 ret(dx, dy, 0);
+        ret.normalize();
+        return ret;
+    }
+
+    /**
+     * Compute angle between two vectors
+     */
+    float angle_between(Vec3& a, Vec3& b)
+    {
+        float dot = a.x * b.x + a.y * b.y;
+        float det = a.x * b.y - a.y * b.x;
+        return atan2(det, dot);
+    }
+
+    /**
+     * Blend circle SDFs with smooth minimum
+     */
+    float blend_circle_sdfs(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& radii, float k)
+    {
+        float d = 1e6;
+        for (size_t i = 0; i < centers.size(); i++) {
+            float dist = pt.distanceTo(centers[i]) - radii[i];
+            d = ScalarFieldUtils::smooth_min(d, dist, k);
+        }
+        return d;
+    }
+
+    // === LEGACY API SUPPORT ===
+    bool isInsidePolygon(const Vec3& p, std::vector<Vec3>& poly) { return is_inside_polygon(p, poly); }
+    float polygonSDF(const Vec3& p, std::vector<Vec3>& poly) { return polygon_sdf(p, poly); }
+    Vec3 gradientAt(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& angles, float h) {
+        return gradient_at(pt, centers, angles, h);
+    }
+    Vec3 gradientAt_polygonSDF(const Vec3& pt, std::vector<Vec3>& poly, float h) {
+        return gradient_at_polygon_sdf(pt, poly, h);
+    }
+    float angleBetween(Vec3& a, Vec3& b) { return angle_between(a, b); }
+    float blendCircleSDFs(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& radii, float k) {
+        return blend_circle_sdfs(pt, centers, radii, k);
+    }
+
+
+
+    // === VISUALIZATION SUPPORT METHODS ===
+    // Note: These methods provide minimal rendering interface
+    // Main visualization logic should be in the sketch class
+
+    /**
+     * Draw loss information as text
+     */
+    void draw_loss_text(Renderer& renderer, float start_y = 150)
     {
         if (losses.empty() || losses_ang.empty()) return;
 
-        char s[100];
-        float lossSum = 0;
-        float loss_A_Sum = 0;
+        float loss_sum = 0;
+        float loss_ang_sum = 0;
 
-        for (int i = 0; i < losses_ang.size(); i++)
-        {
-            lossSum += losses[i];
-            loss_A_Sum += losses_ang[i];
+        for (size_t i = 0; i < losses_ang.size(); i++) {
+            loss_sum += losses[i];
+            loss_ang_sum += losses_ang[i];
         }
 
         renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
-        sprintf(s, " loss %1.2f", lossSum / trainingSamples.size());
-        renderer.drawString(std::string(s), 10, startY);
 
-        sprintf(s, " loss_ang %1.2f", loss_A_Sum);
-        renderer.drawString(std::string(s), 10, startY + 15);
+        char buffer[100];
+        sprintf(buffer, "Loss: %.3f", loss_sum / trainingSamples.size());
+        renderer.drawString(std::string(buffer), 10, start_y);
+
+        sprintf(buffer, "Angular Loss: %.3f", loss_ang_sum);
+        renderer.drawString(std::string(buffer), 10, start_y + 15);
     }
 
-    void drawLossBarGraph(Renderer& renderer, const std::vector<float>& losses, float startPtX, float startPtY, float screenWidth = 800, float barHeight = 50)
+    /**
+     * Draw loss bar graph
+     */
+    void draw_loss_bar_graph(Renderer& renderer, const std::vector<float>& loss_data,
+                            float start_x, float start_y, float width = 200, float height = 40)
     {
-        if (losses.empty()) return;
+        if (loss_data.empty()) return;
 
-        int N = losses.size();
-        float barSpacing = screenWidth / (float)N;
+        int n = loss_data.size();
+        float bar_spacing = width / (float)n;
 
         // Normalize losses to [0, 1]
-        float minVal = 1e6f, maxVal = -1e6f;
-        for (float v : losses)
-        {
-            minVal = std::min(minVal, v);
-            maxVal = std::max(maxVal, v);
+        float min_val = 1e6f, max_val = -1e6f;
+        for (float v : loss_data) {
+            min_val = std::min(min_val, v);
+            max_val = std::max(max_val, v);
         }
-        float range = std::max(maxVal - minVal, 1e-6f);  // avoid divide by zero
+        float range = std::max(max_val - min_val, 1e-6f);
 
-        for (int i = 0; i < N; i++)
-        {
-            float normalized = (losses[i] - minVal) / range;
-            float x = startPtX + i * barSpacing;
-            float h = barHeight * normalized;
+        for (int i = 0; i < n; i++) {
+            float normalized = (loss_data[i] - min_val) / range;
+            float x = start_x + i * bar_spacing;
+            float h = height * normalized;
 
             float r, g, b;
             ScalarFieldUtils::get_jet_color(normalized * 2.0f - 1.0f, r, g, b);
 
-            Vec2 start(x, startPtY);
-            Vec2 end(x, startPtY + h);
+            Vec2 start(x, start_y);
+            Vec2 end(x, start_y + h);
             renderer.draw2dLine(start, end, Vec3(r, g, b));
         }
     }
 
-    void visualiseField(Renderer& renderer, float threshold = 0.01, bool drawField = true)
+    /**
+     * Visualize scalar field
+     */
+    void visualize_field(Renderer& renderer, float threshold = 0.01, bool draw_field = true)
     {
-        if (drawField) generatedField.draw_points(renderer,1);
-        generatedField.draw_values(renderer);
+        if (draw_field) generatedField.draw_points(renderer, 1);
+        //generatedField.draw_values(renderer);
     }
 
-    void visualiseGradients(Renderer& renderer, std::vector<float>& x)
+    /**
+     * Visualize gradients
+     */
+    void visualize_gradients(Renderer& renderer, std::vector<float>& x)
     {
         auto out = forward(x);
-
         std::vector<Vec3> centers(number_sdf);
         std::vector<float> angles(number_sdf);
-
-        decodeOutput(out, centers, angles);
+        decode_output(out, centers, angles);
 
         // Draw gradients for SDF centers
-        for (int i = 0; i < number_sdf; i++)
-        {
-            Vec3 grad_polygon = gradientAt_polygonSDF(centers[i], polygon);
+        for (int i = 0; i < number_sdf; i++) {
+            Vec3 grad_polygon = gradient_at_polygon_sdf(centers[i], polygon);
             grad_polygon.normalize();
 
-            Vec3 a = centers[i];  // Use Vec3 directly instead of Alice::vec
-
-            renderer.drawLine(a, a + grad_polygon * 3.0f, Vec3(0.0f, 0.0f, 0.0f));
+            renderer.drawLine(centers[i], centers[i] + grad_polygon * 3.0f, Vec3(0.0f, 0.0f, 0.0f));
 
             // Local coordinate system visualization
-            float cosA = cos(angles[i]);
-            float sinA = sin(angles[i]);
+            float cos_a = cos(angles[i]);
+            float sin_a = sin(angles[i]);
+            Vec3 axis_y(sin_a, cos_a, 0);  // local Y direction
+            axis_y.normalize();
 
-            Vec3 axisX(cosA, -sinA, 0); // local X direction
-            Vec3 axisY(sinA, cosA, 0);  // local Y direction
-
-            Vec3 grad = axisY; // Use local Y axis as gradient direction
-            grad.normalize();
-
-            renderer.drawLine(a, a + grad * 4.0f, Vec3(1.0f, 0.0f, 0.0f));
+            renderer.drawLine(centers[i], centers[i] + axis_y * 4.0f, Vec3(1.0f, 0.0f, 0.0f));
         }
 
         // Draw gradients for training samples
-        for (int i = 0; i < trainingSamples.size(); i++)
-        {
+        for (size_t i = 0; i < trainingSamples.size(); i++) {
             Vec3 a = trainingSamples[i];
 
-            Vec3 grad_polygon = gradientAt_polygonSDF(trainingSamples[i], polygon);
+            Vec3 grad_polygon = gradient_at_polygon_sdf(trainingSamples[i], polygon);
             grad_polygon.normalize();
-
             renderer.drawLine(a, a + grad_polygon, Vec3(0.0f, 0.0f, 0.0f));
 
-            Vec3 grad = gradientAt(trainingSamples[i], centers, angles);
+            Vec3 grad = gradient_at(trainingSamples[i], centers, angles);
             grad.normalize();
-
             renderer.drawLine(a, a + grad, Vec3(1.0f, 0.0f, 0.0f));
         }
     }
 
-    // Helper method to draw a circle using line segments
-    void drawCircle(Renderer& renderer, const Vec3& center, float radius, int segments, const Vec3& color)
+    /**
+     * Draw a circle using line segments
+     */
+    void draw_circle(Renderer& renderer, const Vec3& center, float radius, int segments, const Vec3& color)
     {
         renderer.setColor(color);
         const float PI = 3.14159265359f;
-        for (int i = 0; i < segments; i++)
-        {
+        for (int i = 0; i < segments; i++) {
             float angle1 = (float)i / segments * 2.0f * PI;
             float angle2 = (float)(i + 1) / segments * 2.0f * PI;
 
@@ -514,5 +592,16 @@ void rescaleToRange(std::vector<float>& values,
 
             renderer.drawLine(p1, p2);
         }
+    }
+
+    // === LEGACY API SUPPORT ===
+    void drawLossText(Renderer& renderer, float start_y = 150) { draw_loss_text(renderer, start_y); }
+    void drawLossBarGraph(Renderer& renderer, const std::vector<float>& losses, float start_x, float start_y, float width = 800, float height = 50) {
+        draw_loss_bar_graph(renderer, losses, start_x, start_y, width, height);
+    }
+    void visualiseField(Renderer& renderer, float threshold = 0.01, bool draw_field = true) { visualize_field(renderer, threshold, draw_field); }
+    void visualiseGradients(Renderer& renderer, std::vector<float>& x) { visualize_gradients(renderer, x); }
+    void drawCircle(Renderer& renderer, const Vec3& center, float radius, int segments, const Vec3& color) {
+        draw_circle(renderer, center, radius, segments, color);
     }
 };

@@ -130,56 +130,73 @@ public:
         }
     }
 
-    void visualize(Renderer& renderer, Camera& camera, const Vec3& topLeft = Vec3(50, 450, 0), float bboxWidth = 400.0f, float bboxHeight = 300.0f)
+    /**
+     * Visualize MLP network structure with nodes and connections
+     * @param renderer The renderer to draw with
+     * @param camera The camera (unused but kept for API compatibility)
+     * @param topLeft Top-left corner position for the visualization
+     * @param bboxWidth Width of the visualization bounding box
+     * @param bboxHeight Height of the visualization bounding box
+     */
+    void visualize(Renderer& renderer, Camera& camera, const Vec3& topLeft = Vec3(400, 200, 0), float bboxWidth = 300.0f, float bboxHeight = 200.0f)
     {
+        if (activations.empty()) return; // No data to visualize
+
         int numLayers = activations.size();
         float nodeRadius = 3.0f;
 
         // Compute max nodes per layer for vertical spacing
         int maxNodesPerLayer = 0;
-        for (auto& layer : activations)
+        for (const auto& layer : activations) {
             maxNodesPerLayer = std::max(maxNodesPerLayer, (int)layer.size());
+        }
 
+        // Ensure reasonable spacing
         float layerSpacing = (numLayers > 1) ? bboxWidth / (numLayers - 1) : 150.0f;
-        float verticalSpacing = (maxNodesPerLayer > 1) ? bboxHeight / (maxNodesPerLayer - 1) : 30.0f;
+        float verticalSpacing = (maxNodesPerLayer > 1) ? std::min(bboxHeight / (maxNodesPerLayer - 1), 30.0f) : 20.0f;
 
         std::vector<std::vector<Vec3>> nodePositions(numLayers);
 
-        // Compute node positions
-        for (int l = 0; l < numLayers; l++)
-        {
+        // Compute node positions with better centering
+        for (int l = 0; l < numLayers; l++) {
             int numNodes = activations[l].size();
-            float yStart = topLeft.y - 0.5f * (numNodes - 1) * verticalSpacing;
+            if (numNodes == 0) continue;
 
-            for (int i = 0; i < numNodes; i++)
-            {
+            // Center nodes vertically within the bounding box
+            float totalHeight = (numNodes - 1) * verticalSpacing;
+            float yStart = topLeft.y + (bboxHeight - totalHeight) * 0.5f;
+
+            for (int i = 0; i < numNodes; i++) {
                 float x = topLeft.x + l * layerSpacing;
                 float y = yStart + i * verticalSpacing;
                 nodePositions[l].push_back(Vec3(x, y, topLeft.z));
             }
         }
 
-        // --- Draw weight connections
-        for (int l = 0; l < numLayers - 1; l++)
-        {
+        // Draw weight connections (only significant weights to avoid clutter)
+        for (int l = 0; l < numLayers - 1; l++) {
+            if (l >= W.size()) continue; // Safety check
+
             int fromSize = activations[l].size();
             int toSize = activations[l + 1].size();
 
-            for (int i = 0; i < fromSize; i++)
-            {
-                for (int j = 0; j < toSize; j++)
-                {
+            for (int i = 0; i < fromSize && i < nodePositions[l].size(); i++) {
+                for (int j = 0; j < toSize && j < nodePositions[l + 1].size(); j++) {
+                    if (j >= W[l].size() || i >= W[l][j].size()) continue; // Safety check
+
                     float w = W[l][j][i];
                     float absW = fabs(w);
 
-                    if (absW < 0.02f) continue;  // skip very weak connections
+                    // Only draw significant connections to reduce visual clutter
+                    if (absW < 0.05f) continue;
 
-                    float val = std::clamp(w * 5.0f, -1.0f, 1.0f);
+                    // Color based on weight value
+                    float val = std::clamp(w * 3.0f, -1.0f, 1.0f);
                     float r, g, b;
                     get_jet_color(val, r, g, b);
 
                     Vec3 color(r, g, b);
-                    float width = std::clamp(absW * 5.0f, 0.5f, 2.0f);
+                    float width = std::clamp(absW * 3.0f, 0.5f, 1.0f);
 
                     Vec2 start = Vec2(nodePositions[l][i].x, nodePositions[l][i].y);
                     Vec2 end = Vec2(nodePositions[l + 1][j].x, nodePositions[l + 1][j].y);
@@ -188,22 +205,32 @@ public:
             }
         }
 
-        // --- Draw nodes
-        for (int l = 0; l < numLayers; l++)
-        {
-            for (int i = 0; i < activations[l].size(); i++)
-            {
+        // Draw nodes with activation-based coloring
+        for (int l = 0; l < numLayers; l++) {
+            for (int i = 0; i < activations[l].size() && i < nodePositions[l].size(); i++) {
                 float act = activations[l][i];
-                float r, g, b;
 
-                get_jet_color(act, r, g, b);
+                // Clamp activation for better color visualization
+                float clampedAct = std::clamp(act, -1.0f, 1.0f);
+                float r, g, b;
+                get_jet_color(clampedAct, r, g, b);
 
                 Vec3 color(r, g, b);
-                renderer.setColor(color);
-                //drawSolidCircle(renderer, nodePositions[l][i], nodeRadius, 12);
                 Vec2 pos = Vec2(nodePositions[l][i].x, nodePositions[l][i].y);
-                renderer.draw2dPoint(pos,color,6);
+
+                // Draw node with size based on activation magnitude
+                float size = 4.0f + 2.0f * fabs(clampedAct);
+                renderer.draw2dPoint(pos, color, size);
             }
+        }
+
+        // Draw layer labels for clarity
+        renderer.setColor(Vec3(0.8f, 0.8f, 0.8f));
+        for (int l = 0; l < numLayers && !nodePositions[l].empty(); l++) {
+            std::string label = (l == 0) ? "Input" : (l == numLayers - 1) ? "Output" : "Hidden";
+            float x = nodePositions[l][0].x;
+            float y = topLeft.y - 20;
+            renderer.drawString(label, x - 15, y);
         }
     }
 
