@@ -1,189 +1,8 @@
-﻿#pragma once
+#include <computeGeom/scalarField.h>
 
-#include <vector>
-#include <algorithm>
-#include <cmath>
-#include <iostream>
-#include <fstream>
-#include <iomanip>
-#include <memory>
-#include <stdexcept>
-#include "../include/alice2.h"
-
-using namespace alice2;
-
-// Forward declarations
-struct ContourData;
-
-// Utility functions for scalar field operations
-namespace ScalarFieldUtils {
-    inline Vec3 vec_max(const Vec3& a, const Vec3& b) {
-        return Vec3(std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z));
-    }
-
-    inline float smooth_min(float a, float b, float k) {
-        float r = exp2(-a / k) + exp2(-b / k);
-        return -k * log2(r);
-    }
-
-    inline float smooth_min_weighted(float a, float b, float k, float wt){
-        //   (1-wt)*exp(-a/k) + wt*exp(-b/k)
-        float termA = (1.0f - wt) * exp2(-a / k);
-        float termB = wt * exp2(-b / k);
-        float r = termA + termB;
-
-        // Avoid log(0)
-        if (r < 1e-14f)
-        {
-            // Return something large negative or handle underflow
-            return -1e6f;
-        }
-
-        // Weighted exponential SMin formula:
-        return -k * log2(r);
-    }
-
-    inline float map_range(float value, float inputMin, float inputMax, float outputMin, float outputMax) {
-        return outputMin + (outputMax - outputMin) * ((value - inputMin) / (inputMax - inputMin));
-    }
-
-    inline float lerp(float start, float stop, float amt) {
-        return start + (stop - start) * amt;
-    }
-
-    inline float distance_to(const Vec3& a, const Vec3& b) {
-        return (a - b).length();
-    }
-
-    inline void get_jet_color(float value, float& r, float& g, float& b) {
-        value = clamp(value, -1.0f, 1.0f);
-        float normalized = (value + 1.0f) * 0.5f;
-        float fourValue = 4.0f * normalized;
-
-        r = clamp(std::min(fourValue - 1.5f, -fourValue + 4.5f), 0.0f, 1.0f);
-        g = clamp(std::min(fourValue - 0.5f, -fourValue + 3.5f), 0.0f, 1.0f);
-        b = clamp(std::min(fourValue + 0.5f, -fourValue + 2.5f), 0.0f, 1.0f);
-    }
-}
-
-// Contour data structure
-struct ContourData {
-    std::vector<std::vector<Vec3>> contours;
-    std::vector<std::pair<Vec3, Vec3>> line_segments;
-    float threshold;
-
-    ContourData() : threshold(0.0f) {}
-    explicit ContourData(float t) : threshold(t) {}
-};
-
-/**
- * Modern C++ 2D Scalar Field class with RAII principles
- * Supports dynamic resolution, proper memory management, and clean API
- */
-class ScalarField2D {
-private:
-    // Grid properties
-    Vec3 m_min_bounds;
-    Vec3 m_max_bounds;
-    int m_res_x;
-    int m_res_y;
-
-    // Dynamic data storage
-    std::vector<Vec3> m_grid_points;
-    std::vector<float> m_field_values;
-    std::vector<float> m_normalized_values;
-    std::vector<Vec3> m_gradient_field;
-
-    // Cached contour data
-    mutable std::vector<ContourData> m_cached_contours;
-
-    // Helper methods
-    inline int get_index(int x, int y) const {
-        return y * m_res_x + x;
-    }
-
-    inline std::pair<int, int> get_coords(int index) const {
-        return {index % m_res_x, index / m_res_x};
-    }
-
-    inline bool is_valid_coords(int x, int y) const {
-        return x >= 0 && x < m_res_x && y >= 0 && y < m_res_y;
-    }
-
-    void initialize_grid();
-    void normalize_field();
-
-public:
-    // Constructor with RAII principles
-    ScalarField2D(const Vec3& min_bb = Vec3(-75, -75, 0),
-                  const Vec3& max_bb = Vec3(75, 75, 0),
-                  int res_x = 100,
-                  int res_y = 100);
-
-    // Destructor
-    ~ScalarField2D() = default;
-
-    // Copy constructor and assignment operator
-    ScalarField2D(const ScalarField2D& other);
-    ScalarField2D& operator=(const ScalarField2D& other);
-
-    // Move constructor and assignment operator
-    ScalarField2D(ScalarField2D&& other) noexcept;
-    ScalarField2D& operator=(ScalarField2D&& other) noexcept;
-
-    // Getter/Setter methods
-    const std::vector<Vec3>& get_points() const { return m_grid_points; }
-    const std::vector<float>& get_values() const { return m_field_values; }
-    void set_values(const std::vector<float>& values);
-    std::pair<int, int> get_resolution() const { return {m_res_x, m_res_y}; }
-    std::pair<Vec3, Vec3> get_bounds() const { return {m_min_bounds, m_max_bounds}; }
-
-    // Field generation methods (snake_case naming)
-    void clear_field();
-    float get_scalar_circle(const Vec3& center, float radius) const;
-    float get_scalar_square(const Vec3& center, const Vec3& half_size, float angle_radians) const;
-    float get_scalar_line(const Vec3& start, const Vec3& end, float thickness) const;
-    float get_scalar_polygon(const std::vector<Vec3>& vertices) const;
-    float get_scalar_voronoi(const std::vector<Vec3>& sites, const Vec3& query_point) const;
-
-    // Apply scalar functions to entire field
-    void apply_scalar_circle(const Vec3& center, float radius);
-    void apply_scalar_rect(const Vec3& center, const Vec3& half_size, float angle_radians);
-    void apply_scalar_line(const Vec3& start, const Vec3& end, float thickness);
-    void apply_scalar_polygon(const std::vector<Vec3>& vertices);
-    void apply_scalar_voronoi(const std::vector<Vec3>& sites);
-
-    // Boolean operations (snake_case naming)
-    void boolean_union(const ScalarField2D& other);
-    void boolean_intersect(const ScalarField2D& other);
-    void boolean_subtract(const ScalarField2D& other);
-    void boolean_difference(const ScalarField2D& other);
-    void boolean_smin(const ScalarField2D& other, float smoothing = 1.0f);
-    void boolean_smin_weighted(const ScalarField2D& other, float smoothing = 1.0f, float wt = 0.5f);
-
-    // Interpolation
-    void interpolate(const ScalarField2D& other, float t);
-
-    // Analysis methods
-    ContourData get_contours(float threshold) const;
-    std::vector<Vec3> get_gradient() const;
-
-    // Rendering methods
-    void draw_points(Renderer& renderer, int step = 4) const;
-    void draw_values(Renderer& renderer, int step = 8) const;
-
-    // Legacy compatibility methods (deprecated)
-    void addVoronoi(const std::vector<Vec3>& sites) { apply_scalar_voronoi(sites); }
-    void addCircleSDF(const Vec3& center, float radius) { apply_scalar_circle(center, radius); }
-    void addOrientedRectSDF(const Vec3& center, const Vec3& half_size, float angle) { apply_scalar_rect(center, half_size, angle); }
-    void clearField() { clear_field(); }
-    void drawFieldPoints(Renderer& renderer, bool debug = false) const { draw_points(renderer); }
-    void drawIsocontours(Renderer& renderer, float threshold) const;
-    void normalise() { normalize_field(); }
-};
 
 // Implementation of key methods
-inline ScalarField2D::ScalarField2D(const Vec3& min_bb, const Vec3& max_bb, int res_x, int res_y)
+ScalarField2D::ScalarField2D(const Vec3& min_bb, const Vec3& max_bb, int res_x, int res_y)
     : m_min_bounds(min_bb), m_max_bounds(max_bb), m_res_x(res_x), m_res_y(res_y) {
     if (res_x <= 0 || res_y <= 0) {
         throw std::invalid_argument("Resolution must be positive");
@@ -198,14 +17,14 @@ inline ScalarField2D::ScalarField2D(const Vec3& min_bb, const Vec3& max_bb, int 
     initialize_grid();
 }
 
-inline ScalarField2D::ScalarField2D(const ScalarField2D& other)
+ScalarField2D::ScalarField2D(const ScalarField2D& other)
     : m_min_bounds(other.m_min_bounds), m_max_bounds(other.m_max_bounds)
     , m_res_x(other.m_res_x), m_res_y(other.m_res_y)
     , m_grid_points(other.m_grid_points), m_field_values(other.m_field_values)
     , m_normalized_values(other.m_normalized_values), m_gradient_field(other.m_gradient_field) {
 }
 
-inline ScalarField2D& ScalarField2D::operator=(const ScalarField2D& other) {
+ScalarField2D& ScalarField2D::operator=(const ScalarField2D& other) {
     if (this != &other) {
         m_min_bounds = other.m_min_bounds;
         m_max_bounds = other.m_max_bounds;
@@ -219,7 +38,7 @@ inline ScalarField2D& ScalarField2D::operator=(const ScalarField2D& other) {
     return *this;
 }
 
-inline ScalarField2D::ScalarField2D(ScalarField2D&& other) noexcept
+ScalarField2D::ScalarField2D(ScalarField2D&& other) noexcept
     : m_min_bounds(std::move(other.m_min_bounds)), m_max_bounds(std::move(other.m_max_bounds))
     , m_res_x(other.m_res_x), m_res_y(other.m_res_y)
     , m_grid_points(std::move(other.m_grid_points)), m_field_values(std::move(other.m_field_values))
@@ -227,7 +46,7 @@ inline ScalarField2D::ScalarField2D(ScalarField2D&& other) noexcept
     other.m_res_x = other.m_res_y = 0;
 }
 
-inline ScalarField2D& ScalarField2D::operator=(ScalarField2D&& other) noexcept {
+ScalarField2D& ScalarField2D::operator=(ScalarField2D&& other) noexcept {
     if (this != &other) {
         m_min_bounds = std::move(other.m_min_bounds);
         m_max_bounds = std::move(other.m_max_bounds);
@@ -243,7 +62,7 @@ inline ScalarField2D& ScalarField2D::operator=(ScalarField2D&& other) noexcept {
 }
 
 // Helper method implementations
-inline void ScalarField2D::initialize_grid() {
+void ScalarField2D::initialize_grid() {
     m_grid_points.clear();
     m_grid_points.reserve(m_res_x * m_res_y);
 
@@ -260,7 +79,7 @@ inline void ScalarField2D::initialize_grid() {
     }
 }
 
-inline void ScalarField2D::normalize_field() {
+void ScalarField2D::normalize_field() {
     if (m_field_values.empty()) return;
 
     // find extrema
@@ -282,14 +101,14 @@ inline void ScalarField2D::normalize_field() {
     }
 }
 
-inline void ScalarField2D::clear_field() {
+void ScalarField2D::clear_field() {
     std::fill(m_field_values.begin(), m_field_values.end(), 0.0f);
     std::fill(m_normalized_values.begin(), m_normalized_values.end(), 0.0f);
 }
 
 // Scalar function implementations
 
-inline void ScalarField2D::apply_scalar_circle(const Vec3& center, float radius) {
+void ScalarField2D::apply_scalar_circle(const Vec3& center, float radius) {
     for (int j = 0; j < m_res_y; ++j) {
         for (int i = 0; i < m_res_x; ++i) {
             const int idx = get_index(i, j);
@@ -301,7 +120,7 @@ inline void ScalarField2D::apply_scalar_circle(const Vec3& center, float radius)
     }
 }
 
-inline void ScalarField2D::apply_scalar_rect(const Vec3& center, const Vec3& half_size, float angle_radians) {
+void ScalarField2D::apply_scalar_rect(const Vec3& center, const Vec3& half_size, float angle_radians) {
     const float cos_angle = std::cos(angle_radians);
     const float sin_angle = std::sin(angle_radians);
 
@@ -328,7 +147,7 @@ inline void ScalarField2D::apply_scalar_rect(const Vec3& center, const Vec3& hal
     }
 }
 
-inline void ScalarField2D::apply_scalar_voronoi(const std::vector<Vec3>& sites) {
+void ScalarField2D::apply_scalar_voronoi(const std::vector<Vec3>& sites) {
     for (int j = 0; j < m_res_y; ++j) {
         for (int i = 0; i < m_res_x; ++i) {
             const int idx = get_index(i, j);
@@ -354,7 +173,7 @@ inline void ScalarField2D::apply_scalar_voronoi(const std::vector<Vec3>& sites) 
 }
 
 // Boolean operations
-inline void ScalarField2D::boolean_union(const ScalarField2D& other) {
+void ScalarField2D::boolean_union(const ScalarField2D& other) {
     if (m_field_values.size() != other.m_field_values.size()) {
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
@@ -364,7 +183,7 @@ inline void ScalarField2D::boolean_union(const ScalarField2D& other) {
     }
 }
 
-inline void ScalarField2D::boolean_intersect(const ScalarField2D& other) {
+void ScalarField2D::boolean_intersect(const ScalarField2D& other) {
     if (m_field_values.size() != other.m_field_values.size()) {
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
@@ -374,7 +193,7 @@ inline void ScalarField2D::boolean_intersect(const ScalarField2D& other) {
     }
 }
 
-inline void ScalarField2D::boolean_subtract(const ScalarField2D& other) {
+void ScalarField2D::boolean_subtract(const ScalarField2D& other) {
     if (m_field_values.size() != other.m_field_values.size()) {
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
@@ -384,7 +203,7 @@ inline void ScalarField2D::boolean_subtract(const ScalarField2D& other) {
     }
 }
 
-inline void ScalarField2D::boolean_smin(const ScalarField2D& other, float smoothing) {
+void ScalarField2D::boolean_smin(const ScalarField2D& other, float smoothing) {
     if (m_field_values.size() != other.m_field_values.size()) {
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
@@ -394,7 +213,7 @@ inline void ScalarField2D::boolean_smin(const ScalarField2D& other, float smooth
     }
 }
 
-inline void ScalarField2D::boolean_smin_weighted(const ScalarField2D& other, float smoothing, float wt) {
+void ScalarField2D::boolean_smin_weighted(const ScalarField2D& other, float smoothing, float wt) {
     if (m_field_values.size() != other.m_field_values.size()) {
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
@@ -404,7 +223,7 @@ inline void ScalarField2D::boolean_smin_weighted(const ScalarField2D& other, flo
     }
 }
 
-inline void ScalarField2D::interpolate(const ScalarField2D& other, float t) {
+void ScalarField2D::interpolate(const ScalarField2D& other, float t) {
     if (m_field_values.size() != other.m_field_values.size()) {
         throw std::invalid_argument("Field dimensions must match for interpolation");
     }
@@ -415,7 +234,7 @@ inline void ScalarField2D::interpolate(const ScalarField2D& other, float t) {
 }
 
 // Rendering methods
-inline void ScalarField2D::draw_points(Renderer& renderer, int step) const {
+void ScalarField2D::draw_points(Renderer& renderer, int step) const {
     // We need to cast away const to normalize - this is a design compromise
     const_cast<ScalarField2D*>(this)->normalize_field();
 
@@ -433,7 +252,7 @@ inline void ScalarField2D::draw_points(Renderer& renderer, int step) const {
     }
 }
 
-inline void ScalarField2D::draw_values(Renderer& renderer, int step) const {
+void ScalarField2D::draw_values(Renderer& renderer, int step) const {
     for (int j = 0; j < m_res_y; j += step) {
         for (int i = 0; i < m_res_x; i += step) {
             const int idx = get_index(i, j);
@@ -447,7 +266,7 @@ inline void ScalarField2D::draw_values(Renderer& renderer, int step) const {
 }
 
 // Legacy compatibility method for contour drawing
-inline void ScalarField2D::drawIsocontours(Renderer& renderer, float threshold) const {
+void ScalarField2D::drawIsocontours(Renderer& renderer, float threshold) const {
     const ContourData contours = get_contours(threshold);
 
     for (const auto& segment : contours.line_segments) {
@@ -456,7 +275,7 @@ inline void ScalarField2D::drawIsocontours(Renderer& renderer, float threshold) 
 }
 
 // Analysis methods - simplified implementations
-inline ContourData ScalarField2D::get_contours(float threshold) const {
+ContourData ScalarField2D::get_contours(float threshold) const {
     ContourData result(threshold);
 
     // Simple marching squares implementation for contour extraction
@@ -502,7 +321,7 @@ inline ContourData ScalarField2D::get_contours(float threshold) const {
     return result;
 }
 
-inline std::vector<Vec3> ScalarField2D::get_gradient() const {
+std::vector<Vec3> ScalarField2D::get_gradient() const {
     std::vector<Vec3> gradient(m_field_values.size(), Vec3(0, 0, 0));
 
     for (int j = 1; j < m_res_y - 1; ++j) {
@@ -524,7 +343,7 @@ inline std::vector<Vec3> ScalarField2D::get_gradient() const {
 }
 
 // Additional helper methods for missing functionality
-inline void ScalarField2D::apply_scalar_line(const Vec3& start, const Vec3& end, float thickness) {
+void ScalarField2D::apply_scalar_line(const Vec3& start, const Vec3& end, float thickness) {
     // Simple line SDF implementation
     for (int j = 0; j < m_res_y; ++j) {
         for (int i = 0; i < m_res_x; ++i) {
@@ -541,7 +360,7 @@ inline void ScalarField2D::apply_scalar_line(const Vec3& start, const Vec3& end,
     }
 }
 
-inline void ScalarField2D::apply_scalar_polygon(const std::vector<Vec3>& vertices) {
+void ScalarField2D::apply_scalar_polygon(const std::vector<Vec3>& vertices) {
     // Simple polygon SDF - placeholder implementation
     if (vertices.empty()) return;
 
@@ -562,14 +381,14 @@ inline void ScalarField2D::apply_scalar_polygon(const std::vector<Vec3>& vertice
     }
 }
 
-inline void ScalarField2D::set_values(const std::vector<float>& values) {
+void ScalarField2D::set_values(const std::vector<float>& values) {
     if (values.size() != m_field_values.size()) {
         throw std::invalid_argument("Value array size must match field resolution");
     }
     m_field_values = values;
 }
 
-inline void ScalarField2D::boolean_difference(const ScalarField2D& other) {
+void ScalarField2D::boolean_difference(const ScalarField2D& other) {
     // Difference is A - B = A ∩ ¬B = max(A, -B)
     boolean_subtract(other);
 }

@@ -6,9 +6,9 @@
 #define __MAIN__
 #ifdef __MAIN__
 
-#include "../include/alice2.h"
-#include "../src/sketches/SketchRegistry.h"
-#include "scalarField.h"
+#include <alice2.h>
+#include <sketches/SketchRegistry.h>
+#include <computeGeom/scalarField.h>
 #include <array>
 
 using namespace alice2;

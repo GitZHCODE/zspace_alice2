@@ -4,8 +4,8 @@
 #define __MAIN__
 #ifdef __MAIN__
 
-#include "../include/alice2.h"
-#include "../src/sketches/SketchRegistry.h"
+#include <alice2.h>
+#include <sketches/SketchRegistry.h>
 
 using namespace alice2;
 
