@@ -101,7 +101,7 @@ public:
 
     // Sketch lifecycle
     void setup() override {
-        scene().setBackgroundColor(Vec3(0.05f, 0.05f, 0.1f));
+        scene().setBackgroundColor(Vec3(0.95f, 0.95f, 0.95f));
         scene().setShowGrid(false);
         scene().setGridSize(25.0f);
         scene().setGridDivisions(4);

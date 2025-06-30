@@ -15,11 +15,14 @@ class SimpleScalarFieldSketch : public ISketch {
 private:
     ScalarField2D m_scalarField;
     ScalarField2D m_scalarField_other;
-    std::vector<std::pair<Vec3, Vec3>> m_isolines;
+    std::vector<ContourData> m_isolines;
     float m_time;
     bool m_fieldGenerated;
     bool d_iso = false;
     bool d_values = false;
+
+    float contour_spacing = 0.0f;
+
 
 public:
     SimpleScalarFieldSketch() 
@@ -91,8 +94,21 @@ public:
         m_scalarField.apply_scalar_rect(Vec3(0, 0, 0), Vec3(x, y, 0), 0.0f);
         m_scalarField.boolean_smin(m_scalarField_other, 0.2f);
 
-        m_scalarField.boolean_union(m_scalarField_other);
-        m_scalarField.boolean_subtract(m_scalarField_other);
+        //m_scalarField.boolean_union(m_scalarField_other);
+        //m_scalarField.boolean_subtract(m_scalarField_other);
+
+
+        if (m_isolines.size() < 100 && (int)deltaTime%10 == 0)
+        {
+            ContourData contour = m_scalarField.get_contours(0.0f);
+            for (auto &line : contour.line_segments)
+            {
+                line.first = Vec3(line.first.x, line.first.y, line.first.z + contour_spacing);
+                line.second = Vec3(line.second.x, line.second.y, line.second.z + contour_spacing);
+            }
+            m_isolines.push_back(contour);
+            contour_spacing += 0.2f;
+        }
     }
 
     void draw(Renderer& renderer, Camera& camera) override {
@@ -116,10 +132,16 @@ public:
 
         if(d_iso)
         {
-            for (int i = 0; i < 10; ++i) {
-                m_scalarField.drawIsocontours(renderer, 0.5f + i * i * 0.5f);
+            // for (int i = 0; i < 10; ++i) {
+            //     m_scalarField.drawIsocontours(renderer, 0.5f + i * i * 0.5f);
+            // }
+            //m_scalarField.drawIsocontours(renderer, 0.5f);
+
+            for(auto &contour : m_isolines)
+            {
+                for(auto& line : contour.line_segments)
+                renderer.drawLine(line.first,line.second, Vec3(1.0f, 1.0f, 1.0f), 2.0f);
             }
-            // m_scalarField.drawIsocontours(renderer, 0.5f);
         }
 
 

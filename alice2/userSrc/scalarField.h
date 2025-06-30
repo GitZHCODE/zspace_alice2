@@ -132,6 +132,7 @@ public:
     ScalarField2D& operator=(ScalarField2D&& other) noexcept;
 
     // Getter/Setter methods
+    const std::vector<Vec3>& get_points() const { return m_grid_points; }
     const std::vector<float>& get_values() const { return m_field_values; }
     void set_values(const std::vector<float>& values);
     std::pair<int, int> get_resolution() const { return {m_res_x, m_res_y}; }
@@ -262,13 +263,22 @@ inline void ScalarField2D::initialize_grid() {
 inline void ScalarField2D::normalize_field() {
     if (m_field_values.empty()) return;
 
-    auto [min_it, max_it] = std::minmax_element(m_field_values.begin(), m_field_values.end());
+    // find extrema
+    auto [min_it, max_it] = std::minmax_element(m_field_values.begin(),
+                                                 m_field_values.end());
     const float min_val = *min_it;
     const float max_val = *max_it;
-    const float range = std::max(max_val - min_val, 1e-6f);
+    const float range   = std::max(max_val - min_val, 1e-6f);
 
-    for (size_t i = 0; i < m_field_values.size(); ++i) {
-        m_normalized_values[i] = (m_field_values[i] - min_val) / range;
+    // do we need a [-1,1] stretch?
+    const bool use_bipolar = (min_val < 0.0f);
+
+    for (size_t i = 0, n = m_field_values.size(); i < n; ++i) {
+        // first normalize into [0,1]
+        float t = (m_field_values[i] - min_val) / range;
+        // if any value was negative, remap [0,1] -> [-1,1]
+        m_normalized_values[i] = use_bipolar ? (t * 2.0f - 1.0f)
+                                              :  t;
     }
 }
 
