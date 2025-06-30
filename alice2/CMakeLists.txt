@@ -219,6 +219,13 @@ if(WIN32)
     else()
         message(STATUS "Using static GLFW library - no DLL copy needed")
     endif()
+
+    # Copy shader files to output directory
+    add_custom_command(TARGET alice2 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:alice2>/src/shaders
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/src/shaders $<TARGET_FILE_DIR:alice2>/src/shaders
+        COMMENT "Copying shader files to output directory")
 endif()
 
 # Install targets for distribution

@@ -8,7 +8,9 @@
 #include <iomanip>
 #include <memory>
 #include <stdexcept>
+#include <chrono>
 #include "../include/alice2.h"
+#include <GL/glew.h>
 
 using namespace alice2;
 
@@ -97,6 +99,13 @@ private:
     // Cached contour data
     mutable std::vector<ContourData> m_cached_contours;
 
+    // GPU acceleration support
+    static std::shared_ptr<alice2::ShaderManager> s_shaderManager;
+    static bool s_gpuEnabled;
+    mutable GLuint m_gpuBuffer;  // Single persistent GPU buffer
+    mutable bool m_gpuBufferInitialized;
+    mutable bool m_dataOnGPU;    // Track if current data is on GPU
+
     // Helper methods
     inline int get_index(int x, int y) const {
         return y * m_res_x + x;
@@ -112,6 +121,15 @@ private:
 
     void initialize_grid();
     void normalize_field();
+
+    // GPU-related helper methods
+    void initializeGPUBuffers() const;
+    void cleanupGPUBuffers() const;
+    bool performGPUBooleanOperation(const ScalarField2D& other, int operation,
+                                   float smoothing = 1.0f, float weight = 0.5f) const;
+    void uploadToGPU() const;
+    void downloadFromGPU() const;
+    void ensureCPUData() const;  // Download from GPU if needed
 
 public:
     // Constructor with RAII principles
@@ -171,6 +189,18 @@ public:
     // Rendering methods
     void draw_points(Renderer& renderer, int step = 4) const;
     void draw_values(Renderer& renderer, int step = 8) const;
+
+    // GPU acceleration methods
+    static void initializeGPU(std::shared_ptr<alice2::ShaderManager> shaderManager);
+    static void shutdownGPU();
+    static bool isGPUEnabled() { return s_gpuEnabled; }
+
+    // CPU fallback methods (for compatibility and testing)
+    void boolean_union_fallback(const ScalarField2D& other);
+    void boolean_intersect_fallback(const ScalarField2D& other);
+    void boolean_subtract_fallback(const ScalarField2D& other);
+    void boolean_smin_fallback(const ScalarField2D& other, float smoothing = 1.0f);
+    void boolean_smin_weighted_fallback(const ScalarField2D& other, float smoothing = 1.0f, float wt = 0.5f);
 
     // Legacy compatibility methods (deprecated)
     void addVoronoi(const std::vector<Vec3>& sites) { apply_scalar_voronoi(sites); }

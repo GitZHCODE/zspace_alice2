@@ -12,6 +12,7 @@
 #include "../src/core/Renderer.h"
 #include "../src/core/Camera.h"
 #include "../src/core/Transform.h"
+#include "../src/core/ShaderManager.h"
 
 // Object includes
 #include "../src/objects/SceneObject.h"

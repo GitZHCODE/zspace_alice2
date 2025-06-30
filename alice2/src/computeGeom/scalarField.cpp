@@ -1,9 +1,14 @@
 #include <computeGeom/scalarField.h>
+#include <core/ShaderManager.h>
 
+// Static member definitions
+std::shared_ptr<ShaderManager> ScalarField2D::s_shaderManager = nullptr;
+bool ScalarField2D::s_gpuEnabled = false;
 
 // Implementation of key methods
 ScalarField2D::ScalarField2D(const Vec3& min_bb, const Vec3& max_bb, int res_x, int res_y)
-    : m_min_bounds(min_bb), m_max_bounds(max_bb), m_res_x(res_x), m_res_y(res_y) {
+    : m_min_bounds(min_bb), m_max_bounds(max_bb), m_res_x(res_x), m_res_y(res_y),
+      m_gpuBuffer(0), m_gpuBufferInitialized(false), m_dataOnGPU(false) {
     if (res_x <= 0 || res_y <= 0) {
         throw std::invalid_argument("Resolution must be positive");
     }
@@ -21,11 +26,15 @@ ScalarField2D::ScalarField2D(const ScalarField2D& other)
     : m_min_bounds(other.m_min_bounds), m_max_bounds(other.m_max_bounds)
     , m_res_x(other.m_res_x), m_res_y(other.m_res_y)
     , m_grid_points(other.m_grid_points), m_field_values(other.m_field_values)
-    , m_normalized_values(other.m_normalized_values), m_gradient_field(other.m_gradient_field) {
+    , m_normalized_values(other.m_normalized_values), m_gradient_field(other.m_gradient_field)
+    , m_gpuBuffer(0), m_gpuBufferInitialized(false), m_dataOnGPU(false) {
 }
 
 ScalarField2D& ScalarField2D::operator=(const ScalarField2D& other) {
     if (this != &other) {
+        // Clean up existing GPU buffers
+        cleanupGPUBuffers();
+
         m_min_bounds = other.m_min_bounds;
         m_max_bounds = other.m_max_bounds;
         m_res_x = other.m_res_x;
@@ -34,6 +43,11 @@ ScalarField2D& ScalarField2D::operator=(const ScalarField2D& other) {
         m_field_values = other.m_field_values;
         m_normalized_values = other.m_normalized_values;
         m_gradient_field = other.m_gradient_field;
+
+        // Reset GPU buffer state
+        m_gpuBuffer = 0;
+        m_gpuBufferInitialized = false;
+        m_dataOnGPU = false;
     }
     return *this;
 }
@@ -42,12 +56,20 @@ ScalarField2D::ScalarField2D(ScalarField2D&& other) noexcept
     : m_min_bounds(std::move(other.m_min_bounds)), m_max_bounds(std::move(other.m_max_bounds))
     , m_res_x(other.m_res_x), m_res_y(other.m_res_y)
     , m_grid_points(std::move(other.m_grid_points)), m_field_values(std::move(other.m_field_values))
-    , m_normalized_values(std::move(other.m_normalized_values)), m_gradient_field(std::move(other.m_gradient_field)) {
+    , m_normalized_values(std::move(other.m_normalized_values)), m_gradient_field(std::move(other.m_gradient_field))
+    , m_gpuBuffer(other.m_gpuBuffer), m_gpuBufferInitialized(other.m_gpuBufferInitialized)
+    , m_dataOnGPU(other.m_dataOnGPU) {
     other.m_res_x = other.m_res_y = 0;
+    other.m_gpuBuffer = 0;
+    other.m_gpuBufferInitialized = false;
+    other.m_dataOnGPU = false;
 }
 
 ScalarField2D& ScalarField2D::operator=(ScalarField2D&& other) noexcept {
     if (this != &other) {
+        // Clean up existing GPU buffers
+        cleanupGPUBuffers();
+
         m_min_bounds = std::move(other.m_min_bounds);
         m_max_bounds = std::move(other.m_max_bounds);
         m_res_x = other.m_res_x;
@@ -56,7 +78,16 @@ ScalarField2D& ScalarField2D::operator=(ScalarField2D&& other) noexcept {
         m_field_values = std::move(other.m_field_values);
         m_normalized_values = std::move(other.m_normalized_values);
         m_gradient_field = std::move(other.m_gradient_field);
+
+        // Move GPU buffer state
+        m_gpuBuffer = other.m_gpuBuffer;
+        m_gpuBufferInitialized = other.m_gpuBufferInitialized;
+        m_dataOnGPU = other.m_dataOnGPU;
+
         other.m_res_x = other.m_res_y = 0;
+        other.m_gpuBuffer = 0;
+        other.m_gpuBufferInitialized = false;
+        other.m_dataOnGPU = false;
     }
     return *this;
 }
@@ -172,15 +203,24 @@ void ScalarField2D::apply_scalar_voronoi(const std::vector<Vec3>& sites) {
     }
 }
 
-// Boolean operations
+// Boolean operations with GPU acceleration
 void ScalarField2D::boolean_union(const ScalarField2D& other) {
     if (m_field_values.size() != other.m_field_values.size()) {
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
 
-    for (size_t i = 0; i < m_field_values.size(); ++i) {
-        m_field_values[i] = std::min(m_field_values[i], other.m_field_values[i]);
+    // Try GPU acceleration first, fall back to CPU if it fails
+    if (s_gpuEnabled && performGPUBooleanOperation(other, 0)) {
+        // GPU operation succeeded - data is now on GPU
+        // Only download if we need CPU access immediately
+        return;
     }
+
+    // CPU fallback - ensure we have CPU data
+    if (m_dataOnGPU) {
+        downloadFromGPU();
+    }
+    boolean_union_fallback(other);
 }
 
 void ScalarField2D::boolean_intersect(const ScalarField2D& other) {
@@ -188,9 +228,13 @@ void ScalarField2D::boolean_intersect(const ScalarField2D& other) {
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
 
-    for (size_t i = 0; i < m_field_values.size(); ++i) {
-        m_field_values[i] = std::max(m_field_values[i], other.m_field_values[i]);
+    // Try GPU acceleration first, fall back to CPU if it fails
+    if (s_gpuEnabled && performGPUBooleanOperation(other, 1)) {
+        return; // GPU operation succeeded
     }
+
+    // CPU fallback
+    boolean_intersect_fallback(other);
 }
 
 void ScalarField2D::boolean_subtract(const ScalarField2D& other) {
@@ -198,9 +242,13 @@ void ScalarField2D::boolean_subtract(const ScalarField2D& other) {
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
 
-    for (size_t i = 0; i < m_field_values.size(); ++i) {
-        m_field_values[i] = std::max(m_field_values[i], -other.m_field_values[i]);
+    // Try GPU acceleration first, fall back to CPU if it fails
+    if (s_gpuEnabled && performGPUBooleanOperation(other, 2)) {
+        return; // GPU operation succeeded
     }
+
+    // CPU fallback
+    boolean_subtract_fallback(other);
 }
 
 void ScalarField2D::boolean_smin(const ScalarField2D& other, float smoothing) {
@@ -208,9 +256,13 @@ void ScalarField2D::boolean_smin(const ScalarField2D& other, float smoothing) {
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
 
-    for (size_t i = 0; i < m_field_values.size(); ++i) {
-        m_field_values[i] = ScalarFieldUtils::smooth_min(m_field_values[i], other.m_field_values[i], smoothing);
+    // Try GPU acceleration first, fall back to CPU if it fails
+    if (s_gpuEnabled && performGPUBooleanOperation(other, 3, smoothing)) {
+        return; // GPU operation succeeded
     }
+
+    // CPU fallback
+    boolean_smin_fallback(other, smoothing);
 }
 
 void ScalarField2D::boolean_smin_weighted(const ScalarField2D& other, float smoothing, float wt) {
@@ -218,9 +270,13 @@ void ScalarField2D::boolean_smin_weighted(const ScalarField2D& other, float smoo
         throw std::invalid_argument("Field dimensions must match for boolean operations");
     }
 
-    for (size_t i = 0; i < m_field_values.size(); ++i) {
-        m_field_values[i] = ScalarFieldUtils::smooth_min_weighted(m_field_values[i], other.m_field_values[i], smoothing, wt);
+    // Try GPU acceleration first, fall back to CPU if it fails
+    if (s_gpuEnabled && performGPUBooleanOperation(other, 4, smoothing, wt)) {
+        return; // GPU operation succeeded
     }
+
+    // CPU fallback
+    boolean_smin_weighted_fallback(other, smoothing, wt);
 }
 
 void ScalarField2D::interpolate(const ScalarField2D& other, float t) {
@@ -391,4 +447,220 @@ void ScalarField2D::set_values(const std::vector<float>& values) {
 void ScalarField2D::boolean_difference(const ScalarField2D& other) {
     // Difference is A - B = A ∩ ¬B = max(A, -B)
     boolean_subtract(other);
+}
+
+// GPU acceleration methods
+void ScalarField2D::initializeGPU(std::shared_ptr<alice2::ShaderManager> shaderManager) {
+    s_shaderManager = shaderManager;
+    s_gpuEnabled = false;
+
+    if (!s_shaderManager) {
+        std::cout << "ScalarField2D: No shader manager provided" << std::endl;
+        return;
+    }
+
+    if (!s_shaderManager->isComputeShaderSupported()) {
+        std::cout << "ScalarField2D: Compute shaders not supported on this system" << std::endl;
+        return;
+    }
+
+    std::cout << "ScalarField2D: Attempting to load compute shader..." << std::endl;
+
+    // Load the compute shader (try multiple possible paths)
+    std::vector<std::string> possiblePaths = {
+        "src/shaders/scalar_field_ops.comp",
+        "alice2/src/shaders/scalar_field_ops.comp",
+        "../src/shaders/scalar_field_ops.comp",
+        "./src/shaders/scalar_field_ops.comp"
+    };
+
+    std::shared_ptr<alice2::ShaderProgram> shader = nullptr;
+    for (const auto& path : possiblePaths) {
+        std::cout << "ScalarField2D: Trying to load shader from: " << path << std::endl;
+
+        // Check if file exists
+        std::ifstream file(path);
+        if (!file.good()) {
+            std::cout << "ScalarField2D: File not found: " << path << std::endl;
+            continue;
+        }
+        file.close();
+
+        shader = s_shaderManager->loadComputeShader("scalar_field_ops", path);
+        if (shader) {
+            std::cout << "ScalarField2D: Successfully loaded compute shader from: " << path << std::endl;
+            break;
+        } else {
+            std::cout << "ScalarField2D: Failed to compile shader from: " << path << std::endl;
+        }
+    }
+    if (!shader) {
+        std::cout << "ScalarField2D: Failed to load compute shader" << std::endl;
+        return;
+    }
+
+    s_gpuEnabled = true;
+    std::cout << "ScalarField2D: GPU acceleration enabled" << std::endl;
+}
+
+void ScalarField2D::shutdownGPU() {
+    s_gpuEnabled = false;
+    s_shaderManager = nullptr;
+}
+
+void ScalarField2D::initializeGPUBuffers() const {
+    if (m_gpuBufferInitialized || !s_gpuEnabled) {
+        return;
+    }
+
+    const size_t bufferSize = m_field_values.size() * sizeof(float);
+
+    // Create single persistent GPU buffer
+    glGenBuffers(1, &m_gpuBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_gpuBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, bufferSize, m_field_values.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    m_gpuBufferInitialized = true;
+    m_dataOnGPU = true;
+}
+
+void ScalarField2D::cleanupGPUBuffers() const {
+    if (!m_gpuBufferInitialized) {
+        return;
+    }
+
+    if (m_gpuBuffer != 0) {
+        glDeleteBuffers(1, &m_gpuBuffer);
+        m_gpuBuffer = 0;
+    }
+
+    m_gpuBufferInitialized = false;
+    m_dataOnGPU = false;
+}
+
+bool ScalarField2D::performGPUBooleanOperation(const ScalarField2D& other, int operation,
+                                              float smoothing, float weight) const {
+    if (!s_gpuEnabled || !s_shaderManager) {
+        return false;
+    }
+
+    auto shader = s_shaderManager->getShader("scalar_field_ops");
+    if (!shader) {
+        return false;
+    }
+
+    // Ensure both fields have GPU buffers
+    initializeGPUBuffers();
+    const_cast<ScalarField2D&>(other).initializeGPUBuffers();
+
+    // Upload data to GPU only if not already there
+    if (!m_dataOnGPU) {
+        uploadToGPU();
+    }
+    if (!other.m_dataOnGPU) {
+        const_cast<ScalarField2D&>(other).uploadToGPU();
+    }
+
+    // Create temporary buffer for the other field's data
+    GLuint tempBuffer;
+    glGenBuffers(1, &tempBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, tempBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, m_field_values.size() * sizeof(float), nullptr, GL_DYNAMIC_COPY);
+
+    // Copy other field's data to temp buffer
+    glBindBuffer(GL_COPY_READ_BUFFER, other.m_gpuBuffer);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, tempBuffer);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, m_field_values.size() * sizeof(float));
+
+    // Bind buffers to shader (this = input A, other = input B, this = output)
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_gpuBuffer);      // Input A
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, tempBuffer);       // Input B
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, m_gpuBuffer);      // Output (overwrite A)
+
+    // Set uniforms
+    shader->use();
+    shader->setUniform("gridWidth", m_res_x);
+    shader->setUniform("gridHeight", m_res_y);
+    shader->setUniform("operation", operation);
+    shader->setUniform("smoothing", smoothing);
+    shader->setUniform("weight", weight);
+
+    // Dispatch compute shader
+    const int groupSizeX = 32;
+    const int groupSizeY = 32;
+    const int numGroupsX = (m_res_x + groupSizeX - 1) / groupSizeX;
+    const int numGroupsY = (m_res_y + groupSizeY - 1) / groupSizeY;
+
+    shader->dispatch(numGroupsX, numGroupsY, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    // Clean up temp buffer
+    glDeleteBuffers(1, &tempBuffer);
+
+    // Data is now on GPU, mark as such
+    m_dataOnGPU = true;
+
+    return true;
+}
+
+// CPU fallback implementations
+void ScalarField2D::boolean_union_fallback(const ScalarField2D& other) {
+    for (size_t i = 0; i < m_field_values.size(); ++i) {
+        m_field_values[i] = std::min(m_field_values[i], other.m_field_values[i]);
+    }
+}
+
+void ScalarField2D::boolean_intersect_fallback(const ScalarField2D& other) {
+    for (size_t i = 0; i < m_field_values.size(); ++i) {
+        m_field_values[i] = std::max(m_field_values[i], other.m_field_values[i]);
+    }
+}
+
+void ScalarField2D::boolean_subtract_fallback(const ScalarField2D& other) {
+    for (size_t i = 0; i < m_field_values.size(); ++i) {
+        m_field_values[i] = std::max(m_field_values[i], -other.m_field_values[i]);
+    }
+}
+
+void ScalarField2D::boolean_smin_fallback(const ScalarField2D& other, float smoothing) {
+    for (size_t i = 0; i < m_field_values.size(); ++i) {
+        m_field_values[i] = ScalarFieldUtils::smooth_min(m_field_values[i], other.m_field_values[i], smoothing);
+    }
+}
+
+void ScalarField2D::boolean_smin_weighted_fallback(const ScalarField2D& other, float smoothing, float wt) {
+    for (size_t i = 0; i < m_field_values.size(); ++i) {
+        m_field_values[i] = ScalarFieldUtils::smooth_min_weighted(m_field_values[i], other.m_field_values[i], smoothing, wt);
+    }
+}
+
+// GPU optimization methods
+void ScalarField2D::uploadToGPU() const {
+    if (!s_gpuEnabled || !m_gpuBufferInitialized) {
+        return;
+    }
+
+    const size_t bufferSize = m_field_values.size() * sizeof(float);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_gpuBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, bufferSize, m_field_values.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    m_dataOnGPU = true;
+}
+
+void ScalarField2D::downloadFromGPU() const {
+    if (!s_gpuEnabled || !m_gpuBufferInitialized || !m_dataOnGPU) {
+        return;
+    }
+
+    const size_t bufferSize = m_field_values.size() * sizeof(float);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_gpuBuffer);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, bufferSize, const_cast<float*>(m_field_values.data()));
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+void ScalarField2D::ensureCPUData() const {
+    if (m_dataOnGPU) {
+        downloadFromGPU();
+    }
 }
