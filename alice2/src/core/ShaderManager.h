@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <memory>
 #include <vector>
+#include "utils/Vector.h"
 
 namespace alice2 {
 
@@ -41,6 +42,7 @@ namespace alice2 {
         void use() const;
         void setUniform(const std::string& name, int value) const;
         void setUniform(const std::string& name, float value) const;
+        void setUniform(const std::string& name, const Vec3& value) const;
         void setUniform(const std::string& name, const float* values, int count) const;
         GLint getUniformLocation(const std::string& name) const;
 

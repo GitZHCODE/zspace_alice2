@@ -1,0 +1,59 @@
+#version 430
+
+// Minimal GPU Scalar Field Operations Compute Shader
+// Designed for educational purposes with focus on boolean union operations
+// Works with 100x100 grid system (-50 to 50 bounds) for consistency
+
+// Local work group size - optimized for GPU utilization
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+
+// Shader storage buffer objects for input and output data
+layout(std430, binding = 0) restrict buffer FieldABuffer {
+    float fieldA[];  // Input A and Output (in-place operation)
+};
+
+layout(std430, binding = 1) restrict readonly buffer FieldBBuffer {
+    float fieldB[];  // Input B (read-only)
+};
+
+layout(std430, binding = 2) restrict buffer ResultBuffer {
+    float result[];  // Same as fieldA for in-place operations
+};
+
+// Uniform parameters
+uniform int gridWidth;
+uniform int gridHeight;
+uniform int operation; // 0=union (only operation implemented for minimal version)
+
+// Boolean union operation - SDF minimum
+float booleanUnion(float a, float b) {
+    return min(a, b);
+}
+
+void main() {
+    // Get current thread's position in the grid
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    
+    // Bounds check - ensure we don't go outside the grid
+    if (coord.x >= gridWidth || coord.y >= gridHeight) {
+        return;
+    }
+    
+    // Calculate linear index (matching ScalarFieldGPU::get_index)
+    int index = coord.y * gridWidth + coord.x;
+    
+    // Additional bounds check for buffer access safety
+    if (index >= fieldA.length() || index >= fieldB.length() || index >= result.length()) {
+        return;
+    }
+    
+    // Get input values from both scalar fields
+    float valueA = fieldA[index];
+    float valueB = fieldB[index];
+    
+    // Perform boolean union operation (minimum for SDF)
+    float resultValue = booleanUnion(valueA, valueB);
+    
+    // Write result back to buffer
+    result[index] = resultValue;
+}

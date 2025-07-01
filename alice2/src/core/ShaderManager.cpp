@@ -51,6 +51,13 @@ namespace alice2 {
         }
     }
 
+    void ShaderProgram::setUniform(const std::string& name, const Vec3& value) const {
+        GLint location = getUniformLocation(name);
+        if (location != -1) {
+            glUniform3f(location, value.x, value.y, value.z);
+        }
+    }
+
     void ShaderProgram::setUniform(const std::string& name, const float* values, int count) const {
         GLint location = getUniformLocation(name);
         if (location != -1) {
