@@ -26,7 +26,9 @@ private:
     std::vector<Vec3> m_training_samples;
     std::vector<float> m_sdf_ground_truth;
     ContourData m_contours;
-    std::string path_polygon = "C://Users//taizhong_chen//source//repos//GitZHCODE//zspace_alice2//alice2//data/polygon__.txt";
+    float building_width = 30.0f;
+    float building_height = 40.0f;
+    std::string path_polygon = "C://Users//taizhong_chen//source//repos//GitZHCODE//zspace_alice2//alice2//data/PARCEL.txt";
 
     // Training parameters
     double m_learning_rate;
@@ -93,10 +95,16 @@ public:
         std::cout << "Educational sketch demonstrating MLP learning for polygon SDF approximation" << std::endl;
 
         // Initialize MLP and load data
+        Vec3 minBB(-50, -50, 0), maxBB(50, 50, 0);
+
+        // Initialize MLP building size
+        m_mlp.building_width = building_width;
+        m_mlp.building_height = building_height;
+
         initialize_mlp();
-        load_polygon_data();
+        load_polygon_data(minBB, maxBB);
+        initialize_ground_truth_field(minBB, maxBB, 100);
         generate_training_data();
-        initialize_ground_truth_field();
 
         std::cout << "Setup complete - Ready for MLP training" << std::endl;
     }
@@ -245,15 +253,34 @@ private:
         std::cout << "MLP initialized with " << NUM_CENTERS << " centers" << std::endl;
     }
 
-    void load_polygon_data()
+    void load_polygon_data(Vec3& minBB, Vec3& maxBB)
     {
         // Use relative path from alice2 directory
         std::string filename = path_polygon;
         load_polygon_from_csv(filename, m_polygon);
 
         m_mlp.polygon = m_polygon;
+
+        computeAABB(m_polygon, minBB, maxBB);
+
         std::cout << "Polygon loaded with " << m_polygon.size() << " vertices" << std::endl;
     }
+
+    void computeAABB(const std::vector<Vec3>& pts, Vec3& outMin, Vec3& outMax) {
+    if (pts.empty()) throw std::runtime_error("Empty polygon!");
+    // start both at the first point
+    outMin = outMax = pts[0];
+
+    for (const auto& p : pts) {
+        outMin.x = std::min(outMin.x, p.x);
+        outMin.y = std::min(outMin.y, p.y);
+        outMin.z = std::min(outMin.z, p.z);
+        
+        outMax.x = std::max(outMax.x, p.x);
+        outMax.y = std::max(outMax.y, p.y);
+        outMax.z = std::max(outMax.z, p.z);
+    }
+}
 
     void generate_training_data()
     {
@@ -267,8 +294,11 @@ private:
         std::cout << "Generated " << m_training_samples.size() << " training samples" << std::endl;
     }
 
-    void initialize_ground_truth_field()
+    void initialize_ground_truth_field(const Vec3& minBB, const Vec3 maxBB, int dim)
     {
+        m_mlp.generatedField.clear_field();
+        m_mlp.generatedField = ScalarField2D(minBB, maxBB, dim, dim);
+
         std::pair<int, int> resolution = m_mlp.generatedField.get_resolution();
         std::vector<float> field_values = m_mlp.generatedField.get_values();
         std::vector<Vec3> field_points = m_mlp.generatedField.get_points();
@@ -347,6 +377,7 @@ private:
         m_gradients.clear();
         std::vector<float> dummy;
         float loss = m_mlp.computeLoss(m_mlp_input_data, dummy);
+
         m_mlp.computeGradient(m_mlp_input_data, dummy, m_gradients);
 
         m_mlp.backward(m_gradients, m_learning_rate);
@@ -474,7 +505,7 @@ private:
 };
 
 // Register the sketch with alice2 (both old and new systems)
-ALICE2_REGISTER_SKETCH(MLPSketch)
-ALICE2_REGISTER_SKETCH_AUTO(MLPSketch)
+//ALICE2_REGISTER_SKETCH(MLPSketch)
+//ALICE2_REGISTER_SKETCH_AUTO(MLPSketch)
 
 #endif // __MAIN__

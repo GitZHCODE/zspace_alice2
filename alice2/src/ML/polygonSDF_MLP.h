@@ -9,9 +9,43 @@
 #include <charconv>
 #include <limits>
 
+
 #include <alice2.h>
 #include <ML/genericMLP.h>
 #include <computeGeom/scalarField.h>
+
+//#define DEBUG_OUTPUT 1
+#ifdef DEBUG_OUTPUT
+#include <chrono>
+#include <iostream>
+
+  // 1) Pick one clock type (steady_clock is fine on MSVC)
+  using TimerClock = std::chrono::steady_clock;
+
+  // 2) One shared start‐time variable
+  static thread_local TimerClock::time_point __timer_start;
+
+  // 3) Macro to record "now" into that one variable
+  #define TIMER_START() \
+    (__timer_start = TimerClock::now())
+
+  // 4) Macro to compare now against that same variable
+  #define TIMER_END(msg)                                                      \
+    do {                                                                       \
+      auto __timer_end = TimerClock::now();                                    \
+      /* direct-construction of a double-millisecond duration */               \
+      double __elapsed_ms =                                                     \
+        std::chrono::duration<double, std::milli>(                              \
+          __timer_end - __timer_start                                           \
+        ).count();                                                              \
+      std::cout << "[TIMER] " << msg << " took "                                \
+                << __elapsed_ms << " ms\n";                                     \
+    } while(0)
+
+#else
+  #define TIMER_START()    (void)0
+  #define TIMER_END(msg)   (void)0
+#endif
 
 /**
  * PolygonSDF_MLP: Multi-Layer Perceptron for learning polygon SDF approximation
@@ -46,6 +80,8 @@ public:
 
     // === Field Generation ===
     ScalarField2D generatedField;
+    float building_width = 30.0f;
+    float building_height = 40.0f;
 
     // === PUBLIC API METHODS ===
 
@@ -89,8 +125,11 @@ public:
         training_samples.clear();
         sdf_gt.clear();
 
-        for (float x = -50; x <= 50; x += 5.0f) {
-            for (float y = -50; y <= 50; y += 5.0f) {
+        std::pair<Vec3,Vec3> minMaxBB = generatedField.get_bounds();
+        float tStep = 5.0f;
+
+        for (float x = minMaxBB.first.x; x <= minMaxBB.second.x; x += tStep) {
+            for (float y = minMaxBB.first.y; y <= minMaxBB.second.y; y += tStep) {
                 Vec3 pt(x, y, 0);
                 if (is_inside_polygon(pt, poly)) {
                     training_samples.push_back(pt);
@@ -155,12 +194,11 @@ public:
     /**
      * Blend multiple oriented box SDFs
      */
-    float blend_oriented_box_sdfs(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& angles,
-                                 float width = 8.0f, float height = 6.0f, float k = 3.0f)
+    float blend_oriented_box_sdfs(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& angles,float k = 3.0f)
     {
         float d = 1e6;
         for (size_t i = 0; i < centers.size(); i++) {
-            float dist = oriented_box_sdf(pt, centers[i], width, height, angles[i]);
+            float dist = oriented_box_sdf(pt, centers[i], building_width, building_height, angles[i]);
             d = std::min(d, dist);
         }
         return d;
@@ -193,9 +231,8 @@ public:
     void rescaleToRange(std::vector<float>& values, float target_min = -1.0f, float target_max = 1.0f) {
         rescale_to_range(values, target_min, target_max);
     }
-    float blendOrientedBoxSDFs(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& angles,
-                              float width, float height, float k) {
-        return blend_oriented_box_sdfs(pt, centers, angles, width, height, k);
+    float blendOrientedBoxSDFs(Vec3 pt, std::vector<Vec3>& centers, std::vector<float>& angles, float k) {
+        return  blend_oriented_box_sdfs(pt, centers, angles, k);
     }
     float orientedBoxSDF(Vec3 pt, Vec3 center, float width, float height, float angle_rad) {
         return oriented_box_sdf(pt, center, width, height, angle_rad);
@@ -228,16 +265,21 @@ public:
         decode_output(out, centers, angles);
     }
 
-    float evaluateLoss(std::vector<Vec3> &centers, std::vector<float> &angles)
+    float evaluateLoss(std::vector<Vec3> &centers,
+                       std::vector<float> &angles)
     {
         const int N = trainingSamples.size();
-        const int numLossTypes = 2; // 0: coverage, 1: angular (add more as needed)
+        const int numLossTypes = 2; // 0: coverage, 1: angular
 
-        std::vector<std::vector<float>> lossesByType(numLossTypes, std::vector<float>(N, 0.0f));
+        TIMER_START();
+
+        std::vector<std::vector<float>> lossesByType(
+            numLossTypes, std::vector<float>(N, 0.0f));
 
         Vec3 sunDir(1, 1, 0);
         sunDir.normalize();
 
+        TIMER_START();
         // Step 1: compute raw losses
         for (int i = 0; i < N; i++)
         {
@@ -249,19 +291,22 @@ public:
             lossesByType[0][i] = err * err;
 
             // Loss 1: angular alignment (squared angle)
-            Vec3 grad = gradient_at(pt, centers, angles);            // gradient of blendedSDF
-            Vec3 grad_polygon = gradient_at_polygon_sdf(pt, polygon); // gradient of polygonSDF;
+            Vec3 grad = gradient_at(pt, centers, angles);
+            Vec3 grad_polygon = gradient_at_polygon_sdf(pt, polygon);
             grad.normalize();
             grad = grad.cross(Vec3(0, 0, 1));
             grad_polygon.normalize();
 
             float angleErr = angleBetween(grad, sunDir);
+
             lossesByType[1][i] = angleErr * angleErr;
         }
 
-        // Step 2: normalize each loss type to [0,1]
-        std::vector<bool> normalizeLoss = {false, true}; // match number of loss types
+        TIMER_END("evaluateLoss::computeRawLosses");
 
+        TIMER_START();
+        // Step 2: normalize each loss type to [0,1]
+        std::vector<bool> normalizeLoss = {false, true};
         for (int t = 0; t < numLossTypes; t++)
         {
             if (!normalizeLoss[t])
@@ -280,9 +325,11 @@ public:
                 v = (v - minVal) / range;
             }
         }
+        TIMER_END("evaluateLoss::normalizeLosses");
 
+        TIMER_START();
         // Step 3: weighted sum of all loss types
-        std::vector<float> weights = {1, 1}; // must match numLossTypes
+        std::vector<float> weights = {1, 1};
         float totalLoss = 0.0f;
         for (int i = 0; i < N; i++)
         {
@@ -293,12 +340,16 @@ public:
             }
             totalLoss += combined;
         }
+        TIMER_END("evaluateLoss::computeTotalLoss");
 
-        // Optional debug access: you may assign lossesByType[0] → `losses`, lossesByType[1] → `losses_ang`
+        // Optional debug access
         losses = lossesByType[0];
         losses_ang = lossesByType[1];
 
-        return totalLoss / trainingSamples.size();
+        TIMER_END("evaluateLoss::overall_evaluateLoss");
+
+        float finalLoss = totalLoss / static_cast<float>(N);
+        return finalLoss;
     }
 
     float computeLoss(std::vector<float> &x, std::vector<float> &dummy) override
@@ -312,35 +363,43 @@ public:
         return evaluateLoss(centers, angles);
     }
 
-
-
-
-
     void computeGradient(std::vector<float> &x, std::vector<float> &dummy, std::vector<float> &gradOut) override
     {
         auto out = forward(x);
         float eps = 0.01f;
 
+        TIMER_START();
         std::vector<Vec3> baseCenters;
         std::vector<float> baseAngles;
         decodeOutput(out, baseCenters, baseAngles);
+        TIMER_END("computeGradient::decodeOutput");
 
+        TIMER_START();
         float baseLoss = evaluateLoss(baseCenters, baseAngles);
+        TIMER_END("computeGradient::evaluateLoss");
 
         gradOut.assign(out.size(), 0.0f);
 
+        TIMER_START();
         for (int i = 0; i < out.size(); ++i)
         {
             std::vector<float> outPerturbed = out;
             outPerturbed[i] += eps;
 
+            TIMER_START();
             std::vector<Vec3> centers;
             std::vector<float> angles;
             decodeOutput(outPerturbed, centers, angles);
+            TIMER_END("computeGradient::decodeOutput");
 
+            TIMER_START();
             float lossPerturbed = evaluateLoss(centers, angles);
+            TIMER_END("computeGradient::evaluateloss");
+
             gradOut[i] = (lossPerturbed - baseLoss) / eps;
         }
+        std::cout << "out size: " << out.size() << std::endl;
+        TIMER_END("computeGradient::end_computeGradient");
     }
 
     // === POLYGON SDF COMPUTATION ===
