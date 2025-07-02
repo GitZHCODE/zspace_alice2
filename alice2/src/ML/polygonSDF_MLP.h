@@ -398,7 +398,7 @@ public:
 
             gradOut[i] = (lossPerturbed - baseLoss) / eps;
         }
-        std::cout << "out size: " << out.size() << std::endl;
+        // std::cout << "out size: " << out.size() << std::endl;
         TIMER_END("computeGradient::end_computeGradient");
     }
 
@@ -543,7 +543,7 @@ public:
             loss_ang_sum += losses_ang[i];
         }
 
-        renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
+        renderer.setColor(Vec3(0.0f, 0.0f, 0.0f));
 
         char buffer[100];
         sprintf(buffer, "Loss: %.3f", loss_sum / trainingSamples.size());

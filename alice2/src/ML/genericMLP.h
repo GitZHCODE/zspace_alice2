@@ -197,6 +197,7 @@ public:
 
                     Vec3 color(r, g, b);
                     float width = std::clamp(absW * 3.0f, 0.5f, 1.0f);
+                    width = 1.0f;
 
                     Vec2 start = Vec2(nodePositions[l][i].x, nodePositions[l][i].y);
                     Vec2 end = Vec2(nodePositions[l + 1][j].x, nodePositions[l + 1][j].y);
@@ -219,7 +220,7 @@ public:
                 Vec2 pos = Vec2(nodePositions[l][i].x, nodePositions[l][i].y);
 
                 // Draw node with size based on activation magnitude
-                float size = 4.0f + 2.0f * fabs(clampedAct);
+                float size = 2.0f + 2.0f * fabs(clampedAct);
                 renderer.draw2dPoint(pos, color, size);
             }
         }

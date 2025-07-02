@@ -84,7 +84,7 @@ public:
     void setup() override
     {
         // Set scene configuration following established patterns
-        scene().setBackgroundColor(Vec3(0.05f, 0.05f, 0.05f));
+        scene().setBackgroundColor(Vec3(0.95f, 0.95f, 0.95f));
         scene().setShowGrid(false);  // Disabled for cleaner visualization
         scene().setGridSize(25.0f);
         scene().setGridDivisions(4);
@@ -407,9 +407,9 @@ private:
     // Helper methods for visualization
     void draw_contours(Renderer& renderer)
     {
-        renderer.setColor(Vec3(1.0f, 1.0f, 1.0f)); // White contours
+        renderer.setColor(Vec3(0.0f, 0.0f, 0.0f)); // White contours
         for (const auto& line : m_contours.line_segments) {
-            renderer.drawLine(line.first, line.second, Vec3(1.0f, 1.0f, 1.0f), 2.0f);
+            renderer.drawLine(line.first, line.second, Vec3(0.0f, 0.0f, 0.0f), 2.0f);
         }
     }
 
@@ -422,7 +422,7 @@ private:
     {
         if (m_polygon.empty()) return;
 
-        renderer.setColor(Vec3(1.0f, 1.0f, 1.0f)); // White polygon
+        renderer.setColor(Vec3(0.0f, 0.0f, 0.0f)); // White polygon
         for (size_t i = 0; i < m_polygon.size(); i++) {
             size_t j = (i + 1) % m_polygon.size();
             renderer.drawLine(m_polygon[i], m_polygon[j]);
@@ -475,15 +475,15 @@ private:
     void draw_ui(Renderer& renderer)
     {
         // Basic sketch information
-        renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
+        renderer.setColor(Vec3(0.0f, 0.0f, 0.0f));
         renderer.drawString(getName(), 10, 30);
         renderer.drawString(getDescription(), 10, 50);
 
-        renderer.setColor(Vec3(0.0f, 1.0f, 1.0f));
+        renderer.setColor(Vec3(1.0f, 0.0f, 0.5f));
         renderer.drawString("FPS: " + std::to_string(Application::getInstance()->getFPS()), 10, 70);
 
         // Control instructions
-        renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
+        renderer.setColor(Vec3(0.55f, 0.55f, 0.55f));
         renderer.drawString("Controls:", 10, 100);
         renderer.drawString("'R' - Toggle training", 10, 120);
         renderer.drawString("'U' - Update field", 10, 140);
@@ -497,7 +497,7 @@ private:
         renderer.drawString("'N' - Toggle contours", 10, 300);
 
         // Training status
-        renderer.setColor(Vec3(1.0f, 1.0f, 0.0f));
+        renderer.setColor(Vec3(1.0f, 0.0f, 0.5f));
         std::string status = b_run_training ? "TRAINING" : "STOPPED";
         renderer.drawString("Status: " + status, 10, 330);
         renderer.drawString("Learning Rate: " + std::to_string(m_learning_rate), 10, 350);
