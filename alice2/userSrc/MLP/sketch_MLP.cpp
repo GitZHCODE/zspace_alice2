@@ -13,8 +13,6 @@
 
 using namespace alice2;
 
-#define NUM_CENTERS 8
-
 class MLPSketch : public ISketch
 {
 private:
@@ -28,6 +26,7 @@ private:
     ContourData m_contours;
     float building_width = 30.0f;
     float building_height = 40.0f;
+    int NUM_CENTERS;
     std::string path_polygon = "C://Users//taizhong_chen//source//repos//GitZHCODE//zspace_alice2//alice2//data/PARCEL.txt";
 
     // Training parameters
@@ -60,6 +59,7 @@ public:
         , d_draw_polygon(true)
         , d_draw_mlp_viz(true)
         , d_draw_contours(true)
+        , NUM_CENTERS(8)
     {}
 
     ~MLPSketch() = default;
@@ -84,7 +84,7 @@ public:
     void setup() override
     {
         // Set scene configuration following established patterns
-        scene().setBackgroundColor(Vec3(0.95f, 0.95f, 0.95f));
+        scene().setBackgroundColor(Vec3(1.0f, 1.0f, 1.0f));
         scene().setShowGrid(false);  // Disabled for cleaner visualization
         scene().setGridSize(25.0f);
         scene().setGridDivisions(4);
@@ -216,9 +216,15 @@ public:
         case 'M':
             d_draw_mlp_viz = !d_draw_mlp_viz;
             return true;
-        case 'n':
-        case 'N':
-            d_draw_contours = !d_draw_contours;
+        // case 'n':
+        // case 'N':
+        //     d_draw_contours = !d_draw_contours;
+            return true;
+        case 'k': NUM_CENTERS++;
+            setup();
+            return true;
+        case 'K': NUM_CENTERS--;
+            setup();
             return true;
         }
         return false; // Not handled
@@ -506,6 +512,6 @@ private:
 
 // Register the sketch with alice2 (both old and new systems)
 //ALICE2_REGISTER_SKETCH(MLPSketch)
-//ALICE2_REGISTER_SKETCH_AUTO(MLPSketch)
+ALICE2_REGISTER_SKETCH_AUTO(MLPSketch)
 
 #endif // __MAIN__

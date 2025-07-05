@@ -49,9 +49,9 @@ struct Slabs
     std::vector<Vec3> sampledPoints;
     std::vector<Vec3> sampledPoints_normal;
 
-    Vec3 FacadeCol = Vec3(1, 0, 1);  // Magenta
-    Vec3 CoreCol = Vec3(0, 1, 0);    // Green
-    Vec3 VoronoiCol = Vec3(0, 0, 1); // Blue
+    Vec3 FacadeCol = Vec3(0, 0, 0);  // Magenta
+    Vec3 CoreCol = Vec3(0.35f, 0.35f, 0.0f);    // Green
+    Vec3 VoronoiCol = Vec3(0.8f, 0.8f, 0.8f); // Blue
 
     void initialize(Vec3 _min, Vec3 _max, int _res)
     {
@@ -76,8 +76,25 @@ struct Slabs
     void makeBaseField()
     {
         facadeField.apply_scalar_ellipse(Vec3(0, 0, 0), 15.0f, 22.0f, buildingRotation);
-        // facadeField.apply_scalar_rect(Vec3(0, 0, 0), Vec3(25.0f, 25.0f, 0), buildingRotation);
-        coreField.apply_scalar_rect(Vec3(0, 0, 0), Vec3(5.0f, 5.0f, 0), buildingRotation);
+        // facadeField.apply_scalar_rect(Vec3(0, 0, 0), Vec3(15.0f, 24.0f, 0), buildingRotation);
+        // coreField.apply_scalar_rect(Vec3(0, 0, 0), Vec3(5.0f, 5.0f, 0), buildingRotation);
+
+        ScalarField2D temp = ScalarField2D(min, max, res, res);
+
+        temp.apply_scalar_ellipse(Vec3(-2, 2, 0), 4.0f, 6.0f, buildingRotation);
+        facadeField.boolean_subtract(temp);
+        temp.clear_field();
+        temp.apply_scalar_ellipse(Vec3(2, 0, 0), 4.0f, 6.0f, buildingRotation);
+        facadeField.boolean_subtract(temp);
+        temp.clear_field();
+        temp.apply_scalar_ellipse(Vec3(0, -2, 0), 4.0f, 6.0f, buildingRotation);
+        facadeField.boolean_subtract(temp);
+
+        temp.clear_field();
+        coreField.apply_scalar_rect(Vec3(-12, 0, 0), Vec3(5.0f, 5.0f, 0), buildingRotation);
+        temp.apply_scalar_rect(Vec3(12, 0, 0), Vec3(5.0f, 5.0f, 0), buildingRotation);
+        coreField.boolean_union(temp);
+
         baseField = facadeField;
         //baseField.boolean_subtract(coreField);
         // baseField.normalise();
@@ -419,7 +436,9 @@ class VoronoiFullSketch : public ISketch
 public:
     void setup() override
     {
-        scene().setBackgroundColor(Vec3(0.15f, 0.15f, 0.15f));
+        scene().setBackgroundColor(Vec3(1.0f, 1.0f, 1.0f));
+        scene().setShowAxes(false);
+        scene().setShowGrid(false);
         slabs.initialize(Vec3(-25.0f, -25.0f, 0.0f), Vec3(25.0f, 25.0f, 0.0f), fieldRES);
     }
     void update(float deltaTime) override {}
@@ -438,7 +457,7 @@ public:
                 if (d > 0.2f)
                     renderer.drawPoint(p, Vec3(1, 1, 1), 2.0f);
                 else if (d < -0.2f)
-                    renderer.drawPoint(p, Vec3(1, 0, 0), 2.0f);
+                    renderer.drawPoint(p, Vec3(0.5, 0.5, 0.5), 2.0f);
                 else
                     renderer.drawPoint(p, Vec3(0, 0, 0), 2.0f);
             }
@@ -448,7 +467,7 @@ public:
         {
             Vec3 p0 = seg.first + Vec3(0.0f, 0.0f, 0);
             Vec3 p1 = seg.second + Vec3(0.0f, 0.0f, 0);
-            renderer.drawLine(p0, p1, Vec3(1, 1, 1), 2.0f);
+            renderer.drawLine(p0, p1, Vec3(1, 0, 0.75), 2.0f);
         }
 
         for (auto &g : slabs.graphs)
@@ -467,12 +486,13 @@ public:
 
         for (int i = 0; i < slabs.sampledPoints.size(); i++)
         {
-            renderer.drawPoint(slabs.sampledPoints[i] + slabs.sampledPoints_normal[i] * offsetCarves, Vec3(1, 1, 0), 10.0f);
-            renderer.drawLine(slabs.sampledPoints[i], slabs.sampledPoints[i] + slabs.sampledPoints_normal[i] * 2.0f, Vec3(1, 1, 0), 2.0f);
+            renderer.drawPoint(slabs.sampledPoints[i] + slabs.sampledPoints_normal[i] * offsetCarves, Vec3(0, 0.5, 1), 10.0f);
+            renderer.drawLine(slabs.sampledPoints[i], slabs.sampledPoints[i] + slabs.sampledPoints_normal[i] * 2.0f, Vec3(0, 0.5, 1), 2.0f);
         }
 
         ////---------------  UI
-
+        
+        renderer.setColor(Vec3(0, 0, 0));
         renderer.drawString("e ->  Export JSON: ", 10, 100);
         renderer.drawString("r ->  Reset ", 10, 130);
         renderer.drawString("b ->  Flip Carves ", 10, 160);
@@ -537,6 +557,23 @@ public:
         if (key == 'S')
             NUM_SEED_POINTS--;
 
+        if(key == 'q')
+        {
+            for (int i = 0; i < 10; i++)
+                slabs.optimizeSites();
+
+            for (float i = 1.0f; i < 10.0f; i++)
+                {
+                    for(float j = 0.0f; j < 3.0f; j+=0.2)
+                    {
+                    carveSpacing = i; offsetCarves = j;
+                    slabs.carveSDF(carveSpacing, offsetCarves, flipCarves);
+                    Application::getInstance()->takeScreenshot();
+                    }
+                }
+
+            return true;
+        }
         if (key == 'm')
         {
             offsetCarves += 0.1;
