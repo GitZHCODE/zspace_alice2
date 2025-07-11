@@ -36,6 +36,11 @@ private:
     mutable GLuint m_positionBuffer;  // World positions (computed in shader)
     mutable bool m_buffersInitialized;
 
+    // GPU rendering buffers
+    mutable GLuint m_vertexBuffer;    // Vertex positions for rendering
+    mutable GLuint m_colorBuffer;     // Vertex colors for rendering
+    mutable bool m_renderBuffersInitialized;
+
     // CPU cache - only populated on explicit request
     mutable std::vector<float> m_cpuCache;
     mutable bool m_cpuCacheValid;
@@ -60,6 +65,11 @@ private:
     void dispatch_circle_shader(const Vec3& center, float radius, float strength) const;
     void dispatch_boolean_union_shader(const ScalarFieldGPU& other) const;
     void invalidate_cpu_cache() const { m_cpuCacheValid = false; }
+
+    // GPU rendering operations
+    void initialize_render_buffers(int step) const;
+    void cleanup_render_buffers() const;
+    void update_render_buffers(int step) const;
 
 public:
     // Constructor with RAII principles - matches existing API

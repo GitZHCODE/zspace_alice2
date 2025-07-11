@@ -13,7 +13,8 @@ bool ScalarFieldGPU::s_gpuEnabled = false;
 // Constructor - GPU-first approach
 ScalarFieldGPU::ScalarFieldGPU(const Vec3& min_bb, const Vec3& max_bb, int res_x, int res_y)
     : m_min_bounds(min_bb), m_max_bounds(max_bb), m_res_x(res_x), m_res_y(res_y),
-      m_valueBuffer(0), m_positionBuffer(0), m_buffersInitialized(false), m_cpuCacheValid(false) {
+      m_valueBuffer(0), m_positionBuffer(0), m_buffersInitialized(false), m_cpuCacheValid(false),
+      m_vertexBuffer(0), m_colorBuffer(0), m_renderBuffersInitialized(false) {
 
     if (res_x <= 0 || res_y <= 0) {
         throw std::invalid_argument("Resolution must be positive");
@@ -32,6 +33,7 @@ ScalarFieldGPU::ScalarFieldGPU(const Vec3& min_bb, const Vec3& max_bb, int res_x
 
 // Destructor
 ScalarFieldGPU::~ScalarFieldGPU() {
+    cleanup_render_buffers();
     cleanup_gpu_buffers();
 }
 
@@ -39,7 +41,8 @@ ScalarFieldGPU::~ScalarFieldGPU() {
 ScalarFieldGPU::ScalarFieldGPU(const ScalarFieldGPU& other)
     : m_min_bounds(other.m_min_bounds), m_max_bounds(other.m_max_bounds),
       m_res_x(other.m_res_x), m_res_y(other.m_res_y),
-      m_valueBuffer(0), m_positionBuffer(0), m_buffersInitialized(false), m_cpuCacheValid(false) {
+      m_valueBuffer(0), m_positionBuffer(0), m_buffersInitialized(false), m_cpuCacheValid(false),
+      m_vertexBuffer(0), m_colorBuffer(0), m_renderBuffersInitialized(false) {
 
     m_cpuCache.reserve(m_res_x * m_res_y);
 
@@ -70,6 +73,7 @@ ScalarFieldGPU::ScalarFieldGPU(const ScalarFieldGPU& other)
 ScalarFieldGPU& ScalarFieldGPU::operator=(const ScalarFieldGPU& other) {
     if (this != &other) {
         // Clean up existing GPU resources
+        cleanup_render_buffers();
         cleanup_gpu_buffers();
 
         // Copy properties
@@ -81,6 +85,7 @@ ScalarFieldGPU& ScalarFieldGPU::operator=(const ScalarFieldGPU& other) {
         m_cpuCache.clear();
         m_cpuCache.reserve(m_res_x * m_res_y);
         m_cpuCacheValid = false;
+        m_renderBuffersInitialized = false;
 
         if (s_gpuEnabled && other.m_buffersInitialized) {
             // GPU-to-GPU copy
@@ -104,19 +109,25 @@ ScalarFieldGPU::ScalarFieldGPU(ScalarFieldGPU&& other) noexcept
       m_res_x(other.m_res_x), m_res_y(other.m_res_y),
       m_valueBuffer(other.m_valueBuffer), m_positionBuffer(other.m_positionBuffer),
       m_buffersInitialized(other.m_buffersInitialized),
-      m_cpuCache(std::move(other.m_cpuCache)), m_cpuCacheValid(other.m_cpuCacheValid) {
+      m_cpuCache(std::move(other.m_cpuCache)), m_cpuCacheValid(other.m_cpuCacheValid),
+      m_vertexBuffer(other.m_vertexBuffer), m_colorBuffer(other.m_colorBuffer),
+      m_renderBuffersInitialized(other.m_renderBuffersInitialized) {
 
     // Reset other's resources
     other.m_valueBuffer = 0;
     other.m_positionBuffer = 0;
     other.m_buffersInitialized = false;
     other.m_cpuCacheValid = false;
+    other.m_vertexBuffer = 0;
+    other.m_colorBuffer = 0;
+    other.m_renderBuffersInitialized = false;
 }
 
 // Move assignment - GPU-first approach
 ScalarFieldGPU& ScalarFieldGPU::operator=(ScalarFieldGPU&& other) noexcept {
     if (this != &other) {
         // Clean up existing GPU resources
+        cleanup_render_buffers();
         cleanup_gpu_buffers();
 
         // Move properties
@@ -129,12 +140,18 @@ ScalarFieldGPU& ScalarFieldGPU::operator=(ScalarFieldGPU&& other) noexcept {
         m_buffersInitialized = other.m_buffersInitialized;
         m_cpuCache = std::move(other.m_cpuCache);
         m_cpuCacheValid = other.m_cpuCacheValid;
+        m_vertexBuffer = other.m_vertexBuffer;
+        m_colorBuffer = other.m_colorBuffer;
+        m_renderBuffersInitialized = other.m_renderBuffersInitialized;
 
         // Reset other's resources
         other.m_valueBuffer = 0;
         other.m_positionBuffer = 0;
         other.m_buffersInitialized = false;
         other.m_cpuCacheValid = false;
+        other.m_vertexBuffer = 0;
+        other.m_colorBuffer = 0;
+        other.m_renderBuffersInitialized = false;
     }
     return *this;
 }
@@ -217,11 +234,63 @@ void ScalarFieldGPU::draw_points_cpu(Renderer& renderer, int step) const {
     }
 }
 
-// GPU-direct rendering (future implementation)
+// GPU-direct rendering - minimal VBO implementation
 void ScalarFieldGPU::draw_points_gpu(Renderer& renderer, int step) const {
-    // TODO: Implement direct GPU rendering using vertex buffer objects
-    // For now, fallback to CPU method
-    draw_points_cpu(renderer, step);
+    if (!s_gpuEnabled || !m_buffersInitialized) {
+        // Fallback to CPU method if GPU not available
+        draw_points_cpu(renderer, step);
+        return;
+    }
+
+    // Initialize render buffers if needed
+    if (!m_renderBuffersInitialized) {
+        initialize_render_buffers(step);
+    }
+
+    // Update render buffers with current data
+    update_render_buffers(step);
+
+    if (!m_renderBuffersInitialized) {
+        // Fallback if buffer initialization failed
+        draw_points_cpu(renderer, step);
+        return;
+    }
+
+    // Save OpenGL state
+    GLint prevProgram;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
+
+    // Disable shader program to use fixed function pipeline
+    glUseProgram(0);
+
+    // Enable vertex arrays
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+
+    // Bind vertex buffer
+    glBindBuffer(GL_ARRAY_BUFFER, m_vertexBuffer);
+    glVertexPointer(3, GL_FLOAT, 0, 0);
+
+    // Bind color buffer
+    glBindBuffer(GL_ARRAY_BUFFER, m_colorBuffer);
+    glColorPointer(3, GL_FLOAT, 0, 0);
+
+    // Set point size
+    glPointSize(3.0f);
+
+    // Calculate number of points to draw
+    const int pointsPerRow = (m_res_x + step - 1) / step;
+    const int pointsPerCol = (m_res_y + step - 1) / step;
+    const int totalPoints = pointsPerRow * pointsPerCol;
+
+    // Draw all points in one call using VBO
+    glDrawArrays(GL_POINTS, 0, totalPoints);
+
+    // Restore OpenGL state
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDisableClientState(GL_COLOR_ARRAY);
+    glUseProgram(prevProgram);
 }
 
 // Auto-select best drawing method
@@ -559,4 +628,106 @@ void ScalarFieldGPU::boolean_union_fallback(const ScalarFieldGPU& other) {
     }
 
     m_cpuCacheValid = true;
+}
+
+// GPU rendering buffer management
+void ScalarFieldGPU::initialize_render_buffers(int step) const {
+    if (m_renderBuffersInitialized || !s_gpuEnabled) {
+        return;
+    }
+
+    // Calculate number of points based on step
+    const int pointsPerRow = (m_res_x + step - 1) / step;
+    const int pointsPerCol = (m_res_y + step - 1) / step;
+    const int totalPoints = pointsPerRow * pointsPerCol;
+
+    // Create vertex buffer (positions)
+    glGenBuffers(1, &m_vertexBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, m_vertexBuffer);
+    glBufferData(GL_ARRAY_BUFFER, totalPoints * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // Create color buffer
+    glGenBuffers(1, &m_colorBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, m_colorBuffer);
+    glBufferData(GL_ARRAY_BUFFER, totalPoints * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    m_renderBuffersInitialized = true;
+}
+
+void ScalarFieldGPU::cleanup_render_buffers() const {
+    if (m_renderBuffersInitialized) {
+        if (m_vertexBuffer != 0) {
+            glDeleteBuffers(1, &m_vertexBuffer);
+            m_vertexBuffer = 0;
+        }
+        if (m_colorBuffer != 0) {
+            glDeleteBuffers(1, &m_colorBuffer);
+            m_colorBuffer = 0;
+        }
+        m_renderBuffersInitialized = false;
+    }
+}
+
+void ScalarFieldGPU::update_render_buffers(int step) const {
+    if (!m_renderBuffersInitialized || !s_gpuEnabled) {
+        return;
+    }
+
+    // Download data if needed (this is the bottleneck we want to minimize)
+    if (!m_cpuCacheValid) {
+        download_to_cpu_cache();
+    }
+
+    if (!m_cpuCacheValid) {
+        return;
+    }
+
+    // Generate vertex and color data
+    std::vector<float> vertices;
+    std::vector<float> colors;
+
+    const float dx = (m_max_bounds.x - m_min_bounds.x) / (m_res_x - 1);
+    const float dy = (m_max_bounds.y - m_min_bounds.y) / (m_res_y - 1);
+
+    for (int j = 0; j < m_res_y; j += step) {
+        for (int i = 0; i < m_res_x; i += step) {
+            const int idx = get_index(i, j);
+            if (idx >= m_cpuCache.size()) continue;
+
+            const float value = m_cpuCache[idx];
+
+            // Calculate world position
+            const float x = m_min_bounds.x + i * dx;
+            const float y = m_min_bounds.y + j * dy;
+            vertices.push_back(x);
+            vertices.push_back(y);
+            vertices.push_back(0.0f);
+
+            // Color based on field value
+            Vec3 color;
+            if (value < 0.0f) {
+                // Inside - red to yellow gradient
+                float t = std::min(-value / 10.0f, 1.0f);
+                color = Vec3(1.0f, t, 0.0f);
+            } else {
+                // Outside - blue to cyan gradient
+                float t = std::min(value / 10.0f, 1.0f);
+                color = Vec3(0.0f, t, 1.0f);
+            }
+            colors.push_back(color.x);
+            colors.push_back(color.y);
+            colors.push_back(color.z);
+        }
+    }
+
+    // Upload to GPU buffers
+    glBindBuffer(GL_ARRAY_BUFFER, m_vertexBuffer);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(float), vertices.data());
+
+    glBindBuffer(GL_ARRAY_BUFFER, m_colorBuffer);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, colors.size() * sizeof(float), colors.data());
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }

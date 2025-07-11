@@ -14,7 +14,7 @@
 #include <iomanip>
 
 using namespace alice2;
-int RES = 512;
+int RES = 1024;
 
 class GPUSketch : public ISketch {
 private:
@@ -105,6 +105,10 @@ public:
         camera().setPosition(Vec3(0,0,200));
         camera().setOrbitCenter(Vec3(0,0,0));
         camera().setOrbitDistance(500);
+
+        // Init field resolution
+        std::cout<< "Test Field Resolution: \n";
+        std::cin >> RES;
 
         // Initialize GPU acceleration
         initializeGPU();
@@ -402,6 +406,9 @@ private:
     void drawUI(Renderer& renderer) {
         if (!d_showPerformanceInfo) return;
 
+        renderer.setColor(Vec3(1.0f, 0.0f, 0.5f));
+        renderer.drawString("FPS: " + std::to_string(Application::getInstance()->getFPS()), 10, 30);
+
         // Draw performance information and controls
         renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
 
@@ -429,7 +436,7 @@ private:
             }
         }
 
-        renderer.drawString(info, 10, 30);
+        renderer.drawString(info, 10, 50);
     }
 };
 
