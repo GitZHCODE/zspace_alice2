@@ -511,7 +511,6 @@ private:
 };
 
 // Register the sketch with alice2 (both old and new systems)
-//ALICE2_REGISTER_SKETCH(MLPSketch)
-ALICE2_REGISTER_SKETCH_AUTO(MLPSketch)
+// ALICE2_REGISTER_SKETCH_AUTO(MLPSketch)
 
 #endif // __MAIN__

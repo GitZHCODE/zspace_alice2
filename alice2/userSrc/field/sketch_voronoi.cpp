@@ -629,6 +629,6 @@ private:
     }
 };
 
-ALICE2_REGISTER_SKETCH_AUTO(VoronoiFullSketch)
+// ALICE2_REGISTER_SKETCH_AUTO(VoronoiFullSketch)
 
 #endif // __MAIN__
