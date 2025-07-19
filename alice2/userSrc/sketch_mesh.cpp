@@ -55,14 +55,14 @@ public:
         m_cube->setRenderMode(MeshRenderMode::NormalShaded);
         //m_cube->setNormalShadingColors(Color(1.0f, 0.8f, 0.2f), Color(0.2f, 0.1f, 0.4f)); // Orange to purple
         m_cube->setNormalShadingColors(Color(1.0f, 1.0f, 1.0f), Color(0.8f, 0.2f, 0.8f)); // White to magenta
-        m_cube->getTransform().setPosition(Vec3(-3.0f, 0.0f, 1.0f));
+        m_cube->getTransform().setTranslation(Vec3(-3.0f, 0.0f, 1.0f));
         scene().addObject(m_cube);
 
         m_plane = std::make_shared<MeshObject>("TestPlane");
         m_plane->createPlane(3.0f, 3.0f, 2, 2);
         m_plane->setRenderMode(MeshRenderMode::NormalShaded);
         m_plane->setNormalShadingColors(Color(1.0f, 1.0f, 1.0f), Color(0.8f, 0.2f, 0.8f)); // White to magenta
-        m_plane->getTransform().setPosition(Vec3(3.0f, 0.0f, 0.0f));
+        m_plane->getTransform().setTranslation(Vec3(3.0f, 0.0f, 0.0f));
         scene().addObject(m_plane);
     }
 
@@ -129,7 +129,7 @@ public:
                 }
                 return true;
 
-            case 'u':
+            case 'e':
                 m_showEdges = !m_showEdges;
                 if (m_cube) {
                     m_cube->setShowEdges(m_showEdges);
