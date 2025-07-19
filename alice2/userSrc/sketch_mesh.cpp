@@ -16,10 +16,12 @@ private:
     std::shared_ptr<MeshObject> m_cube;
     std::shared_ptr<MeshObject> m_plane;
     float m_time;
-    bool m_wireframeMode;
+    bool m_normalShadedMode;
+    bool m_showVertices;
+    bool m_showEdges;
 
 public:
-    MeshSketch() : m_time(0.0f), m_wireframeMode(false) {}
+    MeshSketch() : m_time(0.0f), m_normalShadedMode(false), m_showVertices(false), m_showEdges(false) {}
     ~MeshSketch() = default;
 
     // Sketch information
@@ -50,14 +52,16 @@ public:
         // Create mesh objects
         m_cube = std::make_shared<MeshObject>("TestCube");
         m_cube->createCube(2.0f);
-        m_cube->setRenderMode(MeshRenderMode::Lit);
+        m_cube->setRenderMode(MeshRenderMode::NormalShaded);
+        //m_cube->setNormalShadingColors(Color(1.0f, 0.8f, 0.2f), Color(0.2f, 0.1f, 0.4f)); // Orange to purple
+        m_cube->setNormalShadingColors(Color(1.0f, 1.0f, 1.0f), Color(0.8f, 0.2f, 0.8f)); // White to magenta
         m_cube->getTransform().setPosition(Vec3(-3.0f, 0.0f, 1.0f));
-        m_cube->setColor(Color(1.0f,1.0f,1.0f));
         scene().addObject(m_cube);
 
         m_plane = std::make_shared<MeshObject>("TestPlane");
         m_plane->createPlane(3.0f, 3.0f, 2, 2);
-        m_plane->setRenderMode(MeshRenderMode::Wireframe);
+        m_plane->setRenderMode(MeshRenderMode::NormalShaded);
+        m_plane->setNormalShadingColors(Color(1.0f, 1.0f, 1.0f), Color(0.8f, 0.2f, 0.8f)); // White to magenta
         m_plane->getTransform().setPosition(Vec3(3.0f, 0.0f, 0.0f));
         scene().addObject(m_plane);
     }
@@ -66,14 +70,14 @@ public:
         m_time += deltaTime;
 
         // Rotate the cube
-        if (m_cube) {
-            m_cube->getTransform().setRotation(Quaternion::fromAxisAngle(Vec3(0, 0, 1), m_time * 0.5f));
-        }
+        // if (m_cube) {
+        //     m_cube->getTransform().setRotation(Quaternion::fromAxisAngle(Vec3(0, 0, 1), m_time * 0.5f));
+        // }
 
-        // Rotate the plane around Y axis
-        if (m_plane) {
-            m_plane->getTransform().setRotation(Quaternion::fromAxisAngle(Vec3(0, 1, 0), m_time * 0.3f));
-        }
+        // // Rotate the plane around Y axis
+        // if (m_plane) {
+        //     m_plane->getTransform().setRotation(Quaternion::fromAxisAngle(Vec3(0, 1, 0), m_time * 0.3f));
+        // }
     }
 
     void draw(Renderer& renderer, Camera& camera) override {
@@ -86,27 +90,52 @@ public:
         renderer.drawString("FPS: " + std::to_string(Application::getInstance()->getFPS()), 10, 70);
 
         renderer.setColor(Color(0.75f, 0.75f, 0.75f));
-        renderer.drawString("'W' - Toggle wireframe mode", 10, 200);
-        renderer.drawString("'ESC' - Exit", 10, 220);
-        renderer.drawString("'N' - Next sketch", 10, 240);
+        renderer.drawString("'M' - Toggle render mode (Lit/NormalShaded)", 10, 200);
+        renderer.drawString("'V' - Toggle vertex overlay", 10, 220);
+        renderer.drawString("'E' - Toggle edge overlay", 10, 240);
+        renderer.drawString("'ESC' - Exit", 10, 260);
+        renderer.drawString("'N' - Next sketch", 10, 280);
 
-        // Display current mode
-        std::string mode = m_wireframeMode ? "Wireframe" : "Lit";
+        // Display current state
+        std::string mode = m_normalShadedMode ? "NormalShaded" : "Lit";
         renderer.setColor(Color(1.0f, 1.0f, 0.0f));
-        renderer.drawString("Mode: " + mode, 10, 100);
+        renderer.drawString("Render Mode: " + mode, 10, 100);
+
+        renderer.setColor(Color(0.8f, 1.0f, 0.8f));
+        renderer.drawString("Vertices: " + std::string(m_showVertices ? "ON" : "OFF"), 10, 120);
+        renderer.drawString("Edges: " + std::string(m_showEdges ? "ON" : "OFF"), 10, 140);
     }
 
     // Input handling
     bool onKeyPress(unsigned char key, int x, int y) override {
         switch (key) {
-            case 'w':
-            case 'W':
-                m_wireframeMode = !m_wireframeMode;
+            case 'm':
+                m_normalShadedMode = !m_normalShadedMode;
                 if (m_cube) {
-                    m_cube->setRenderMode(m_wireframeMode ? MeshRenderMode::Wireframe : MeshRenderMode::Lit);
+                    m_cube->setRenderMode(m_normalShadedMode ? MeshRenderMode::NormalShaded : MeshRenderMode::Lit);
                 }
                 if (m_plane) {
-                    m_plane->setRenderMode(m_wireframeMode ? MeshRenderMode::Lit : MeshRenderMode::Wireframe);
+                    m_plane->setRenderMode(m_normalShadedMode ? MeshRenderMode::Lit : MeshRenderMode::NormalShaded);
+                }
+                return true;
+
+            case 'v':
+                m_showVertices = !m_showVertices;
+                if (m_cube) {
+                    m_cube->setShowVertices(m_showVertices);
+                }
+                if (m_plane) {
+                    m_plane->setShowVertices(m_showVertices);
+                }
+                return true;
+
+            case 'u':
+                m_showEdges = !m_showEdges;
+                if (m_cube) {
+                    m_cube->setShowEdges(m_showEdges);
+                }
+                if (m_plane) {
+                    m_plane->setShowEdges(m_showEdges);
                 }
                 return true;
         }
