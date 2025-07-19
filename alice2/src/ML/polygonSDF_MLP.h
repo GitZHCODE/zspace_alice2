@@ -543,7 +543,7 @@ public:
             loss_ang_sum += losses_ang[i];
         }
 
-        renderer.setColor(Vec3(0.0f, 0.0f, 0.0f));
+        renderer.setColor(Color(0.0f, 0.0f, 0.0f));
 
         char buffer[100];
         sprintf(buffer, "Loss: %.3f", loss_sum / trainingSamples.size());
@@ -582,7 +582,7 @@ public:
 
             Vec2 start(x, start_y);
             Vec2 end(x, start_y + h);
-            renderer.draw2dLine(start, end, Vec3(r, g, b));
+            renderer.draw2dLine(start, end, Color(r, g, b));
         }
     }
 
@@ -610,7 +610,7 @@ public:
             Vec3 grad_polygon = gradient_at_polygon_sdf(centers[i], polygon);
             grad_polygon.normalize();
 
-            renderer.drawLine(centers[i], centers[i] + grad_polygon * 3.0f, Vec3(0.0f, 0.0f, 0.0f));
+            renderer.drawLine(centers[i], centers[i] + grad_polygon * 3.0f, Color(0.0f, 0.0f, 0.0f));
 
             // Local coordinate system visualization
             float cos_a = cos(angles[i]);
@@ -618,7 +618,7 @@ public:
             Vec3 axis_y(sin_a, cos_a, 0);  // local Y direction
             axis_y.normalize();
 
-            renderer.drawLine(centers[i], centers[i] + axis_y * 4.0f, Vec3(1.0f, 0.0f, 0.0f));
+            renderer.drawLine(centers[i], centers[i] + axis_y * 4.0f, Color(1.0f, 0.0f, 0.0f));
         }
 
         // Draw gradients for training samples
@@ -627,18 +627,18 @@ public:
 
             Vec3 grad_polygon = gradient_at_polygon_sdf(trainingSamples[i], polygon);
             grad_polygon.normalize();
-            renderer.drawLine(a, a + grad_polygon, Vec3(0.0f, 0.0f, 0.0f));
+            renderer.drawLine(a, a + grad_polygon, Color(0.0f, 0.0f, 0.0f));
 
             Vec3 grad = gradient_at(trainingSamples[i], centers, angles);
             grad.normalize();
-            renderer.drawLine(a, a + grad, Vec3(1.0f, 0.0f, 0.0f));
+            renderer.drawLine(a, a + grad, Color(1.0f, 0.0f, 0.0f));
         }
     }
 
     /**
      * Draw a circle using line segments
      */
-    void draw_circle(Renderer& renderer, const Vec3& center, float radius, int segments, const Vec3& color)
+    void draw_circle(Renderer& renderer, const Vec3& center, float radius, int segments, const Color& color)
     {
         renderer.setColor(color);
         const float PI = 3.14159265359f;
@@ -660,7 +660,7 @@ public:
     }
     void visualiseField(Renderer& renderer, float threshold = 0.01, bool draw_field = true) { visualize_field(renderer, threshold, draw_field); }
     void visualiseGradients(Renderer& renderer, std::vector<float>& x) { visualize_gradients(renderer, x); }
-    void drawCircle(Renderer& renderer, const Vec3& center, float radius, int segments, const Vec3& color) {
+    void drawCircle(Renderer& renderer, const Vec3& center, float radius, int segments, const Color& color) {
         draw_circle(renderer, center, radius, segments, color);
     }
 };

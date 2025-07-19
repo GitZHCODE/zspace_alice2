@@ -195,7 +195,7 @@ public:
                     float r, g, b;
                     get_jet_color(val, r, g, b);
 
-                    Vec3 color(r, g, b);
+                    Color color(r, g, b);
                     float width = std::clamp(absW * 3.0f, 0.5f, 1.0f);
                     width = 1.0f;
 
@@ -216,7 +216,7 @@ public:
                 float r, g, b;
                 get_jet_color(clampedAct, r, g, b);
 
-                Vec3 color(r, g, b);
+                Color color(r, g, b);
                 Vec2 pos = Vec2(nodePositions[l][i].x, nodePositions[l][i].y);
 
                 // Draw node with size based on activation magnitude
@@ -226,7 +226,7 @@ public:
         }
 
         // Draw layer labels for clarity
-        renderer.setColor(Vec3(0.8f, 0.8f, 0.8f));
+        renderer.setColor(Color(0.8f, 0.8f, 0.8f));
         for (int l = 0; l < numLayers && !nodePositions[l].empty(); l++) {
             std::string label = (l == 0) ? "Input" : (l == numLayers - 1) ? "Output" : "Hidden";
             float x = nodePositions[l][0].x;

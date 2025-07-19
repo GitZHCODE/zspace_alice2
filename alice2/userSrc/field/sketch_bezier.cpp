@@ -42,9 +42,9 @@ private:
     bool d_drawValues;
 
     // Colors
-    Vec3 magenta = Vec3(1.0f, 0.0f, 1.0f);
-    Vec3 purple = Vec3(0.5f, 0.0f, 1.0f);
-    Vec3 cyan = Vec3(0.0f, 1.0f, 1.0f);
+    Color magenta = Color(1.0f, 0.0f, 1.0f);
+    Color purple = Color(0.5f, 0.0f, 1.0f);
+    Color cyan = Color(0.0f, 1.0f, 1.0f);
 
 public:
     BezierSketch() : m_time(0.0f), m_blendParameter(0.5f),
@@ -73,7 +73,7 @@ public:
 
     // Sketch lifecycle
     void setup() override {
-        scene().setBackgroundColor(Vec3(0.95f, 0.95f, 0.95f));
+        scene().setBackgroundColor(Color(0.95f, 0.95f, 0.95f));
         scene().setShowGrid(false);
         scene().setGridSize(25.0f);
         scene().setGridDivisions(4);
@@ -360,7 +360,7 @@ private:
 
             // Color gradient from magenta (bottom) to purple (top)
             float t = static_cast<float>(i) / (m_towerLevels.size() - 1);
-            Vec3 color = Vec3::lerp(magenta, purple, t);
+            Color color = Color::lerp(magenta, purple, t);
             renderer.setColor(color);
 
             // Draw contours at this level with tower offset
@@ -393,12 +393,12 @@ private:
         renderer.drawPoint(Vec3(20, -15, 0), cyan, 6.0f);
         renderer.drawPoint(Vec3(0, 20, 0), cyan, 6.0f);
 
-        renderer.setColor(Vec3(0.2f, 0.2f, 1.0f));
-        renderer.drawPoint(Vec3(0, 0, 0), Vec3(0.2f, 0.2f, 1.0f), 6.0f);
+        renderer.setColor(Color(0.2f, 0.2f, 1.0f));
+        renderer.drawPoint(Vec3(0, 0, 0), Color(0.2f, 0.2f, 1.0f), 6.0f);
         renderer.drawText("F1", Vec3(0, 0, 5), 1.0f);
 
-        renderer.setColor(Vec3(1.0f, 0.5f, 0.0f));
-        renderer.drawPoint(Vec3(0, 0, 0), Vec3(1.0f, 0.5f, 0.0f), 4.0f);
+        renderer.setColor(Color(1.0f, 0.5f, 0.0f));
+        renderer.drawPoint(Vec3(0, 0, 0), Color(1.0f, 0.5f, 0.0f), 4.0f);
         renderer.drawText("F2", Vec3(0, 0, 10), 1.0f);
     }
 
@@ -420,7 +420,7 @@ private:
 
         float y_offset = 20.0f;
         for (const auto& instruction : instructions) {
-            renderer.setColor(Vec3(0.2f, 0.2f, 0.2f));
+            renderer.setColor(Color(0.2f, 0.2f, 0.2f));
             renderer.drawString(instruction, 20, y_offset);
             y_offset += 20.0f;
         }

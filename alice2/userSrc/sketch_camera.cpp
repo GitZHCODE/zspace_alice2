@@ -35,7 +35,7 @@ public:
     // Sketch lifecycle
     void setup() override {
         // Set a white background
-        scene().setBackgroundColor(Vec3(0.95f, 0.95f, 0.95f));
+        scene().setBackgroundColor(Color(0.95f, 0.95f, 0.95f));
         std::cout << "Geometry Sketch loaded - Background set to dark blue" << std::endl;
 
         // Example: Enable grid
@@ -69,10 +69,10 @@ public:
             renderer.multMatrix(transform);
             
             // Different colors for each cube
-            Vec3 colors[] = {
-                Vec3(1.0f, 0.3f, 0.3f), // Red
-                Vec3(0.3f, 1.0f, 0.3f), // Green
-                Vec3(0.3f, 0.3f, 1.0f)  // Blue
+            Color colors[] = {
+                Color(1.0f, 0.3f, 0.3f), // Red
+                Color(0.3f, 1.0f, 0.3f), // Green
+                Color(0.3f, 0.3f, 1.0f)  // Blue
             };
             
             renderer.drawCube(1.5f, colors[i]);
@@ -94,7 +94,7 @@ public:
             );
             
             // Color based on height
-            Vec3 color(
+            Color color(
                 0.5f + 0.5f * std::sin(t * PI),
                 0.5f + 0.5f * std::cos(t * PI),
                 0.8f
@@ -104,22 +104,22 @@ public:
         }
 
         // Draw connecting lines between cubes
-        renderer.setColor(Vec3(1.0f, 1.0f, 0.5f), 0.7f);
+        renderer.setColor(Color(1.0f, 1.0f, 0.5f));
         for (int i = 0; i < 2; i++) {
             Vec3 start(i * 3.0f - 3.0f, 0, 1);
             Vec3 end((i + 1) * 3.0f - 3.0f, 0, 1);
-            renderer.drawLine(start, end, Vec3(1.0f, 1.0f, 0.5f), 3.0f);
+            renderer.drawLine(start, end, Color(1.0f, 1.0f, 0.5f), 3.0f);
         }
 
         // 2D text rendering (screen overlay)
-        renderer.setColor(Vec3(0.0f, 0.0f, 0.0f));
+        renderer.setColor(Color(0.0f, 0.0f, 0.0f));
         renderer.drawString(getName(), 10, 30);
         renderer.drawString(getDescription(), 10, 50);
 
-        renderer.setColor(Vec3(1.0f, 0.0f, 0.5f));
+        renderer.setColor(Color(1.0f, 0.0f, 0.5f));
         renderer.drawString("FPS: " + std::to_string((Application::getInstance()->getFPS())), 10, 70);
 
-        renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
+        renderer.setColor(Color(0.75f, 0.75f, 0.75f));
         renderer.drawString("'ESC' - Exit ", 10, 200);
         renderer.drawString("'F'   - Extend view ", 10, 220);
         renderer.drawString("'N'   - Switch to the next sketch ", 10, 240);

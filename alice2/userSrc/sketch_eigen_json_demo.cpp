@@ -53,7 +53,7 @@ public:
                       7.0f, 8.0f, 9.0f;
 
         // Set up scene
-        scene().setBackgroundColor(Vec3(0.1f, 0.1f, 0.15f));
+        scene().setBackgroundColor(Color(0.1f, 0.1f, 0.15f));
         scene().setShowGrid(true);
         scene().setShowAxes(true);
     }
@@ -64,28 +64,28 @@ public:
 
     void draw(Renderer& renderer, Camera& camera) override {
         // Draw a simple visualization showing matrix values
-        renderer.drawPoint(Vec3(0, 0, 0), Vec3(1.0f, 0.0f, 0.0f), 10.0f);
+        renderer.drawPoint(Vec3(0, 0, 0), Color(1.0f, 0.0f, 0.0f), 10.0f);
 
         // 2D UI text
-        renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
+        renderer.setColor(Color(1.0f, 1.0f, 1.0f));
         renderer.drawString(getName(), 10, 30);
 
         // Display status
-        renderer.setColor(Vec3(0.8f, 0.8f, 1.0f));
+        renderer.setColor(Color(0.8f, 0.8f, 1.0f));
         renderer.drawString("Status: " + statusMessage, 10, 50);
 
         if (matrixSaved) {
-            renderer.setColor(Vec3(0.0f, 1.0f, 0.0f));
+            renderer.setColor(Color(0.0f, 1.0f, 0.0f));
             renderer.drawString("Matrix saved to JSON: SUCCESS", 10, 70);
         }
 
         if (matrixLoaded) {
-            renderer.setColor(Vec3(0.0f, 1.0f, 0.0f));
+            renderer.setColor(Color(0.0f, 1.0f, 0.0f));
             renderer.drawString("Matrix loaded from JSON: SUCCESS", 10, 90);
         }
 
         // Display original matrix values
-        renderer.setColor(Vec3(1.0f, 1.0f, 0.0f));
+        renderer.setColor(Color(1.0f, 1.0f, 0.0f));
         renderer.drawString("Original Matrix:", 10, 120);
         for (int i = 0; i < 3; ++i) {
             char row[100];
@@ -96,7 +96,7 @@ public:
 
         // Display loaded matrix values
         if (matrixLoaded) {
-            renderer.setColor(Vec3(0.0f, 1.0f, 1.0f));
+            renderer.setColor(Color(0.0f, 1.0f, 1.0f));
             renderer.drawString("Loaded Matrix:", 10, 220);
             for (int i = 0; i < 3; ++i) {
                 char row[100];
@@ -107,16 +107,16 @@ public:
         }
 
         // FPS and controls
-        renderer.setColor(Vec3(0.0f, 1.0f, 1.0f));
+        renderer.setColor(Color(0.0f, 1.0f, 1.0f));
         renderer.drawString("FPS: " + std::to_string(Application::getInstance()->getFPS()), 10, 320);
 
-        renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
+        renderer.setColor(Color(0.75f, 0.75f, 0.75f));
         renderer.drawString("'ESC' - Exit", 10, 350);
         renderer.drawString("'J'   - Export json", 10, 370);
         renderer.drawString("'L'   - Load json", 10, 390);
 
         // 3D text showing library integration
-        renderer.setColor(Vec3(1.0f, 0.5f, 0.0f));
+        renderer.setColor(Color(1.0f, 0.5f, 0.0f));
         renderer.drawText("Eigen + JSON", Vec3(0, 0, 3.0f), 1.0f);
     }
 

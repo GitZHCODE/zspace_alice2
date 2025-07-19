@@ -17,7 +17,7 @@ class ParticleSketch : public ISketch
     {
         Vec3 position;
         Vec3 velocity;
-        Vec3 color;
+        Color color;
         float life;
         float maxLife;
         float size;
@@ -63,7 +63,7 @@ public:
     void setup() override
     {
         // Set a black background for better particle visibility
-        scene().setBackgroundColor(Vec3(0.05f, 0.05f, 0.1f));
+        scene().setBackgroundColor(Color(0.05f, 0.05f, 0.1f));
         std::cout << "Particle System loaded - Background set to dark" << std::endl;
 
         // Example: Enable grid
@@ -105,13 +105,13 @@ public:
             {
                 // White to yellow to red
                 float t = (lifeRatio - 0.5f) * 2.0f;
-                p.color = Vec3(1.0f, t, t * 0.3f);
+                p.color = Color(1.0f, t, t * 0.3f);
             }
             else
             {
                 // Red to black
                 float t = lifeRatio * 2.0f;
-                p.color = Vec3(t, t * 0.2f, 0.0f);
+                p.color = Color(t, t * 0.2f, 0.0f);
             }
 
             // Remove dead particles
@@ -135,21 +135,21 @@ public:
         }
 
         // Draw emission point
-        renderer.drawPoint(Vec3(0, 0, 0), Vec3(0.8f, 0.8f, 1.0f), 10.0f);
+        renderer.drawPoint(Vec3(0, 0, 0), Color(0.8f, 0.8f, 1.0f), 10.0f);
 
         // Draw some reference lines
-        renderer.drawLine(Vec3(-2, 0, 0), Vec3(2, 0, 0), Vec3(0.3f, 0.3f, 0.3f), 1.0f);
-        renderer.drawLine(Vec3(0, -2, 0), Vec3(0, 2, 0), Vec3(0.3f, 0.3f, 0.3f), 1.0f);
+        renderer.drawLine(Vec3(-2, 0, 0), Vec3(2, 0, 0), Color(0.3f, 0.3f, 0.3f), 1.0f);
+        renderer.drawLine(Vec3(0, -2, 0), Vec3(0, 2, 0), Color(0.3f, 0.3f, 0.3f), 1.0f);
 
         // 2D text rendering (screen overlay)
-        renderer.setColor(Vec3(1.0f, 1.0f, 1.0f));
+        renderer.setColor(Color(1.0f, 1.0f, 1.0f));
         renderer.drawString(getName(), 10, 30);
         renderer.drawString(getDescription(), 10, 50);
 
-        renderer.setColor(Vec3(0.0f, 1.0f, 1.0f));
+        renderer.setColor(Color(0.0f, 1.0f, 1.0f));
         renderer.drawString("FPS: " + std::to_string((Application::getInstance()->getFPS())), 10, 70);
 
-        renderer.setColor(Vec3(0.75f, 0.75f, 0.75f));
+        renderer.setColor(Color(0.75f, 0.75f, 0.75f));
         renderer.drawString("'ESC' - Exit ", 10, 200);
         renderer.drawString("'F'   - Extend view ", 10, 220);
         renderer.drawString("'N'   - Switch to the next sketch ", 10, 240);
@@ -211,7 +211,7 @@ private:
             5.0f + m_dist(m_rng) * 2.0f);
 
         // Initial color (bright white/yellow)
-        p.color = Vec3(1.0f, 1.0f, 0.8f);
+        p.color = Color(1.0f, 1.0f, 0.8f);
 
         // Random life span
         p.maxLife = p.life = 2.0f + m_dist(m_rng) * 1.0f;

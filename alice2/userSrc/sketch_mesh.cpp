@@ -32,11 +32,10 @@ public:
         // Draw your custom content here
 
         renderer.drawTriangle(
-            Vec3(0,0,0),
-            Vec3(1,1,0),
-            Vec3(-1,1,0),
-            Vec3(1,0,0)
-        );
+            Vec3(0, 0, 0),
+            Vec3(1, 1, 0),
+            Vec3(-1, 1, 0),
+            Color(1, 0, 0));
     }
 
     // Input handling (optional)
