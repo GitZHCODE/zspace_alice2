@@ -53,7 +53,6 @@ public:
         m_cube = std::make_shared<MeshObject>("TestCube");
         m_cube->createCube(2.0f);
         m_cube->setRenderMode(MeshRenderMode::NormalShaded);
-        //m_cube->setNormalShadingColors(Color(1.0f, 0.8f, 0.2f), Color(0.2f, 0.1f, 0.4f)); // Orange to purple
         m_cube->setNormalShadingColors(Color(1.0f, 1.0f, 1.0f), Color(0.8f, 0.2f, 0.8f)); // White to magenta
         m_cube->getTransform().setTranslation(Vec3(-3.0f, 0.0f, 1.0f));
         scene().addObject(m_cube);
@@ -112,7 +111,7 @@ public:
             case 'm':
                 m_normalShadedMode = !m_normalShadedMode;
                 if (m_cube) {
-                    m_cube->setRenderMode(m_normalShadedMode ? MeshRenderMode::NormalShaded : MeshRenderMode::Lit);
+                    m_cube->setRenderMode(m_normalShadedMode ? MeshRenderMode::Lit : MeshRenderMode::NormalShaded);
                 }
                 if (m_plane) {
                     m_plane->setRenderMode(m_normalShadedMode ? MeshRenderMode::Lit : MeshRenderMode::NormalShaded);
