@@ -27,6 +27,7 @@ private:
     bool b_computeTorus;
     bool b_computeNoise;   // now “nodal” surface
     bool b_recreateField;
+    bool b_compute;
 
     // Draw toggles
     bool d_drawField;
@@ -54,6 +55,7 @@ public:
     ScalarField3DSketch()
         : m_scalarField(nullptr)
         , m_meshObject(nullptr)
+        , b_compute(true)
         , b_computeSphere(true)
         , b_computeBox(false)
         , b_computeTorus(false)
@@ -84,11 +86,11 @@ public:
 
     // Sketch information
     std::string getName() const override {
-        return "Mesh Sketch";
+        return "Nodal Surface Sketch";
     }
 
     std::string getDescription() const override {
-        return "Basic mesh rendering demonstration";
+        return "Nodal surface demonstration";
     }
 
     std::string getAuthor() const override {
@@ -121,18 +123,20 @@ public:
     void update(float deltaTime) override {
         m_time += deltaTime;
 
-        // If in “nodal” mode, update periodically
-        if (b_computeNoise) {
-            m_a1 = 1.0f * std::sin(m_time + 0.0f);
-            m_a2 = 1.0f * std::sin(m_time + 1.0f);
-            m_a3 = 1.0f * std::sin(m_time + 2.0f);
-            m_a4 = 1.0f * std::sin(m_time + 3.0f);
-            m_a5 = 1.0f * std::sin(m_time + 4.0f);
-            m_a6 = 1.0f * std::sin(m_time + 5.0f);
+        if(b_compute){
+            // If in “nodal” mode, update periodically
+            if (b_computeNoise) {
+                m_a1 = 1.0f * std::sin(m_time + 0.0f);
+                m_a2 = 1.0f * std::sin(m_time + 0.0f);
+                m_a3 = 1.0f * std::sin(m_time + 1.0f);
+                m_a4 = 1.0f * std::sin(m_time + 1.0f);
+                m_a5 = 1.0f * std::sin(m_time + 1.0f);
+                m_a6 = 1.0f * std::sin(m_time + 1.0f);
 
-            m_iso = 0.35f * std::sin(m_time + 0.0f);
+                m_iso = 0.35f * std::sin(m_time + 0.0f);
 
-            generateField();
+                generateField();
+            }
         }
     }
 
@@ -200,17 +204,24 @@ public:
             case '3': b_computeTorus  = true;  b_computeSphere = b_computeBox = b_computeNoise = false; generateField(); return true;
             case '4': b_computeNoise  = true;  b_computeSphere = b_computeBox = b_computeTorus = false; generateField(); return true;
 
-            case 'f': case 'F': d_drawField     = !d_drawField;     return true;
-            case 'm': case 'M': d_drawMesh      = !d_drawMesh;      return true;
-            case 'w': case 'W': d_drawWireframe = !d_drawWireframe; return true;
-            case 's': case 'S': d_drawSlice     = !d_drawSlice;     return true;
+            case 'f': d_drawField     = !d_drawField;     return true;
+            case 'm': d_drawMesh      = !d_drawMesh;      return true;
+            case 'w': d_drawWireframe = !d_drawWireframe; return true;
+            case 's': d_drawSlice     = !d_drawSlice;     return true;
 
             case 'l': m_isolevel += 0.05f; generateField(); return true;
             case 'k': m_isolevel -= 0.05f; generateField(); return true;
             case '[': m_currentSlice = std::max(0, m_currentSlice - 1); return true;
             case ']': m_currentSlice = std::min(m_fieldResolution-1, m_currentSlice + 1); return true;
+
+            case 'p': b_compute = !b_compute; return true;
         }
         return false;
+    }
+
+    void cleanup() override {
+        scene().removeObject(m_meshObject);
+        std::cout << "Scalar Field Sketch cleanup" << std::endl;
     }
 
     void generateMesh() {

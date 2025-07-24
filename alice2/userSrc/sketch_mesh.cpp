@@ -148,6 +148,12 @@ public:
     bool onMouseMove(int x, int y) override {
         return false;
     }
+
+    void cleanup() override {
+        scene().removeObject(m_cube);
+        scene().removeObject(m_plane);
+        std::cout << "Mesh Sketch cleanup" << std::endl;
+    }
 };
 
 // Register the sketch with alice2
