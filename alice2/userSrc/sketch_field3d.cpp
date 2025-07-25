@@ -20,6 +20,8 @@ private:
     // Core field & mesh
     std::unique_ptr<ScalarField3D> m_scalarField;
     std::shared_ptr<MeshObject> m_meshObject;
+    std::shared_ptr<MeshObject> m_meshObject_x;
+    std::shared_ptr<MeshObject> m_meshObject_y;
 
     // Which field to compute
     bool b_computeSphere;
@@ -55,6 +57,8 @@ public:
     ScalarField3DSketch()
         : m_scalarField(nullptr)
         , m_meshObject(nullptr)
+        , m_meshObject_x(nullptr)
+        , m_meshObject_y(nullptr)
         , b_compute(true)
         , b_computeSphere(true)
         , b_computeBox(false)
@@ -115,6 +119,11 @@ public:
         m_meshObject = std::make_shared<MeshObject>();
         scene().addObject(m_meshObject);
 
+        m_meshObject_x = std::make_shared<MeshObject>();
+        m_meshObject_y = std::make_shared<MeshObject>();
+        scene().addObject(m_meshObject_x);
+        scene().addObject(m_meshObject_y);
+
         generateField();
 
         std::cout << "3D Scalar Field: Setup complete" << std::endl;
@@ -154,6 +163,16 @@ public:
             m_meshObject->setRenderMode(MeshRenderMode::NormalShaded);
             //m_meshObject->setNormalShadingColors(Color(0.8f, 0.2f, 0.8f),Color(1.0f, 1.0f, 1.0f)); // Magentq to white
             m_meshObject->setNormalShadingColors(Color(1.0f, 1.0f, 1.0f), Color(0.8f, 0.2f, 0.8f)); // White to magenta
+
+            m_meshObject_x->setShowFaces(d_drawMesh);
+            m_meshObject_x->setShowEdges(d_drawWireframe);
+            m_meshObject_x->setRenderMode(MeshRenderMode::NormalShaded);
+            m_meshObject_x->setNormalShadingColors(Color(1.0f, 1.0f, 1.0f), Color(0.8f, 0.2f, 0.8f)); // White to magenta
+
+            m_meshObject_y->setShowFaces(d_drawMesh);
+            m_meshObject_y->setShowEdges(d_drawWireframe);
+            m_meshObject_y->setRenderMode(MeshRenderMode::NormalShaded);
+            m_meshObject_y->setNormalShadingColors(Color(1.0f, 1.0f, 1.0f), Color(0.8f, 0.2f, 0.8f)); // White to magenta
         }
 
         drawUI(renderer);
@@ -338,6 +357,17 @@ public:
         }
 
         generateMesh();
+
+        if(b_computeNoise)
+        {
+            // mirror meshes
+            m_meshObject_x->setMeshData(m_meshObject->getMeshData());
+            m_meshObject_y->setMeshData(m_meshObject->getMeshData());
+            m_meshObject_x->getTransform().setScale(Vec3(-1, 1, 1));
+            m_meshObject_y->getTransform().setScale(Vec3(1, -1, 1));
+            m_meshObject_x->getTransform().setTranslation(Vec3(-1.6f, 0, 0));
+            m_meshObject_y->getTransform().setTranslation(Vec3(0, -1.6f, 0));
+        }
     }
 
     float gyroid(const Vec3 &p, float f, float iso)
