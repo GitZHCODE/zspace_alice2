@@ -30,6 +30,9 @@ private:
     bool b_computeNoise;   // now “nodal” surface
     bool b_recreateField;
     bool b_compute;
+    bool b_export;
+
+    std::string m_path_export = "C:/Users/Taizh/source/repos/zspace_alice2/alice2/data/nodal_srf.obj";
 
     // Draw toggles
     bool d_drawField;
@@ -65,6 +68,7 @@ public:
         , b_computeTorus(false)
         , b_computeNoise(false)
         , b_recreateField(true)
+        , b_export(false)
         , d_drawField(false)
         , d_drawMesh(true)
         , d_drawWireframe(false)
@@ -147,6 +151,17 @@ public:
                 generateField();
             }
         }
+
+        if(b_export)
+        {
+            auto m_exportMesh = std::make_unique<MeshObject>(*m_meshObject);
+            m_exportMesh->combineWith(*m_meshObject_x);
+            m_exportMesh->combineWith(*m_meshObject_y);
+            m_exportMesh->weld();
+            m_exportMesh->writeToObj(m_path_export);
+
+            b_export = false;
+        }
     }
 
     void draw(Renderer& renderer, Camera& camera) override {
@@ -173,6 +188,11 @@ public:
             m_meshObject_y->setShowEdges(d_drawWireframe);
             m_meshObject_y->setRenderMode(MeshRenderMode::NormalShaded);
             m_meshObject_y->setNormalShadingColors(Color(1.0f, 1.0f, 1.0f), Color(0.8f, 0.2f, 0.8f)); // White to magenta
+
+            for(auto v : m_meshObject->getMeshData()->vertices)
+            {
+                renderer.drawLine(v.position,v.position+v.normal * 0.1,Color(0,0,0));
+            }
         }
 
         drawUI(renderer);
@@ -234,6 +254,7 @@ public:
             case ']': m_currentSlice = std::min(m_fieldResolution-1, m_currentSlice + 1); return true;
 
             case 'p': b_compute = !b_compute; return true;
+            case 'x': b_export = !b_export; return true;
         }
         return false;
     }
@@ -360,13 +381,32 @@ public:
 
         if(b_computeNoise)
         {
+            auto m = m_meshObject->duplicate();
+            // std::cout << m.getMeshData()->vertices.size() << std::endl;
+            // std::cout << m.getMeshData()->edges.size() << std::endl;
+            // std::cout << m.getMeshData()->faces.size() << std::endl;
             // mirror meshes
-            m_meshObject_x->setMeshData(m_meshObject->getMeshData());
-            m_meshObject_y->setMeshData(m_meshObject->getMeshData());
-            m_meshObject_x->getTransform().setScale(Vec3(-1, 1, 1));
-            m_meshObject_y->getTransform().setScale(Vec3(1, -1, 1));
-            m_meshObject_x->getTransform().setTranslation(Vec3(-1.6f, 0, 0));
-            m_meshObject_y->getTransform().setTranslation(Vec3(0, -1.6f, 0));
+            // m_meshObject_x = std::make_shared<MeshObject>(m_meshObject->duplicate());
+            // m_meshObject_y = std::make_shared<MeshObject>(m_meshObject->duplicate());
+
+            // auto data = std::make_shared<MeshData>(*m_meshObject->getMeshData());
+            // m_meshObject_x->setMeshData(data);
+            // std::cout << m_meshObject_x->getMeshData()->vertices.size() << std::endl;
+            // std::cout << m_meshObject_x->getMeshData()->edges.size() << std::endl;
+            // std::cout << m_meshObject_x->getMeshData()->faces.size() << std::endl;
+
+            *m_meshObject_x = m_meshObject->duplicate();
+            *m_meshObject_y = m_meshObject->duplicate();
+
+            // m_meshObject_x->getTransform().setScale(Vec3(-1, 1, 1));
+            // m_meshObject_y->getTransform().setScale(Vec3(1, -1, 1));
+            // m_meshObject_x->getTransform().setTranslation(Vec3(-1.6f, 0, 0));
+            // m_meshObject_y->getTransform().setTranslation(Vec3(0, -1.6f, 0));
+
+            m_meshObject_x->scaleMesh(Vec3(-1, 1, 1));
+            m_meshObject_y->scaleMesh(Vec3(1, -1, 1));
+            m_meshObject_x->translateMesh(Vec3(-1.6f, 0, 0));
+            m_meshObject_y->translateMesh(Vec3(0, -1.6f, 0));
         }
     }
 
