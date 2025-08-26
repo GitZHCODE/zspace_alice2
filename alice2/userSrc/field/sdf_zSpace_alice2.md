@@ -73,7 +73,7 @@ alice2/
 ```
 
 ---
-
+https://github.com/GitZHCODE/zspace_alice2/blob/main/alice2/userSrc/field/README_ScalarField_Educational_Series.md
 ## Core Components
 
 ### ScalarField2D API
