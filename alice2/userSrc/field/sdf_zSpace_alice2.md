@@ -16,6 +16,8 @@
 2.[Architecture Overview](#architecture-overview)
 
 3.[Core Components](#core-components)
+
+[Scalar Field – Educational Series](./README_ScalarField_Educational_Series.md)
   
 4.[User Sketches](#user-sketches)
    
