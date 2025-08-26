@@ -16,20 +16,15 @@
 2.[Architecture Overview](#architecture-overview)
 
 3.[Core Components](#core-components)
-
-[Scalar Field – Educational Series](./README_ScalarField_Educational_Series.md)
   
-4.[User Sketches](#user-sketches)
+4.[Scalar Field– Educational Series](./README_ScalarField_Educational_Series.md)
+
+5.[User Sketch](./README.md)
    
 5.[Example Workflow](#example-workflow)
 
 6.[Export Utilities](#export-utilities)
 
-7.[Citing](#citing)
-
-8.[License](#license)
-
-9.[Third‑party Dependencies](#thirdparty-dependencies)
 
 
 ---
@@ -260,28 +255,4 @@ void exportSdfToJson(const ScalarField2D& field, const std::string& filename) {
 
 ```
 
----
-
-## Citing
-If you use the library of ZSPACE in a project, please refer to the GitHub repository.
-
-```bibtex
-@misc{zspace-framework,
-  title  = {{zspace}: A simple C++ header-only collection of geometry data-structures, algorithms and city data visualization framework.},
-  author = {Taizhong Chen},
-  note   = {https://github.com/venumb/ZSPACE},
-  year   = {2018}
-}
-```
-
-## License
-The library is licensed under the **MIT License**.
-
-## Third-party dependencies
-The library has some dependencies on third-party tools and services, which have different licensing as listed below. Thanks a lot!
-
-- **OpenGL** for display methods. End users, independent software vendors, and others writing code based on the OpenGL API are free from licensing requirements.
-- **stb** for text rendering. These single-file libraries are released into the **public domain** and can be used freely for any purpose.
-- **GLEW** for managing OpenGL extensions. GLEW is open-source and distributed under the **Modified BSD** license, allowing free use in both open and closed source projects.
-- **GLFW** for window and input management. GLFW is licensed under the **zlib/libpng** license, permitting free use in commercial and non-commercial applications.
 
