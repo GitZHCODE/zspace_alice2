@@ -140,23 +140,12 @@ Built on OpenGL with modern C++ abstractions:
 
 ---
 
-## User Sketches
+[Scalar Field– Educational Series](./README_ScalarField_Educational_Series.md)
 
-### Template
+---
 
-#### **SDF Tower Template** (`sketch_sdf_basic.cpp`)
-**Purpose**: Starting point for custom SDF sketches with configurable geometry
-- **Base Structure**: Rectangle with corner circle modifications
-- **Configuration**: Centralized parameters for easy customization
-- **Features**: 
-  - Configurable corner positions and radii
-  - Boolean operations (union/subtract) on corner circles
-  - Smooth interpolation from modified rectangle to pure circle
-  - Multi-level contour visualization (tower effect)
-- **Potential Customization Points**:
-  - `rectHalfSize` and `circleRadius` for base geometry
-  - `cornerParams` array for corner circle definitions
-  - `numFloors` and `spacing` for tower visualization
+
+[User Sketch](./README.md)
 
 
 ---
