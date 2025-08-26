@@ -161,30 +161,6 @@ Built on OpenGL with modern C++ abstractions:
   - `cornerParams` array for corner circle definitions
   - `numFloors` and `spacing` for tower visualization
 
----
-
-### Example Sketches
-
-A collection of practical examples demonstrating SDF creation, manipulation, and visualization techniques:
-
-#### **1. Basic Field Construction** (`sketch_scalarField_01_basic.cpp`)
-**Demonstrates**: Fundamental SDF field creation and visualization
-- **Interactive Controls**: `G` (geometry toggle), `C` (contours), `F` (field points), `V` (values)
-
-
-#### **2. Boolean Operations** (`sketch_scalarField_02_boolean.cpp`)
-**Demonstrates**: Combining multiple SDF shapes using boolean operations
-- **Interactive Controls**: `B` (boolean toggle), `U` (union preview), `S` (subtract preview)
-
-
-#### **3. SDF Blending & Tower Visualization** (`sketch_scalarField_03_blending.cpp`)
-**Demonstrates**: Smooth blending between SDFs and 3D multi-level visualization
-- **Interactive Controls**: `B` (blend), `T` (tower), `+`/`-` (blend adjustment)
-
-
-#### **4. Directional Operations** (`sketch_scalarField_04_directional.cpp`)
-**Demonstrates**: Environmental influence on SDFs using vector mathematics
-- **Interactive Controls**: `S` (sun animation), `Arrow Keys` (manual control), `D` (directional)
 
 ---
 
