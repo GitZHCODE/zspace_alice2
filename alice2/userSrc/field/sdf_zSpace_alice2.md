@@ -1,0 +1,309 @@
+# SDF zSpace_Alice2
+
+*Alice2 utilities and user sketches for generating, visualizing, and exporting signed distance fields (SDF). Produces DF25‑compliant `sdf.json` + `sdf.raw`/`sdf.npy` from geometry or from GH scalar fields.*
+
+**Targets**: Windows 10/11 (x64), Z‑up.  
+**Runtime DLLs**: included with **Alice2** (OpenGL/GLFW/GLEW/stb, plus project DLLs).  
+**Related**: Step 1 — `Scalar_Field_GH` (Grasshopper export of `data_field.json`).
+
+---
+
+## Table of Contents
+
+
+1.[Introduction](#introduction)
+
+2.[Architecture Overview](#architecture-overview)
+
+3.[Core Components](#core-components)
+  
+4.[User Sketches](#user-sketches)
+   
+5.[Example Workflow](#example-workflow)
+
+6.[Export Utilities](#export-utilities)
+
+7.[Citing](#citing)
+
+8.[License](#license)
+
+9.[Third‑party Dependencies](#thirdparty-dependencies)
+
+
+---
+
+## Introduction
+
+`SDF_Alice2` is a comprehensive C++ framework for creating, manipulating, and visualizing signed distance fields (SDFs) within the Alice2 3D scene viewer. It transforms geometric primitives, procedural shapes, and external data into **DF25 SDF** format suitable for downstream machine learning and AI rendering pipelines.
+
+**Key Capabilities:**
+- **Real-time SDF Generation**: Dynamic scalar field creation from circles, rectangles, polygons, and Voronoi diagrams
+- **Advanced Boolean Operations**: Union, intersection, subtraction, and smooth blending with configurable parameters
+- **Interactive Visualization**: Live preview with contour extraction, gradient visualization, and 3D rendering
+- **Export Pipeline**: Direct DF25 export (`sdf.json` + `sdf.raw`) or conversion from Grasshopper JSON
+- **Educational Framework**: Progressive learning series from basic concepts to advanced techniques
+
+> **Coordinate System**: Z‑up, consistent with zSpace framework conventions.
+
+---
+
+## Architecture Overview
+
+Alice2 follows a modular architecture designed for extensibility and educational use:
+
+```
+alice2/
+├── src/                    # Core engine (C++20)
+│   ├── core/              # Application, Scene, Renderer, Camera
+│   ├── objects/           # Scene objects and primitives
+│   ├── input/             # Input handling and camera control
+│   ├── sketches/          # Sketch management system
+│   └── utils/             # Math utilities and OpenGL helpers
+├── userSrc/               # User sketches and examples
+│   ├── scalarField.h      # Core ScalarField2D implementation
+│   ├── sketch_*.cpp       # Educational and utility sketches
+│   └── README_*.md        # Detailed documentation
+├── depends/               # Third-party libraries
+│   ├── eigen/             # Linear algebra (header-only)
+│   ├── nlohmann/          # JSON I/O (header-only)
+│   ├── glfw/              # Window management
+│   ├── glew/              # OpenGL extensions
+│   └── stb/               # Image utilities
+└── build/                 # CMake-generated build files
+```
+
+---
+
+## Core Components
+
+### ScalarField2D API
+
+The `scalarField.h` header provides a modern, RAII-compliant **ScalarField2D** class that serves as the foundation for all SDF operations:
+
+#### **Primitive Operations**
+- **`apply_scalar_circle(center, radius)`** — Circular SDF with negative inside values
+- **`apply_scalar_rect(center, half_size, angle)`** — Oriented rectangular SDF
+- **`apply_scalar_line(start, end, thickness)`** — Capsule/line SDF
+- **`apply_scalar_polygon(vertices)`** — Arbitrary polygon SDF
+- **`apply_scalar_voronoi(sites)`** — Voronoi edge distance field
+- **`apply_scalar_ellipse(center, rx, ry, rotation)`** — Elliptical SDF
+
+#### **Boolean Operations**
+```cpp
+// Hard boolean operations
+void boolean_union(const ScalarField2D& other);
+void boolean_intersect(const ScalarField2D& other);
+void boolean_subtract(const ScalarField2D& other);
+
+// Smooth blending operations
+void boolean_smin(const ScalarField2D& other, float smoothing = 1.0f);
+void boolean_smin_weighted(const ScalarField2D& other, 
+                          float smoothing = 1.0f, float weight = 0.5f);
+```
+
+#### **Analysis & Visualization**
+- **`get_contours(threshold)`** — Marching squares contour extraction
+- **`get_gradient()`** — Finite difference gradient computation
+- **`draw_points(renderer, step)`** — Jet color-mapped field visualization
+- **`draw_values(renderer, step)`** — 3D text value display
+
+> **Sign Convention**: Inside < 0, Outside > 0 (consistent throughout the API)
+
+### Sketch System
+
+Alice2 implements a sophisticated sketch management system that enables rapid prototyping and educational exploration:
+
+#### **Sketch Lifecycle**
+```cpp
+class ISketch {
+    virtual void setup() = 0;           // Initialization
+    virtual void update(float deltaTime) = 0;  // Animation loop
+    virtual void draw(Renderer& renderer, Camera& camera) = 0;
+    
+    // Metadata for UI integration
+    virtual std::string getName() const = 0;
+    virtual std::string getDescription() const = 0;
+    virtual std::string getAuthor() const = 0;
+};
+```
+
+#### **Hot Reload Support**
+- Automatic sketch discovery in `userSrc/` directory
+- Runtime sketch switching without application restart
+- Dynamic library loading for compiled sketches
+
+### Rendering Pipeline
+
+Built on OpenGL with modern C++ abstractions:
+- **Scene Graph**: Hierarchical object management
+- **Camera System**: Perspective/orthographic with controller support
+- **Renderer**: OpenGL state management and primitive drawing
+- **Input Handling**: GLFW-based input with camera control integration
+
+
+---
+
+## User Sketches
+
+### Template
+
+#### **SDF Tower Template** (`sketch_sdf_basic.cpp`)
+**Purpose**: Starting point for custom SDF sketches with configurable geometry
+- **Base Structure**: Rectangle with corner circle modifications
+- **Configuration**: Centralized parameters for easy customization
+- **Features**: 
+  - Configurable corner positions and radii
+  - Boolean operations (union/subtract) on corner circles
+  - Smooth interpolation from modified rectangle to pure circle
+  - Multi-level contour visualization (tower effect)
+- **Potential Customization Points**:
+  - `rectHalfSize` and `circleRadius` for base geometry
+  - `cornerParams` array for corner circle definitions
+  - `numFloors` and `spacing` for tower visualization
+
+---
+
+### Example Sketches
+
+A collection of practical examples demonstrating SDF creation, manipulation, and visualization techniques:
+
+#### **1. Basic Field Construction** (`sketch_scalarField_01_basic.cpp`)
+**Demonstrates**: Fundamental SDF field creation and visualization
+- **Interactive Controls**: `G` (geometry toggle), `C` (contours), `F` (field points), `V` (values)
+
+
+#### **2. Boolean Operations** (`sketch_scalarField_02_boolean.cpp`)
+**Demonstrates**: Combining multiple SDF shapes using boolean operations
+- **Interactive Controls**: `B` (boolean toggle), `U` (union preview), `S` (subtract preview)
+
+
+#### **3. SDF Blending & Tower Visualization** (`sketch_scalarField_03_blending.cpp`)
+**Demonstrates**: Smooth blending between SDFs and 3D multi-level visualization
+- **Interactive Controls**: `B` (blend), `T` (tower), `+`/`-` (blend adjustment)
+
+
+#### **4. Directional Operations** (`sketch_scalarField_04_directional.cpp`)
+**Demonstrates**: Environmental influence on SDFs using vector mathematics
+- **Interactive Controls**: `S` (sun animation), `Arrow Keys` (manual control), `D` (directional)
+
+---
+
+## Example Workflow
+
+### Complete SDF Generation Pipeline
+
+```cpp
+// 1. Create field with desired resolution
+ScalarField2D field(Vec3(-100, -100, 0), Vec3(100, 100, 0), 256, 256);
+
+// 2. Apply geometric primitives
+field.apply_scalar_rect(Vec3(0, 0, 0), Vec3(50, 30, 0), 0.0f);
+field.apply_scalar_circle(Vec3(20, 15, 0), 25.0f);
+
+// 3. Perform boolean operations
+ScalarField2D circle2(Vec3(-20, -15, 0), Vec3(100, 100, 0), 256, 256);
+circle2.apply_scalar_circle(Vec3(-20, -15, 0), 20.0f);
+field.boolean_smin(circle2, 2.0f);
+
+// 4. Extract contours for visualization
+ContourData contours = field.get_contours(0.0f);
+
+// 5. Visualize and analyze the field
+// The field is now ready for further processing or visualization
+```
+
+### Integration with Machine Learning Pipeline
+1. **Generate SDF**: Use Alice2 for interactive design and validation
+2. **Process Field**: Apply boolean operations and blending as needed
+3. **Train Model**: Use the generated SDF data for ML model training
+4. **Inference**: Generate new SDFs from learned representations
+5. **Visualization**: Return to Alice2 for result validation
+
+### Advanced Example
+
+#### **Voronoi SDF** (`sketch_voronoi.cpp`)
+Complex procedural generation using Voronoi diagrams:
+- Multi-field composition (facade, core, base)
+- Dynamic site generation with proximity constraints
+- Real-time field combination and visualization
+- Building massing and urban planning applications
+
+![Voronoi SDF Visualization 1](Assets/screenshot_20250703_105923_874.png)
+*Figure 1: Voronoi SDF visualization showing multi-field composition and dynamic generation*
+
+![Voronoi SDF Visualization 2](Assets/Screenshot%202025-08-26%20204509.png)
+*Figure 2: Ellipse and rectangle dynamic generation*
+
+---
+
+### Export Utilities
+
+#### **JSON Export Utilities**
+
+The framework provides JSON export capabilities for SDF data using the integrated nlohmann/json library:
+
+```cpp
+#include <nlohmann/json.hpp>
+#include <fstream>
+using json = nlohmann::json;
+
+void exportSdfToJson(const ScalarField2D& field, const std::string& filename) {
+    // Extract field data
+    auto [nx, ny] = field.get_resolution();
+    auto [bbmin, bbmax] = field.get_bounds();
+    std::vector<float> values = field.get_values();
+    
+    // Create JSON structure
+    json j = {
+        {"metadata", {
+            {"name", "alice2_sdf_export"},
+            {"version", "1.0"},
+            {"timestamp", "2024-01-01T00:00:00Z"},
+            {"source", "alice2:ScalarField2D"}
+        }},
+        {"grid", {
+            {"resolution", {nx, ny}},
+            {"bounds", {
+                {"min", {bbmin.x, bbmin.y, bbmin.z}},
+                {"max", {bbmax.x, bbmax.y, bbmax.z}}
+            }}
+        }},
+        {"data", {
+            {"values", values},
+            {"sign_convention", "inside<0, outside>0"},
+            {"data_type", "float32"}
+        }}
+    };
+    
+    // Write to file
+    std::ofstream file(filename);
+    file << j.dump(2);
+}
+
+```
+
+---
+
+## Citing
+If you use the library of ZSPACE in a project, please refer to the GitHub repository.
+
+```bibtex
+@misc{zspace-framework,
+  title  = {{zspace}: A simple C++ header-only collection of geometry data-structures, algorithms and city data visualization framework.},
+  author = {Taizhong Chen},
+  note   = {https://github.com/venumb/ZSPACE},
+  year   = {2018}
+}
+```
+
+## License
+The library is licensed under the **MIT License**.
+
+## Third-party dependencies
+The library has some dependencies on third-party tools and services, which have different licensing as listed below. Thanks a lot!
+
+- **OpenGL** for display methods. End users, independent software vendors, and others writing code based on the OpenGL API are free from licensing requirements.
+- **stb** for text rendering. These single-file libraries are released into the **public domain** and can be used freely for any purpose.
+- **GLEW** for managing OpenGL extensions. GLEW is open-source and distributed under the **Modified BSD** license, allowing free use in both open and closed source projects.
+- **GLFW** for window and input management. GLFW is licensed under the **zlib/libpng** license, permitting free use in commercial and non-commercial applications.
+
