@@ -1,4 +1,4 @@
-# Alice2 MLP Educational Sketch
+# Alice2 MLP Sketch
 
 This directory contains the **MLP Polygon SDF Learning** sketch for the Alice2 3D viewer. This educational sketch demonstrates Multi-Layer Perceptron (MLP) learning for polygon Signed Distance Function (SDF) approximation.
 
