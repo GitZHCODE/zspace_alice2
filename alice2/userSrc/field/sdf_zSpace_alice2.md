@@ -21,7 +21,7 @@
 
 5.[User Sketch](./README.md)
    
-5.[Example Workflow](#example-workflow)
+5.[Advanced Example](#Advanced-Example)
 
 6.[Export Utilities](#export-utilities)
 
@@ -150,40 +150,9 @@ Built on OpenGL with modern C++ abstractions:
 
 ---
 
-## Example Workflow
+## Advanced Example
 
-### Complete SDF Generation Pipeline
-
-```cpp
-// 1. Create field with desired resolution
-ScalarField2D field(Vec3(-100, -100, 0), Vec3(100, 100, 0), 256, 256);
-
-// 2. Apply geometric primitives
-field.apply_scalar_rect(Vec3(0, 0, 0), Vec3(50, 30, 0), 0.0f);
-field.apply_scalar_circle(Vec3(20, 15, 0), 25.0f);
-
-// 3. Perform boolean operations
-ScalarField2D circle2(Vec3(-20, -15, 0), Vec3(100, 100, 0), 256, 256);
-circle2.apply_scalar_circle(Vec3(-20, -15, 0), 20.0f);
-field.boolean_smin(circle2, 2.0f);
-
-// 4. Extract contours for visualization
-ContourData contours = field.get_contours(0.0f);
-
-// 5. Visualize and analyze the field
-// The field is now ready for further processing or visualization
-```
-
-### Integration with Machine Learning Pipeline
-1. **Generate SDF**: Use Alice2 for interactive design and validation
-2. **Process Field**: Apply boolean operations and blending as needed
-3. **Train Model**: Use the generated SDF data for ML model training
-4. **Inference**: Generate new SDFs from learned representations
-5. **Visualization**: Return to Alice2 for result validation
-
-### Advanced Example
-
-#### **Voronoi SDF** (`sketch_voronoi.cpp`)
+### **Voronoi SDF** (`sketch_voronoi.cpp`)
 Complex procedural generation using Voronoi diagrams:
 - Multi-field composition (facade, core, base)
 - Dynamic site generation with proximity constraints
@@ -198,9 +167,9 @@ Complex procedural generation using Voronoi diagrams:
 
 ---
 
-### Export Utilities
+## Export Utilities
 
-#### **JSON Export Utilities**
+### **JSON Export Utilities**
 
 The framework provides JSON export capabilities for SDF data using the integrated nlohmann/json library:
 
