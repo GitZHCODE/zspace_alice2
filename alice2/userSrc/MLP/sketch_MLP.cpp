@@ -7,6 +7,7 @@
 #include <alice2.h>
 #include <sketches/SketchRegistry.h>
 #include <ML/polygonSDF_MLP.h>
+#include <objects/GraphObject.h>
 #include <fstream>
 #include <charconv>
 #include <set>
@@ -23,7 +24,7 @@ private:
     std::vector<Vec3> m_polygon;
     std::vector<Vec3> m_training_samples;
     std::vector<float> m_sdf_ground_truth;
-    ContourData m_contours;
+    GraphObject m_contours;
     float building_width = 30.0f;
     float building_height = 40.0f;
     int NUM_CENTERS;
@@ -394,6 +395,9 @@ private:
         // Update field visualization
         m_mlp.GenerateField(m_mlp_input_data);
         m_contours = m_mlp.generatedField.get_contours(0.02f);
+        m_contours.setShowVertices(false);
+        m_contours.setEdgeWidth(2.0f);
+        m_contours.setEdgeColor(Color(0.0f, 0.0f, 0.0f));
 
         // Print loss occasionally
         static int step_count = 0;
@@ -407,15 +411,34 @@ private:
     {
         m_mlp.GenerateField(m_mlp_input_data);
         m_contours = m_mlp.generatedField.get_contours(0.02f);
+        m_contours.setShowVertices(false);
+        m_contours.setEdgeWidth(2.0f);
+        m_contours.setEdgeColor(Color(0.0f, 0.0f, 0.0f));
         std::cout << "Field updated" << std::endl;
     }
 
     // Helper methods for visualization
     void draw_contours(Renderer& renderer)
     {
-        renderer.setColor(Color(0.0f, 0.0f, 0.0f)); // White contours
-        for (const auto& line : m_contours.line_segments) {
-            renderer.drawLine(line.first, line.second, Color(0.0f, 0.0f, 0.0f), 2.0f);
+        renderer.setColor(Color(0.0f, 0.0f, 0.0f));
+        auto data = m_contours.getGraphData();
+        if (!data)
+        {
+            return;
+        }
+
+        for (const auto& edge : data->edges)
+        {
+            if (edge.vertexA < 0 || edge.vertexB < 0 ||
+                edge.vertexA >= static_cast<int>(data->vertices.size()) ||
+                edge.vertexB >= static_cast<int>(data->vertices.size()))
+            {
+                continue;
+            }
+
+            const Vec3& start = data->vertices[edge.vertexA].position;
+            const Vec3& end = data->vertices[edge.vertexB].position;
+            renderer.drawLine(start, end, Color(0.0f, 0.0f, 0.0f), 2.0f);
         }
     }
 
@@ -514,3 +537,8 @@ private:
 // ALICE2_REGISTER_SKETCH_AUTO(MLPSketch)
 
 #endif // __MAIN__
+
+
+
+
+
