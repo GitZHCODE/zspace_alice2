@@ -4,6 +4,7 @@
 #include <alice2.h>
 #include <sketches/SketchRegistry.h>
 #include <computeGeom/scalarField.h>
+#include <objects/GraphObject.h>
 #include <computeGeom/scalarField3D.h>
 #include <objects/MeshObject.h>
 
@@ -54,38 +55,27 @@ public:
         // renderer.setColor(Color(0.9f, 0.9f, 0.9f));
         renderer.setColor(Color(0.1f, 0.1f, 0.1f));
         renderer.drawString("Slices: " + std::to_string(m_contours.size()), 10, 30);
-        renderer.drawString("Spacing (+/-): " + std::to_string(m_sliceSpacing), 10, 50);
+        renderer.drawString("Spacing (O/I): " + std::to_string(m_sliceSpacing), 10, 50);
         renderer.drawString("J: smooth slices, K: stack Laplacian", 10, 70);
         renderer.drawString("P: generate mesh, D: toggle mesh", 10, 90);
         renderer.drawString("E: export fields + mesh", 10, 110);
         renderer.drawString("Mesh visible: " + std::string(m_meshVisible ? "yes" : "no"), 10, 130);
         renderer.drawString(m_statusMessage, 10, 150);
 
-        for (size_t idx = 0; idx < m_contours.size(); ++idx) {
-            const float z = static_cast<float>(idx) * m_sliceSpacing;
-            const float hue = 360.0f * (static_cast<float>(idx) / std::max<size_t>(1, m_contours.size()));
-            float r, g, b;
-            ScalarFieldUtils::get_hsv_color(hue / 360.0f * 2.0f - 1.0f, r, g, b);
-            renderer.setColor(Color(r, g, b));
-
-            for (const auto& seg : m_contours[idx]) {
-                renderer.drawLine(seg.first + Vec3(0, 0, z),
-                                  seg.second + Vec3(0, 0, z),
-                                  Color(r, g, b),
-                                  1.0f);
-            }
-        }
+        updateContourPlacement();
     }
-
+    
     bool onKeyPress(unsigned char key, int /*x*/, int /*y*/) override {
-        if (key == '+' || key == '=') {
+        if (key == 'o' || key == 'O') {
             m_sliceSpacing = std::min(m_sliceSpacing + 0.05f, 2.0f);
             invalidateVolumeMesh();
+            updateContourPlacement();
             return true;
         }
-        if (key == '-' || key == '_') {
+        if (key == 'i' || key == 'I') {
             m_sliceSpacing = std::max(m_sliceSpacing - 0.05f, 0.05f);
             invalidateVolumeMesh();
+            updateContourPlacement();
             return true;
         }
         if (key == 'j' || key == 'J') {
@@ -167,7 +157,7 @@ private:
 
         m_fields.clear();
         m_fieldKeys.clear();
-        m_contours.clear();
+        clearContourObjects();
         for (auto& entry : fieldData) {
             ScalarField2D slice(bmin, bmax, resX, resY);
             slice.set_values(entry.second);
@@ -398,10 +388,51 @@ private:
     }
 
     void regenerateContours() {
-        m_contours.clear();
+        clearContourObjects();
         m_contours.reserve(m_fields.size());
-        for (auto& field : m_fields) {
-            m_contours.emplace_back(field.get_contours(m_isoLevel).line_segments);
+
+        for (size_t idx = 0; idx < m_fields.size(); ++idx) {
+            GraphObject contourGraph = m_fields[idx].get_contours(m_isoLevel);
+            contourGraph.setShowVertices(false);
+            contourGraph.setShowEdges(true);
+            contourGraph.setEdgeWidth(1.0f);
+
+            auto contour = std::make_shared<GraphObject>(std::move(contourGraph));
+            contour->setName("FieldSliceContour_" + std::to_string(idx));
+            scene().addObject(contour);
+            m_contours.emplace_back(std::move(contour));
+        }
+
+        updateContourPlacement();
+    }
+
+    void clearContourObjects() {
+        for (auto& contour : m_contours) {
+            if (contour) {
+                scene().removeObject(contour);
+            }
+        }
+        m_contours.clear();
+    }
+
+    void updateContourPlacement() {
+        const size_t count = m_contours.size();
+        if (count == 0) {
+            return;
+        }
+
+        for (size_t idx = 0; idx < count; ++idx) {
+            auto& contour = m_contours[idx];
+            if (!contour) {
+                continue;
+            }
+
+            const float hue = 360.0f * (static_cast<float>(idx) / std::max<size_t>(1, count));
+            float r, g, b;
+            ScalarFieldUtils::get_hsv_color(hue / 360.0f * 2.0f - 1.0f, r, g, b);
+            contour->setEdgeColor(Color(r, g, b));
+            contour->setColor(Color(r, g, b));
+            contour->getTransform().setTranslation(Vec3(0, 0, static_cast<float>(idx) * m_sliceSpacing));
         }
     }
 
@@ -419,7 +450,7 @@ private:
     const std::string m_outputMeshName = "outMesh.obj";
 
     std::vector<ScalarField2D> m_fields;
-    std::vector<std::vector<std::pair<Vec3, Vec3>>> m_contours;
+    std::vector<std::shared_ptr<GraphObject>> m_contours;
     std::vector<std::string> m_fieldKeys;
     float m_isoLevel = 0.01f;
     float m_sliceSpacing = 3.5f;
@@ -441,3 +472,8 @@ private:
 ALICE2_REGISTER_SKETCH_AUTO(FieldStackFromJson)
 
 #endif // __MAIN__
+
+
+
+
+
