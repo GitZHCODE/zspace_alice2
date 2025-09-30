@@ -4,6 +4,7 @@
 #include <alice2.h>
 #include <sketches/SketchRegistry.h>
 #include "../src/computeGeom/ComputeGraph.h"
+#include <algorithm>
 #include <array>
 #include <utility>
 #include <vector>
@@ -106,6 +107,45 @@ public:
             case '2':
                 cycleSelection(1);
                 return true;
+
+            case 'w': {
+                m_computeGraph->weld(0.15f);
+                m_computeGraph->updateHalfEdgeData();
+                const int vertexCount = static_cast<int>(m_computeGraph->getVertices().size());
+                if (vertexCount > 0) {
+                    m_selectedVertexId = std::clamp(m_selectedVertexId, 0, vertexCount - 1);
+                } else {
+                    m_selectedVertexId = 0;
+                }
+                printGraphStatistics();
+                return true;
+            }
+
+            case 'u': {
+                auto m_graphs = m_computeGraph->separate();
+                std::cout << "Number of graphs after separating: " << m_graphs.size() << std::endl;
+                return true;
+            }
+
+            case 'r':
+                if (m_computeGraph->isPolyline()) {
+                    m_computeGraph->resample(0.25f);
+                    m_computeGraph->updateHalfEdgeData();
+                    const int vertexCount = static_cast<int>(m_computeGraph->getVertices().size());
+                    if (vertexCount > 0) {
+                        m_selectedVertexId = std::clamp(m_selectedVertexId, 0, vertexCount - 1);
+                    } else {
+                        m_selectedVertexId = 0;
+                    }
+                    printGraphStatistics();
+                } else {
+                    std::cout << "Resample skipped: graph is not a single polyline" << std::endl;
+                }
+                return true;
+
+            case 't':
+                runGraphOperationSmokeTests();
+                return true;
         }
         return false;
     }
@@ -128,76 +168,71 @@ private:
             return;
         }
 
-        m_selectedVertexId = (m_selectedVertexId + delta) % count;
+        m_selectedVertexId += delta;
         if (m_selectedVertexId < 0) {
-            m_selectedVertexId += count;
+            m_selectedVertexId = count - 1;
+        } else if (m_selectedVertexId >= count) {
+            m_selectedVertexId = 0;
         }
 
-        logSelectedVertexInfo();
+        if (d_showNeighbors) {
+            logSelectedVertexInfo();
+        }
     }
 
     void createTestGraph() {
-        GraphData data;
-        data.clear();
+        std::vector<Vec3> positions = {
+            // Vec3(-3.0f, -1.0f, 0.0f),
+            // Vec3(-2.99f, -1.0f, 0.0f),
+            // Vec3(-1.0f, 0.5f, 0.0f),
+            // Vec3(0.5f, -0.5f, 0.0f),
+            // Vec3(2.0f, 1.5f, 0.0f),
+            // Vec3(3.5f, 0.0f, 0.0f),
+            // Vec3(0.0f, 3.0f, 0.0f),
+            // Vec3(-2.0f, 2.5f, 0.0f),
+            // Vec3(2.5f, -2.0f, 0.0f)
 
-        // Cube vertices.
-        const std::array<Vec3, 8> cubePositions = {
-            Vec3(-1, -1, -1), // 0
-            Vec3( 1, -1, -1), // 1
-            Vec3( 1,  1, -1), // 2
-            Vec3(-1,  1, -1), // 3
-            Vec3(-1, -1,  1), // 4
-            Vec3( 1, -1,  1), // 5
-            Vec3( 1,  1,  1), // 6
-            Vec3(-1,  1,  1)  // 7
+            Vec3(0.0f, 0.0f, 0.0f),
+            Vec3(0.49f, 0.0f, 0.0f),
+            Vec3(0.5f, 0.0f, 0.0f),
+            Vec3(1.0f, 0.0f, 0.0f),
+
+            Vec3(2.0f, 0.0f, 0.0f),
+            Vec3(2.0f, 1.0f, 0.0f)
+
         };
 
-        const Color cubeColor(0.55f, 0.75f, 1.0f);
-        for (const auto& pos : cubePositions) {
-            data.addVertex(pos, cubeColor);
+        std::vector<std::pair<int, int>> edges = {
+            // {0, 1},
+            // {1, 2},
+            // {2, 3},
+            // {3, 4},
+            // {1, 5},
+            // {5, 6},
+            // {2, 7},
+            // {7, 4}
+
+            {0, 1},
+            {1, 2},
+            {2, 3},
+
+            {4, 5},
+        };
+
+        std::vector<Color> colors;
+        colors.reserve(positions.size());
+        for (size_t i = 0; i < positions.size(); ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(positions.size() - 1);
+            colors.emplace_back(Color(0.2f + 0.6f * t, 0.6f + 0.3f * t, 1.0f - 0.5f * t, 1.0f));
         }
 
-        const std::array<std::pair<int, int>, 12> cubeEdges = {{
-            {0, 1}, {1, 2}, {2, 3}, {3, 0},
-            {4, 5}, {5, 6}, {6, 7}, {7, 4},
-            {0, 4}, {1, 5}, {2, 6}, {3, 7}
-        }};
+        m_computeGraph = std::make_shared<ComputeGraph>("HalfEdgeGraph", GraphData{}, false);
+        m_computeGraph->createFromPositionsAndEdges(positions, edges, colors);
+        m_computeGraph->updateHalfEdgeData();
 
-        for (const auto& [a, b] : cubeEdges) {
-            if (data.addEdge(a, b) < 0) {
-                std::cout << "Failed to add cube edge (" << a << ", " << b << ")" << std::endl;
-            }
-        }
-
-        // N-gon ring vertices (offset above the cube for clarity).
-        std::vector<int> ringIndices;
-        const int ringCount = 8;
-        ringIndices.reserve(ringCount);
-        const float ringRadius = 2.0f;
-        constexpr float twoPi = 6.28318530718f;
-        const Color ringStart(1.0f, 0.55f, 0.3f);
-        const Color ringEnd(0.3f, 0.95f, 0.8f);
-
-        for (int i = 0; i < ringCount; ++i) {
-            float t = static_cast<float>(i) / ringCount;
-            float angle = t * twoPi;
-            Vec3 position(ringRadius * std::cos(angle), ringRadius * std::sin(angle), (i % 2 == 0) ? 2.0f : 1.4f);
-            Color vertexColor = Color::lerp(ringStart, ringEnd, static_cast<float>(i) / (ringCount - 1));
-            ringIndices.push_back(data.addVertex(position, vertexColor));
-        }
-
-        for (int i = 0; i < ringCount; ++i) {
-            int a = ringIndices[i];
-            int b = ringIndices[(i + 1) % ringCount];
-            if (data.addEdge(a, b) < 0) {
-                std::cout << "Failed to add ring edge (" << a << ", " << b << ")" << std::endl;
-            }
-        }
-
-        m_computeGraph = std::make_shared<ComputeGraph>("TestGraph", data);
         m_computeGraph->setShowVertices(b_showVertices);
         m_computeGraph->setShowEdges(b_showEdges);
-        m_computeGraph->setVertexSize(8.0f);
+        m_computeGraph->setVertexSize(9.0f);
         m_computeGraph->setEdgeWidth(2.5f);
         m_computeGraph->setEdgeColor(Color(0.7f, 0.7f, 0.9f));
 
@@ -207,6 +242,7 @@ private:
         scene().addObject(m_computeGraph);
 
         printGraphStatistics();
+        runGraphOperationSmokeTests();
     }
 
     void logSelectedVertexInfo() const {
@@ -232,6 +268,68 @@ private:
             }
         }
         std::cout << std::endl;
+    }
+
+    void runGraphOperationSmokeTests() {
+        if (!m_computeGraph) {
+            return;
+        }
+
+        std::cout << std::boolalpha;
+        GraphObject baseGraph = m_computeGraph->duplicate();
+        auto baseData = baseGraph.getGraphData();
+        const size_t baseVerts = baseData ? baseData->vertices.size() : 0;
+        const size_t baseEdges = baseData ? baseData->edges.size() : 0;
+
+        std::cout << "\n=== GraphObject Operation Smoke Test ===" << std::endl;
+        std::cout << "Base graph -> vertices: " << baseVerts
+                  << ", edges: " << baseEdges
+                  << ", polyline: " << baseGraph.isPolyline()
+                  << ", closed: " << baseGraph.isClosed() << std::endl;
+
+        GraphObject weldedGraph = baseGraph.duplicate();
+        weldedGraph.weld(1e-4f);
+        if (auto weldedData = weldedGraph.getGraphData()) {
+            std::cout << "After weld -> vertices: " << weldedData->vertices.size()
+                      << ", edges: " << weldedData->edges.size() << std::endl;
+        }
+
+        if (baseGraph.isPolyline()) {
+            GraphObject resampledGraph = baseGraph.duplicate();
+            resampledGraph.resample(0.25f);
+            if (auto resampledData = resampledGraph.getGraphData()) {
+                std::cout << "After resample(0.25) -> vertices: " << resampledData->vertices.size()
+                          << ", edges: " << resampledData->edges.size()
+                          << ", closed: " << resampledGraph.isClosed() << std::endl;
+            }
+        } else {
+            std::cout << "Resample test skipped: base graph is not a single polyline" << std::endl;
+        }
+
+        auto components = baseGraph.separate();
+        std::cout << "Separate -> components: " << components.size() << std::endl;
+        if (!components.empty()) {
+            const auto& first = components.front();
+            if (auto compData = first.getGraphData()) {
+                std::cout << "  Component[0] -> vertices: " << compData->vertices.size()
+                          << ", edges: " << compData->edges.size()
+                          << ", polyline: " << first.isPolyline()
+                          << ", closed: " << first.isClosed() << std::endl;
+            }
+        }
+
+        if (components.size() > 1) {
+            GraphObject recombined = components.front().duplicate();
+            for (size_t i = 1; i < components.size(); ++i) {
+                recombined.combineWith(components[i]);
+            }
+            if (auto recombinedData = recombined.getGraphData()) {
+                std::cout << "Recombined components -> vertices: " << recombinedData->vertices.size()
+                          << ", edges: " << recombinedData->edges.size() << std::endl;
+            }
+        }
+
+        std::cout << std::noboolalpha;
     }
 
     void printGraphStatistics() {
@@ -311,14 +409,17 @@ private:
         renderer.drawString("'h' - Toggle half-edges", 10, 170);
         renderer.drawString("'n' - Toggle neighbor highlight", 10, 190);
         renderer.drawString("'1/2' - Cycle selected vertex (" + std::to_string(m_selectedVertexId) + ")", 10, 210);
+        renderer.drawString("'w' - Weld close vertices", 10, 230);
+        renderer.drawString("'r' - Resample polyline (0.25)", 10, 250);
+        renderer.drawString("'t' - Print GraphObject tests", 10, 270);
 
         if (m_computeGraph) {
             const auto& heData = m_computeGraph->getHeGraphData();
             renderer.setColor(Color(0.9f, 0.9f, 0.5f));
-            renderer.drawString("Graph Info:", 10, 250);
-            renderer.drawString("Vertices: " + std::to_string(heData.vertices.size()), 10, 270);
-            renderer.drawString("Half-edges: " + std::to_string(heData.halfedges.size()), 10, 290);
-            renderer.drawString("Edges: " + std::to_string(heData.edges.size()), 10, 310);
+            renderer.drawString("Graph Info:", 10, 310);
+            renderer.drawString("Vertices: " + std::to_string(heData.vertices.size()), 10, 330);
+            renderer.drawString("Half-edges: " + std::to_string(heData.halfedges.size()), 10, 350);
+            renderer.drawString("Edges: " + std::to_string(heData.edges.size()), 10, 370);
         }
     }
         };
@@ -326,3 +427,5 @@ private:
 ALICE2_REGISTER_SKETCH_AUTO(HeGraphSketch)
 
 #endif // __MAIN__
+
+
