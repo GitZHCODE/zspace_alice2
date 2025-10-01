@@ -47,9 +47,86 @@ public:
             const std::filesystem::path fallback = std::filesystem::path("alice2") / "data" / "inFieldStack.json";
             loadFields(fallback.string());
         }
-    }
+    }    void update(float time) override {
 
-    void update(float /*dt*/) override {}
+        if (!m_makeColumns) {
+            return;
+        }
+
+        if (m_columnParticles.empty()) {
+            initColumnParticles();
+            initColumnLines();
+        }
+
+        if (!m_volumeField) {
+            return;
+        }
+
+        if (m_columnTrajectories.size() != m_columnParticles.size()) {
+            m_columnTrajectories.resize(m_columnParticles.size());
+        }
+
+        if (m_columnLines.size() != m_columnParticles.size()) {
+            initColumnLines();
+        }
+
+        for (size_t i = 0; i < m_columnParticles.size(); ++i) {
+            auto& particle = m_columnParticles[i];
+            auto& history = m_columnTrajectories[i];
+            auto& graph = m_columnLines[i];
+
+            if (!graph) {
+                graph = std::make_shared<GraphObject>("StackColumn_" + std::to_string(i));
+                graph->setShowVertices(false);
+                graph->setShowEdges(true);
+                graph->setColor(Color(1.0f, 1.0f, 1.0f));
+                graph->setEdgeWidth(2.0f);
+                scene().addObject(graph);
+            }
+
+            if (history.empty()) {
+                history.emplace_back(particle.x, particle.y, particle.z + 0.1f);
+                history.emplace_back(particle);
+                refreshColumnGraph(i);
+            }
+
+            Vec3 gravity(0.0f, 0.0f, -1.0f);
+            Vec3 pullForce = m_volumeField->project_onto_isosurface(particle, m_columnOffset) - particle;
+
+            Vec3 totalForce = gravity * m_gravityWeight + pullForce * (1.0f - m_gravityWeight);
+            float verticalComponent = totalForce.dot(gravity);
+            if (verticalComponent < 0.0f) {
+                totalForce -= gravity * verticalComponent;
+            }
+
+            Vec3 step = totalForce * m_particleStep;
+            if (step.lengthSquared() <= 1e-8f) {
+                continue;
+            }
+
+            Vec3 nextPosition = particle + step;
+            if(m_volumeField->value_at(nextPosition) > 0.0f)
+                nextPosition = m_volumeField->project_onto_isosurface(particle, m_columnOffset);
+
+            if (nextPosition.z < 0.0f) {
+                nextPosition.z = 0.0f;
+            }
+
+            if (!history.empty()) {
+                Vec3& lastPosition = history.back();
+                if ((nextPosition - lastPosition).lengthSquared() < 1e-6f) {
+                    particle = nextPosition;
+                    lastPosition = nextPosition;
+                    refreshColumnGraph(i);
+                    continue;
+                }
+            }
+
+            particle = nextPosition;
+            history.push_back(nextPosition);
+            refreshColumnGraph(i);
+        }
+    }
 
     void draw(Renderer& renderer, Camera& /*camera*/) override {
         // renderer.setColor(Color(0.9f, 0.9f, 0.9f));
@@ -61,6 +138,15 @@ public:
         renderer.drawString("E: export fields + mesh", 10, 110);
         renderer.drawString("Mesh visible: " + std::string(m_meshVisible ? "yes" : "no"), 10, 130);
         renderer.drawString(m_statusMessage, 10, 150);
+
+        renderer.drawString("Column sample dist (1/2): " + std::to_string(m_sampleDistance), 10, 200);
+        renderer.drawString("Column offset (3/4): " + std::to_string(m_columnOffset), 10, 220);
+        renderer.drawString("Gravity weight (5/6): " + std::to_string(m_gravityWeight), 10, 240);
+
+        if(m_columnParticles.size() > 0){
+            for(auto m_pt : m_columnParticles)
+                renderer.drawPoint(m_pt, Color(1.0f, 1.0f, 1.0f), 10.0f);
+        }
 
         updateContourPlacement();
     }
@@ -98,6 +184,21 @@ public:
             exportFieldsAndMesh();
             return true;
         }
+        if (key == 'c'){
+            initColumnParticles();
+            initColumnLines();
+            return true;
+        }
+        if (key == 'C'){
+            m_makeColumns = !m_makeColumns;
+            return true;
+        }
+        if (key == '1') {m_sampleDistance -= 1.0f; return true;}
+        if (key == '2') {m_sampleDistance += 1.0f; return true;}
+        if (key == '3') {m_columnOffset -= 0.1f; return true;}
+        if (key == '4') {m_columnOffset += 0.1f; return true;}
+        if (key == '5') {m_gravityWeight -= 0.01f; return true;}
+        if (key == '6') {m_gravityWeight += 0.01f; return true;}
         return false;
     }
 
@@ -445,6 +546,85 @@ private:
         }
     }
 
+    void initColumnParticles(){
+        m_columnParticles.clear();
+        m_columnTrajectories.clear();
+
+        auto m_lastContour = m_fields[m_fields.size() - 1].get_contours(m_columnOffset);
+        m_lastContour.weld();
+        auto m_separated = m_lastContour.separate();
+        
+        for(auto graph : m_separated){
+            int sampleCount = static_cast<int>(graph.getLength() / m_sampleDistance);
+            graph.resampleByCount(sampleCount);
+            auto vertices = graph.getGraphData()->vertices;
+
+            for(auto vertex : vertices){
+                Vec3 particlePos(
+                    vertex.position.x, 
+                    vertex.position.y, 
+                    static_cast<float>(m_contours.size() - 1) * m_sliceSpacing
+                );
+                m_columnParticles.push_back(particlePos);
+
+                std::vector<Vec3> trajectory;
+                trajectory.emplace_back(vertex.position.x, vertex.position.y, particlePos.z + 0.1f);
+                trajectory.emplace_back(particlePos);
+                m_columnTrajectories.emplace_back(std::move(trajectory));
+            }
+        }
+    }
+
+    void initColumnLines(){
+        for(auto& graph : m_columnLines){
+            if (graph){
+                scene().removeObject(graph);
+            }
+        }
+        m_columnLines.clear();
+        m_columnLines.reserve(m_columnParticles.size());
+
+        for(size_t idx = 0; idx < m_columnParticles.size(); ++idx){
+            auto columnGraph = std::make_shared<GraphObject>("StackColumn_" + std::to_string(idx));
+            columnGraph->setShowVertices(false);
+            columnGraph->setShowEdges(true);
+            columnGraph->setEdgeColor(Color(0.0f, 0.0f, 0.0f));
+            columnGraph->setEdgeWidth(4.0f);
+            scene().addObject(columnGraph);
+            m_columnLines.emplace_back(std::move(columnGraph));
+            refreshColumnGraph(idx);
+        }
+    }
+
+    void refreshColumnGraph(size_t idx){
+        if (idx >= m_columnLines.size() || idx >= m_columnTrajectories.size()) {
+            return;
+        }
+
+        auto& graph = m_columnLines[idx];
+        if (!graph) {
+            return;
+        }
+
+        const auto& trajectory = m_columnTrajectories[idx];
+        if (trajectory.empty()) {
+            return;
+        }
+
+        std::vector<std::pair<int, int>> edges;
+        if (trajectory.size() > 1) {
+            edges.reserve(trajectory.size() - 1);
+            for (size_t j = 1; j < trajectory.size(); ++j) {
+                edges.emplace_back(static_cast<int>(j - 1), static_cast<int>(j));
+            }
+        }
+
+        graph->createFromPositionsAndEdges(trajectory, edges);
+        graph->setShowVertices(false);
+        graph->setShowEdges(true);
+    }
+
+
     const std::string m_inputJsonName = "inFieldStack.json";
     const std::string m_outputJsonName = "outFieldStack.json";
     const std::string m_outputMeshName = "outMesh.obj";
@@ -467,6 +647,15 @@ private:
     json m_loadedJson;
     bool m_jsonLoaded = false;
     std::string m_loadedJsonPath;
+
+    std::vector<Vec3> m_columnParticles;
+    std::vector<std::shared_ptr<GraphObject>> m_columnLines;
+    std::vector<std::vector<Vec3>> m_columnTrajectories;
+    bool m_makeColumns = false;
+    float m_sampleDistance = 10.0f;
+    float m_particleStep = 0.55f;
+    float m_gravityWeight = 1.0f;
+    float m_columnOffset = -0.2f;
 };
 
 ALICE2_REGISTER_SKETCH_AUTO(FieldStackFromJson)
