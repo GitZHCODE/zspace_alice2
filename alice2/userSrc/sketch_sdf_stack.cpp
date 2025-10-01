@@ -18,6 +18,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <cmath>
 
 using namespace alice2;
 using json = nlohmann::json;
@@ -47,7 +48,39 @@ public:
             const std::filesystem::path fallback = std::filesystem::path("alice2") / "data" / "inFieldStack.json";
             loadFields(fallback.string());
         }
-    }    void update(float time) override {
+
+        // UI setup
+        m_ui = std::make_unique<SimpleUI>(input());
+        m_ui->setTheme(SimpleUI::UITheme::Dark);
+        // Slice setting group
+        m_ui->addSlider("Floor Height",  Vec2{10, 150}, 240.0f, 0.05f, 5.0f, m_sliceSpacing);
+        m_ui->addToggle("Smooth*5",        UIRect{10, 160, 100, 22},  m_btnSmooth);
+        m_ui->addToggle("Laplacian*5",     UIRect{120, 160, 120, 22}, m_btnLaplacian);
+        m_ui->addToggle("Build Mesh",    UIRect{10, 190, 100, 22}, m_btnBuildMesh);
+        m_ui->addToggle("Display Mesh",  UIRect{120, 190, 120, 22}, m_meshVisible);
+
+        // Column generation group
+        m_ui->addSlider("Sample Dist",    Vec2{10, 270}, 240.0f, 1.0f, 20.0f, m_sampleDistance);
+        m_ui->addSlider("Column Offset",  Vec2{10, 300}, 240.0f, -5.0f, 0.0f, m_columnOffset);
+        m_ui->addSlider("Gravity Weight", Vec2{10, 330}, 240.0f, 0.0f, 1.0f, m_gravityWeight);
+        m_ui->addToggle("Init Columns",   UIRect{10, 350, 120, 22}, m_btnInitColumns);
+        m_ui->addToggle("Run Columns",    UIRect{10, 380, 120, 22}, m_makeColumns);
+
+        // Export at bottom
+        m_ui->addToggle("ReloadSDF",      UIRect{10, 430, 100, 22}, m_btnReload);
+        m_ui->addToggle("Export",         UIRect{10, 460, 100, 22}, m_btnExport);
+
+        // Track last values to detect changes from UI
+        m_lastSliceSpacing   = m_sliceSpacing;
+        m_lastSampleDistance = m_sampleDistance;
+        m_lastColumnOffset   = m_columnOffset;
+        m_lastGravityWeight  = m_gravityWeight;
+        m_lastMeshVisible    = m_meshVisible;
+    }
+
+    void update(float time) override {
+        // Apply UI actions and sync values/state
+        postUpdateUI();
 
         if (!m_makeColumns) {
             return;
@@ -129,41 +162,28 @@ public:
     }
 
     void draw(Renderer& renderer, Camera& /*camera*/) override {
-        // renderer.setColor(Color(0.9f, 0.9f, 0.9f));
         renderer.setColor(Color(0.1f, 0.1f, 0.1f));
-        renderer.drawString("Slices: " + std::to_string(m_contours.size()), 10, 30);
-        renderer.drawString("Spacing (O/I): " + std::to_string(m_sliceSpacing), 10, 50);
-        renderer.drawString("J: smooth slices, K: stack Laplacian", 10, 70);
-        renderer.drawString("P: generate mesh, D: toggle mesh", 10, 90);
-        renderer.drawString("E: export fields + mesh", 10, 110);
-        renderer.drawString("Mesh visible: " + std::string(m_meshVisible ? "yes" : "no"), 10, 130);
-        renderer.drawString(m_statusMessage, 10, 150);
+        // Header and status
+        renderer.drawString("SDF Tower Sketch", 10, 20);
+        renderer.drawString("Slices: " + std::to_string(m_contours.size()), 10, 40);
+        renderer.drawString("Mesh visible: " + std::string(m_meshVisible ? "yes" : "no"), 10, 60);
+        renderer.drawString(m_statusMessage, 10, 80);
 
-        renderer.drawString("Column sample dist (1/2): " + std::to_string(m_sampleDistance), 10, 200);
-        renderer.drawString("Column offset (3/4): " + std::to_string(m_columnOffset), 10, 220);
-        renderer.drawString("Gravity weight (5/6): " + std::to_string(m_gravityWeight), 10, 240);
+        // Group headings
+        renderer.drawString("Slice Setting", 10, 120);
+        renderer.drawString("Column Generation", 10, 240);
 
-        if(m_columnParticles.size() > 0){
+        if (m_columnParticles.size() > 0) {
             for(auto m_pt : m_columnParticles)
                 renderer.drawPoint(m_pt, Color(1.0f, 1.0f, 1.0f), 10.0f);
         }
 
         updateContourPlacement();
+        if (m_ui) m_ui->draw(renderer);
     }
     
     bool onKeyPress(unsigned char key, int /*x*/, int /*y*/) override {
-        if (key == 'o' || key == 'O') {
-            m_sliceSpacing = std::min(m_sliceSpacing + 0.05f, 2.0f);
-            invalidateVolumeMesh();
-            updateContourPlacement();
-            return true;
-        }
-        if (key == 'i' || key == 'I') {
-            m_sliceSpacing = std::max(m_sliceSpacing - 0.05f, 0.05f);
-            invalidateVolumeMesh();
-            updateContourPlacement();
-            return true;
-        }
+        // Keep J/K shortcuts (UI provides buttons too)
         if (key == 'j' || key == 'J') {
             smooth();
             return true;
@@ -172,33 +192,16 @@ public:
             applyStackLaplacian();
             return true;
         }
-        if (key == 'p' || key == 'P') {
-            buildVolumeMeshFromStack();
-            return true;
-        }
-        if (key == 'd' || key == 'D') {
-            toggleMeshVisibility();
-            return true;
-        }
-        if (key == 'e' || key == 'E') {
-            exportFieldsAndMesh();
-            return true;
-        }
-        if (key == 'c'){
-            initColumnParticles();
-            initColumnLines();
-            return true;
-        }
-        if (key == 'C'){
-            m_makeColumns = !m_makeColumns;
-            return true;
-        }
-        if (key == '1') {m_sampleDistance -= 1.0f; return true;}
-        if (key == '2') {m_sampleDistance += 1.0f; return true;}
-        if (key == '3') {m_columnOffset -= 0.1f; return true;}
-        if (key == '4') {m_columnOffset += 0.1f; return true;}
-        if (key == '5') {m_gravityWeight -= 0.01f; return true;}
-        if (key == '6') {m_gravityWeight += 0.01f; return true;}
+        return false;
+    }
+
+    bool onMousePress(int button, int state, int x, int y) override {
+        if (m_ui && m_ui->onMousePress(button, state, x, y)) return true;
+        return false;
+    }
+
+    bool onMouseMove(int x, int y) override {
+        if (m_ui && m_ui->onMouseMove(x, y)) return true;
         return false;
     }
 
@@ -624,6 +627,56 @@ private:
         graph->setShowEdges(true);
     }
 
+    // Handle UI-triggered actions and apply param/state changes
+    void postUpdateUI() {
+        // Momentary actions triggered by toggles
+        if (m_btnBuildMesh) { buildVolumeMeshFromStack(); m_btnBuildMesh = false; }
+        if (m_btnExport)    { exportFieldsAndMesh();      m_btnExport = false; }
+        if (m_btnReload)    { loadFields(m_inputJsonName);      m_btnReload = false; }
+
+        if (m_btnInitColumns) { initColumnParticles(); initColumnLines(); m_btnInitColumns = false; }
+        if (m_btnSmooth)    { for(size_t i = 0; i < 5; ++i) { smooth(); } m_btnSmooth = false; }
+        if (m_btnLaplacian) { for(size_t i = 0; i < 5; ++i) { applyStackLaplacian(); } m_btnLaplacian = false; }
+
+        // Apply mesh visibility changes via UI toggle
+        if (m_meshVisible != m_lastMeshVisible && m_meshObject) {
+            m_meshObject->setVisible(m_meshVisible);
+            m_statusMessage = m_meshVisible ? "Mesh visible" : "Mesh hidden";
+            m_lastMeshVisible = m_meshVisible;
+        }
+
+        // Clamp slider ranges (respect updated slider values)
+        auto clampf = [](float v, float a, float b){ return std::max(a, std::min(v, b)); };
+        m_sliceSpacing   = clampf(m_sliceSpacing,   0.05f, 5.0f);
+        m_sampleDistance = clampf(m_sampleDistance, 1.0f, 20.0f);
+        m_columnOffset   = clampf(m_columnOffset,  -5.0f, 1.0f);
+        m_gravityWeight  = clampf(m_gravityWeight,  0.0f, 1.0f);
+
+        // React to value changes
+        if (std::abs(m_sliceSpacing - m_lastSliceSpacing) > 1e-6f) {
+            invalidateVolumeMesh();
+            updateContourPlacement();
+            m_lastSliceSpacing = m_sliceSpacing;
+        }
+        if (std::abs(m_sampleDistance - m_lastSampleDistance) > 1e-6f) {
+            if (!m_columnParticles.empty()) {
+                initColumnParticles();
+                initColumnLines();
+            }
+            m_lastSampleDistance = m_sampleDistance;
+        }
+        if (std::abs(m_columnOffset - m_lastColumnOffset) > 1e-6f) {
+            if (!m_columnParticles.empty()) {
+                initColumnParticles();
+                initColumnLines();
+            }
+            m_lastColumnOffset = m_columnOffset;
+        }
+        if (std::abs(m_gravityWeight - m_lastGravityWeight) > 1e-6f) {
+            m_lastGravityWeight = m_gravityWeight;
+        }
+    }
+
 
     const std::string m_inputJsonName = "inFieldStack.json";
     const std::string m_outputJsonName = "outFieldStack.json";
@@ -656,6 +709,22 @@ private:
     float m_particleStep = 0.55f;
     float m_gravityWeight = 1.0f;
     float m_columnOffset = -0.2f;
+
+    // UI
+    std::unique_ptr<SimpleUI> m_ui;
+    bool m_btnBuildMesh{false};
+    bool m_btnExport{false};
+    bool m_btnReload{false};
+    bool m_btnInitColumns{false};
+    bool m_btnSmooth{false};
+    bool m_btnLaplacian{false};
+
+    // Change tracking for UI-bound values
+    float m_lastSliceSpacing{0.0f};
+    float m_lastSampleDistance{0.0f};
+    float m_lastColumnOffset{0.0f};
+    float m_lastGravityWeight{0.0f};
+    bool  m_lastMeshVisible{false};
 };
 
 ALICE2_REGISTER_SKETCH_AUTO(FieldStackFromJson)
