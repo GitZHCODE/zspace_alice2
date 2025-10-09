@@ -424,7 +424,7 @@ private:
     }
         };
 
-ALICE2_REGISTER_SKETCH_AUTO(HeGraphSketch)
+// ALICE2_REGISTER_SKETCH_AUTO(HeGraphSketch)
 
 #endif // __MAIN__
 

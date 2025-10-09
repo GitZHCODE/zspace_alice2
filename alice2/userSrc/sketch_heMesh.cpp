@@ -327,6 +327,6 @@ public:
 };
 
 // Register the sketch
-ALICE2_REGISTER_SKETCH_AUTO(HeMeshSketch)
+// ALICE2_REGISTER_SKETCH_AUTO(HeMeshSketch)
 
 #endif // __MAIN__

@@ -157,6 +157,6 @@ public:
 };
 
 // Register the sketch with alice2
-ALICE2_REGISTER_SKETCH_AUTO(MeshSketch)
+// ALICE2_REGISTER_SKETCH_AUTO(MeshSketch)
 
 #endif // __MAIN__

@@ -488,6 +488,6 @@ public:
 };
 
 // Register the sketch
-ALICE2_REGISTER_SKETCH_AUTO(ScalarField3DSketch)
+// ALICE2_REGISTER_SKETCH_AUTO(ScalarField3DSketch)
 
 #endif // __MAIN__
