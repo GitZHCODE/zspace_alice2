@@ -461,6 +461,14 @@ private:
             m_statusMessage = "Fields saved but mesh object missing";
             return;
         }
+        auto m_graphObject = std::make_shared<GraphObject>("ExportGraph");
+
+        for(int i = 0; i < m_columnLines.size(); ++i){
+            m_graphObject->combineWith(*m_columnLines[i]);
+        }
+        m_graphObject->weld();
+
+        m_graphObject->writeToObj(m_outputGraphName);
 
         m_meshObject->writeToObj(m_outputMeshName);
         m_statusMessage = "Exported fields -> " + m_outputJsonName + ", mesh -> " + m_outputMeshName;
@@ -681,6 +689,7 @@ private:
     const std::string m_inputJsonName = "inFieldStack.json";
     const std::string m_outputJsonName = "outFieldStack.json";
     const std::string m_outputMeshName = "outMesh.obj";
+    const std::string m_outputGraphName = "outColumns.obj";
 
     std::vector<ScalarField2D> m_fields;
     std::vector<std::shared_ptr<GraphObject>> m_contours;
