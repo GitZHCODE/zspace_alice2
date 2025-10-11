@@ -1,6 +1,7 @@
 #define __MAIN__
 #ifdef __MAIN__
 
+
 #include <alice2.h>
 #include <sketches/SketchRegistry.h>
 
@@ -68,6 +69,7 @@ public:
         scene().setBackgroundColor(Color(0.15f, 0.15f, 0.2f));
         scene().setShowAxes(true);
         scene().setShowGrid(true);
+        
 
         const std::filesystem::path defaultPath = std::filesystem::path("inFieldStack.json");
         loadDataset(defaultPath.string());
@@ -86,6 +88,8 @@ public:
         renderer.drawString("Epochs run: " + std::to_string(m_totalEpochs), 15, 110);
         renderer.drawString("Press 'P' to train (" + std::to_string(m_epochsPerTrigger) + " epochs)", 15, 130);
         renderer.drawString("Press 'R' to reload dataset", 15, 150);
+        renderer.drawString(std::string("Compute shader: ") + (m_useComputeShader ? "ON" : "OFF"), 15, 170);
+        renderer.drawString("Press \"G\" to toggle compute shader", 15, 190);
 
         const float topOriginal = 200.0f;
         const float topReconstruction = topOriginal + m_tileSize + 80.0f;
@@ -116,6 +120,10 @@ public:
         case 'r':
         case 'R':
             reloadDataset();
+            return true;
+        case 'g':
+        case 'G':
+            toggleComputeShader();
             return true;
         default:
             break;
@@ -249,6 +257,7 @@ private:
             }
 
             setupTrainer(static_cast<int>(m_originalGridFields.size()));
+            applyComputeShaderSetting();
             m_status = "Dataset loaded: " + path;
             m_datasetPath = path;
             return true;
@@ -279,6 +288,7 @@ private:
         m_trainer = std::make_unique<AutoDecoderTrainer>(m_decoder);
         m_trainer->initialize(numShapes, m_latentDim, m_coordDim);
         m_trainer->setSamples(m_samples);
+        applyComputeShaderSetting();
 
         m_trainingConfig.epochs = 1;
         m_trainingConfig.learningRateWeights = 5e-4f;
@@ -295,6 +305,18 @@ private:
         if (m_datasetPath.empty())
             return;
         loadDataset(m_datasetPath);
+    }
+
+    void toggleComputeShader()
+    {
+        m_useComputeShader = !m_useComputeShader;
+        applyComputeShaderSetting();
+        m_status = m_useComputeShader ? "Compute shader ON (see console for support)." : "Compute shader OFF.";
+    }
+
+    void applyComputeShaderSetting()
+    {
+        m_decoder.setUseComputeShader(m_useComputeShader);
     }
 
     void runTraining()
@@ -459,6 +481,7 @@ private:
 
     int m_totalEpochs = 0;
     int m_epochsPerTrigger = 5;
+    bool m_useComputeShader = false;
 
     int m_gridResolutionX = 0;
     int m_gridResolutionY = 0;
