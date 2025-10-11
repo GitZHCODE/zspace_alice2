@@ -9,6 +9,7 @@
 #include <vector>
 #include <cmath>
 #include <fstream>
+#include <stdexcept>
 #include "alice2.h"
 
 using namespace alice2;
@@ -123,11 +124,56 @@ public:
                 for (int i = 0; i < newDelta.size(); ++i)
                 {
                     float a = activations[l][i];
-                    newDelta[i] *= (1 - a * a); // tanh'
+                    newDelta[i] *= (1 - a * a); // tanh derivative
                 }
                 delta = newDelta;
             }
         }
+    }
+
+    std::vector<float> backwardWithInputGrad(const std::vector<float>& gradOut, float lr)
+    {
+        if (activations.empty())
+            throw std::runtime_error("MLP::backwardWithInputGrad requires a prior forward pass.");
+
+        if (gradOut.size() != static_cast<size_t>(outputDim))
+            throw std::runtime_error("MLP::backwardWithInputGrad received gradOut with unexpected size.");
+
+        std::vector<float> delta(gradOut);
+        std::vector<float> inputGrad(inputDim, 0.0f);
+
+        for (int l = static_cast<int>(W.size()) - 1; l >= 0; --l)
+        {
+            const std::vector<float>& prev = activations[l];
+            std::vector<float> newDelta(prev.size(), 0.0f);
+
+            for (int i = 0; i < W[l].size(); ++i)
+            {
+                for (int j = 0; j < W[l][i].size(); ++j)
+                {
+                    newDelta[j] += delta[i] * W[l][i][j];
+                    W[l][i][j] -= lr * delta[i] * prev[j];
+                }
+                b[l][i] -= lr * delta[i];
+            }
+
+            if (l == 0)
+            {
+                inputGrad = newDelta;
+            }
+
+            if (l > 0)
+            {
+                for (int i = 0; i < newDelta.size(); ++i)
+                {
+                    float a = activations[l][i];
+                    newDelta[i] *= (1 - a * a); // tanh derivative
+                }
+                delta = newDelta;
+            }
+        }
+
+        return inputGrad;
     }
 
     /**
