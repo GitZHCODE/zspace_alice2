@@ -22,6 +22,8 @@ struct AutoDecoderTrainingConfig {
     float latentRegularization = 1e-4f;
     float latentInitStd = 0.01f;
     unsigned int shuffleSeed = 1337u;
+    bool useGPU = false;
+    int batchSize = 128;
 };
 
 struct AutoDecoderTrainingStats {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <numeric>
+#include <iostream>
 #include <stdexcept>
 
 #include <nlohmann/json.hpp>
@@ -97,6 +98,73 @@ AutoDecoderTrainingStats AutoDecoderTrainer::train(const AutoDecoderTrainingConf
 
     ensureLatentInit(config.latentInitStd);
 
+#ifdef ALICE2_USE_OPENGL_COMPUTE
+    if (config.useGPU)
+    {
+        std::vector<float> coordsFlat;
+        std::vector<float> targetsFlat;
+        std::vector<int> shapesFlat;
+        coordsFlat.reserve(dataset.size() * static_cast<std::size_t>(coordDim));
+        targetsFlat.reserve(dataset.size());
+        shapesFlat.reserve(dataset.size());
+        for (const auto& sample : dataset)
+        {
+            coordsFlat.insert(coordsFlat.end(), sample.coordinate.begin(), sample.coordinate.end());
+            targetsFlat.push_back(sample.sdf);
+            shapesFlat.push_back(sample.shapeIndex);
+        }
+
+        std::vector<int> layerDims;
+        layerDims.push_back(model.inputDim);
+        layerDims.insert(layerDims.end(), model.hiddenDims.begin(), model.hiddenDims.end());
+        layerDims.push_back(model.outputDim);
+
+        MLPComputeSpec spec;
+        spec.layerDims = layerDims;
+        spec.latentDim = latentDim;
+        spec.coordDim = coordDim;
+        spec.numShapes = static_cast<int>(latentCodes.size());
+        spec.numSamples = static_cast<int>(dataset.size());
+        spec.maxBatchSize = std::max(1, config.batchSize);
+
+        if (model.enableGPUTraining(spec) &&
+            model.uploadLatentsToGPU(latentCodes) &&
+            model.uploadDatasetToGPU(coordsFlat, targetsFlat, shapesFlat))
+        {
+            MLPComputeConfig gpuCfg;
+            gpuCfg.epochs = config.epochs;
+            gpuCfg.batchSize = std::max(1, config.batchSize);
+            gpuCfg.learningRateWeights = config.learningRateWeights;
+            gpuCfg.learningRateLatent = config.learningRateLatent;
+            gpuCfg.latentRegularization = config.latentRegularization;
+
+            if (model.trainOnGPU(gpuCfg) &&
+                model.downloadWeightsFromGPU())
+            {
+                if (!model.downloadLatentsFromGPU(latentCodes, latentDim))
+                {
+                    std::cerr << "[AutoDecoderTrainer] Failed to download GPU latents." << std::endl;
+                }
+                else
+                {
+                    runningAverageLoss = 0.0f;
+                    lastBatchLoss = 0.0f;
+                    stats.averageLoss = runningAverageLoss;
+                    stats.lastLoss = lastBatchLoss;
+                    stats.epochsCompleted = config.epochs;
+                    stats.totalSamples = dataset.size() * static_cast<std::size_t>(config.epochs);
+                    epochsRun += config.epochs;
+                    lastLatentRegularization = config.latentRegularization;
+                    latentsInitialized = true;
+                    return stats;
+                }
+            }
+        }
+
+        std::cerr << "[AutoDecoderTrainer] GPU training failed - using CPU fallback." << std::endl;
+    }
+#endif
+
     std::vector<std::size_t> order(dataset.size());
     std::iota(order.begin(), order.end(), 0);
 
@@ -106,9 +174,9 @@ AutoDecoderTrainingStats AutoDecoderTrainer::train(const AutoDecoderTrainingConf
 
         float epochLoss = 0.0f;
 
-        for (std::size_t idx : order)
+        for (std::size_t idxSample : order)
         {
-            const AutoDecoderSample& sample = dataset[idx];
+            const AutoDecoderSample& sample = dataset[idxSample];
             std::vector<float> input = buildInput(sample.shapeIndex, sample.coordinate);
 
             std::vector<float> prediction = model.forward(input);
@@ -158,6 +226,7 @@ AutoDecoderTrainingStats AutoDecoderTrainer::train(const AutoDecoderTrainingConf
 
     return stats;
 }
+
 
 bool AutoDecoderTrainer::saveToJson(const std::string& filePath) const
 {
