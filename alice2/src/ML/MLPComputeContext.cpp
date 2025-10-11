@@ -1,3 +1,7 @@
+#ifndef ALICE2_USE_OPENGL_COMPUTE
+#define ALICE2_USE_OPENGL_COMPUTE
+#endif
+
 #include "MLPComputeContext.h"
 
 #ifdef ALICE2_USE_OPENGL_COMPUTE
@@ -471,6 +475,119 @@ bool MLPComputeContext::ensurePrograms()
 }
 
 
+
+bool MLPComputeContext::dispatchPrepareInput(int batchStart, int batchSize)
+{
+    if (batchSize <= 0) return false;
+
+    glUseProgram(programPrepareInput);
+    glUniform1i(glGetUniformLocation(programPrepareInput, "batchStart"), batchStart);
+    glUniform1i(glGetUniformLocation(programPrepareInput, "batchSize"), batchSize);
+    glUniform1i(glGetUniformLocation(programPrepareInput, "latentDim"), spec.latentDim);
+    glUniform1i(glGetUniformLocation(programPrepareInput, "coordDim"), spec.coordDim);
+    glUniform1i(glGetUniformLocation(programPrepareInput, "numSamples"), spec.numSamples);
+
+    GLuint groups = static_cast<GLuint>((batchSize + 63) / 64);
+    glDispatchCompute(groups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    return true;
+}
+
+bool MLPComputeContext::dispatchForward(int layerIndex, int batchSize)
+{
+    if (layerIndex < 0 || layerIndex >= layerCount) return false;
+    if (batchSize <= 0) return false;
+
+    const LayerInfo& info = layerInfos[static_cast<size_t>(layerIndex)];
+
+    glUseProgram(programForward);
+    glUniform1i(glGetUniformLocation(programForward, "layerIndex"), layerIndex);
+    glUniform1i(glGetUniformLocation(programForward, "batchSize"), batchSize);
+    glUniform1i(glGetUniformLocation(programForward, "totalLayers"), layerCount);
+
+    GLuint groupsX = static_cast<GLuint>((batchSize + 15) / 16);
+    GLuint groupsY = static_cast<GLuint>((info.outputSize + 15) / 16);
+    glDispatchCompute(groupsX, groupsY, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    return true;
+}
+
+bool MLPComputeContext::dispatchOutputDelta(int batchStart, int batchSize)
+{
+    if (batchSize <= 0) return false;
+
+    glUseProgram(programOutputDelta);
+    glUniform1i(glGetUniformLocation(programOutputDelta, "batchStart"), batchStart);
+    glUniform1i(glGetUniformLocation(programOutputDelta, "batchSize"), batchSize);
+    glUniform1i(glGetUniformLocation(programOutputDelta, "outputLayerIndex"), layerCount - 1);
+    glUniform1i(glGetUniformLocation(programOutputDelta, "numSamples"), spec.numSamples);
+
+    GLuint groups = static_cast<GLuint>((batchSize + 63) / 64);
+    glDispatchCompute(groups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    return true;
+}
+
+bool MLPComputeContext::dispatchBackwardGradients(int layerIndex, int batchSize)
+{
+    if (layerIndex < 0 || layerIndex >= layerCount) return false;
+    if (batchSize <= 0) return false;
+
+    const LayerInfo& info = layerInfos[static_cast<size_t>(layerIndex)];
+
+    glUseProgram(programBackwardGrad);
+    glUniform1i(glGetUniformLocation(programBackwardGrad, "layerIndex"), layerIndex);
+    glUniform1i(glGetUniformLocation(programBackwardGrad, "batchSize"), batchSize);
+
+    GLuint groupsX = static_cast<GLuint>((info.outputSize + 15) / 16);
+    GLuint groupsY = static_cast<GLuint>((info.inputSize + 15) / 16);
+    glDispatchCompute(groupsX, groupsY, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    return true;
+}
+
+bool MLPComputeContext::dispatchBackwardDelta(int layerIndex, int batchSize)
+{
+    if (layerIndex <= 0 || layerIndex >= layerCount) return false;
+    if (batchSize <= 0) return false;
+
+    const LayerInfo& prevInfo = layerInfos[static_cast<size_t>(layerIndex - 1)];
+
+    glUseProgram(programBackwardDelta);
+    glUniform1i(glGetUniformLocation(programBackwardDelta, "layerIndex"), layerIndex);
+    glUniform1i(glGetUniformLocation(programBackwardDelta, "batchSize"), batchSize);
+
+    GLuint groupsX = static_cast<GLuint>((batchSize + 15) / 16);
+    GLuint groupsY = static_cast<GLuint>((prevInfo.outputSize + 15) / 16);
+    glDispatchCompute(groupsX, groupsY, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    return true;
+}
+
+bool MLPComputeContext::dispatchApplyUpdate(int totalSamples, const MLPComputeConfig& cfg)
+{
+    if (!programsReady) return false;
+
+    float invSamples = totalSamples > 0 ? 1.0f / static_cast<float>(totalSamples) : 1.0f;
+    float weightScale = cfg.learningRateWeights * invSamples;
+    float latentScale = cfg.learningRateLatent * invSamples;
+    int totalLatents = spec.numShapes * spec.latentDim;
+    GLsizeiptr totalEntries = weightsFloatCount + biasesFloatCount + totalLatents;
+    if (totalEntries <= 0) return true;
+
+    glUseProgram(programApplyUpdate);
+    glUniform1f(glGetUniformLocation(programApplyUpdate, "weightScale"), weightScale);
+    glUniform1f(glGetUniformLocation(programApplyUpdate, "latentScale"), latentScale);
+    glUniform1i(glGetUniformLocation(programApplyUpdate, "totalWeights"), static_cast<GLint>(weightsFloatCount));
+    glUniform1i(glGetUniformLocation(programApplyUpdate, "totalBiases"), static_cast<GLint>(biasesFloatCount));
+    glUniform1i(glGetUniformLocation(programApplyUpdate, "totalLatents"), totalLatents);
+
+    GLuint groups = static_cast<GLuint>((totalEntries + 255) / 256);
+    glDispatchCompute(groups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    return true;
+}
+
 bool MLPComputeContext::dispatchBackwardInput(int batchSize)
 {
     glUseProgram(programBackwardInput);
@@ -712,6 +829,64 @@ bool MLPComputeContext::downloadLatents(std::vector<float>& latentsOut) const
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboLatents);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, latentsOut.size() * sizeof(float), latentsOut.data());
     return true;
+}
+
+
+void MLPComputeContext::destroyPrograms()
+{
+    auto deleteProgram = [](GLuint& program)
+    {
+        if (program != 0)
+        {
+            glDeleteProgram(program);
+            program = 0;
+        }
+    };
+
+    deleteProgram(programPrepareInput);
+    deleteProgram(programForward);
+    deleteProgram(programOutputDelta);
+    deleteProgram(programBackwardGrad);
+    deleteProgram(programBackwardDelta);
+    deleteProgram(programBackwardInput);
+    deleteProgram(programLatentGrad);
+    deleteProgram(programApplyUpdate);
+
+    programsReady = false;
+}
+
+void MLPComputeContext::destroyBuffers()
+{
+    auto deleteBuffer = [](GLuint& buffer)
+    {
+        if (buffer != 0)
+        {
+            glDeleteBuffers(1, &buffer);
+            buffer = 0;
+        }
+    };
+
+    deleteBuffer(ssboWeights);
+    deleteBuffer(ssboBiases);
+    deleteBuffer(ssboActivations);
+    deleteBuffer(ssboDeltas);
+    deleteBuffer(ssboLatents);
+    deleteBuffer(ssboDatasetCoords);
+    deleteBuffer(ssboDatasetTargets);
+    deleteBuffer(ssboDatasetShapes);
+    deleteBuffer(ssboGradWeights);
+    deleteBuffer(ssboGradBiases);
+    deleteBuffer(ssboGradLatents);
+    deleteBuffer(ssboDeltaInput);
+    deleteBuffer(ssboLayerInfo);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    weightsHost.clear();
+    biasesHost.clear();
+    latentsHost.clear();
+
+    buffersReady = false;
 }
 
 void MLPComputeContext::release()

@@ -1,6 +1,7 @@
 #define __MAIN__
 #ifdef __MAIN__
 
+#define ALICE2_USE_OPENGL_COMPUTE
 
 #include <alice2.h>
 #include <sketches/SketchRegistry.h>
@@ -316,7 +317,7 @@ private:
 
     void applyComputeShaderSetting()
     {
-        m_decoder.setUseComputeShader(m_useComputeShader);
+        m_trainingConfig.useGPU = m_useComputeShader;
     }
 
     void runTraining()
