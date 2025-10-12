@@ -39,6 +39,8 @@ public:
     void setSamples(const std::vector<AutoDecoderSample>& samples);
 
     const std::vector<std::vector<float>>& getLatentCodes() const { return latentCodes; }
+    void setLatentCodes(const std::vector<std::vector<float>>& z) { latentCodes = z; latentsInitialized = true; }
+    void setLatentCodes(std::vector<std::vector<float>>&& z) { latentCodes = std::move(z); latentsInitialized = true; }
     int getLatentDim() const { return latentDim; }
     int getCoordinateDim() const { return coordDim; }
 
