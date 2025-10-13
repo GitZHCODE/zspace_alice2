@@ -1,7 +1,8 @@
 #pragma once
 // AutoDecoderTrainerCUDA.h
 // GPU trainer for Auto-Decoder with strict per-sample SGD schedule.
-// Parallel persistent-kernel implementation (one kernel per epoch).
+// v3: Parallel persistent-kernel with **shared-memory scratch** (no global aStore),
+//     and streamlined backprop without cached transposes (best on your case).
 
 #include <vector>
 #include <cstdint>
@@ -55,8 +56,8 @@ public:
     ADTStats train(const ADTConfig& cfg);
 
     // Access
-    const SimpleMLP&       getTrainedMLP() const { return hostMLP_; }
-    const std::vector<float>& getLatents() const { return h_Z_; } // flattened [numShapes * latentDim]
+    const SimpleMLP&           getTrainedMLP() const { return hostMLP_; }
+    const std::vector<float>&  getLatents() const { return h_Z_; } // flattened [numShapes * latentDim]
 
 private:
     // host-side
@@ -72,10 +73,11 @@ private:
     int numLayers_ = 0; // hidden.size() + 1
     std::vector<int> h_layerIn_, h_layerOut_;
     std::vector<int> h_wOffsets_, h_bOffsets_;
+    int maxWidth_ = 0; // max over input and all outputs
 
     // device pointers
-    float* d_W_ = nullptr;     // flattened weights
-    float* d_B_ = nullptr;     // flattened biases
+    float* d_W_  = nullptr;     // flattened weights
+    float* d_B_  = nullptr;     // flattened biases
     int*   d_layerIn_  = nullptr;
     int*   d_layerOut_ = nullptr;
     int*   d_wOffsets_ = nullptr;

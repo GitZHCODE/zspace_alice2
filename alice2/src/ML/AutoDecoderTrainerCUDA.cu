@@ -1,4 +1,4 @@
-// AutoDecoderTrainerCUDA.cu
+// AutoDecoderTrainerCUDA.cu  (v3: shared-memory scratch, no global aStore, no WT cache)
 #include "AutoDecoderTrainerCUDA.h"
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -20,6 +20,59 @@
 // ---------------- Device kernel ----------------
 __device__ inline float dtanhf_out(float y) { return 1.f - y*y; }
 
+// matvec (rows x cols) * x (+b) -> y ; one thread per row
+template<bool WithBias>
+__device__ inline void matvec_rows(const float* __restrict__ W,
+                                   const float* __restrict__ x,
+                                   const float* __restrict__ b,
+                                   float* __restrict__ y,
+                                   int rows, int cols,
+                                   int tid, int T)
+{
+    for (int r = tid; r < rows; r += T) {
+        float acc = WithBias ? b[r] : 0.f;
+        const float* __restrict__ wrow = W + (size_t)r * (size_t)cols;
+        #pragma unroll 4
+        for (int c=0;c<cols;++c) acc = fmaf(wrow[c], x[c], acc);
+        y[r] = acc;
+    }
+    __syncthreads();
+}
+
+// y = W^T * u ; W is (rows x cols) row-major; one thread per col
+__device__ inline void WT_times_vec(const float* __restrict__ W,
+                                    const float* __restrict__ u,
+                                    float* __restrict__ y,
+                                    int rows, int cols,
+                                    int tid, int T)
+{
+    for (int c=tid; c<cols; c+=T) {
+        float acc = 0.f;
+        #pragma unroll 4
+        for (int r=0;r<rows;++r) acc = fmaf(W[(size_t)r*(size_t)cols + (size_t)c], u[r], acc);
+        y[c] = acc;
+    }
+    __syncthreads();
+}
+
+// rank-1: W += alpha * u v^T ; B += alpha * u  (parallel over columns)
+__device__ inline void sgd_rank1(float* __restrict__ W,
+                                 float* __restrict__ B,
+                                 const float* __restrict__ u,
+                                 const float* __restrict__ v,
+                                 float alpha, int rows, int cols,
+                                 int tid, int T)
+{
+    for (int r=0;r<rows;++r) {
+        const float ar = alpha * u[r];
+        for (int c=tid; c<cols; c+=T) {
+            W[(size_t)r*(size_t)cols + (size_t)c] += ar * v[c];
+        }
+    }
+    for (int r=tid; r<rows; r+=T) B[r] += alpha * u[r];
+    __syncthreads();
+}
+
 extern "C" __global__
 void adt_persistent_epoch(
     float* __restrict__ Wflat, float* __restrict__ Bflat,
@@ -28,65 +81,24 @@ void adt_persistent_epoch(
     const float* __restrict__ Z_in, int numShapes, int latentDim,
     const float* __restrict__ coords, const float* __restrict__ targets, const int32_t* __restrict__ shapeIdx,
     const int32_t* __restrict__ order, int N, int coordDim,
-    float lrW, float lrZ, float lambda,
-    float* __restrict__ scratch,
-    float* __restrict__ lossOut, float* __restrict__ lastOut
-){
-    const int tid = threadIdx.x;
-    const int T   = blockDim.x;
-
-    // compute max width from layerOut and layerIn[0]
-    int maxWidth = 0;
-    for (int l=0; l<numLayers; ++l) { maxWidth = max(maxWidth, layerOut[l]); }
-    maxWidth = max(maxWidth, layerIn[0]);
-
-    // scratch layout
-    float* act0   = scratch;                  // len >= maxWidth
-    float* act1   = act0 + maxWidth;          // len >= maxWidth
-    float* delta  = act1 + maxWidth;          // len >= maxWidth
-    float* dInput = delta + maxWidth;         // len >= layerIn[0]
-    float* aStore = dInput + layerIn[0];      // (numLayers+1) * maxWidth
+    float lrW, float lrZ, float lambda, int maxWidth,
+    float* __restrict__ lossOut, float* __restrict__ lastOut)
+{
+    extern __shared__ float smem[];
+    // scratch layout in shared memory
+    float* act0   = smem;                 // maxWidth
+    float* act1   = act0   + maxWidth;    // maxWidth
+    float* delta  = act1   + maxWidth;    // maxWidth
+    float* dInput = delta  + maxWidth;    // layerIn[0]
+    float* aStore = dInput + layerIn[0];  // (numLayers+1)*maxWidth
     auto A = [&](int l)->float* { return aStore + (size_t)l * (size_t)maxWidth; };
 
-    auto matvec_par = [&](const float* W, const float* x, const float* b, float* y, int rows, int cols){
-        for (int r = tid; r < rows; r += T) {
-            float acc = b ? b[r] : 0.f;
-            const float* wrow = W + (size_t)r * (size_t)cols;
-            for (int c=0;c<cols;++c) acc += wrow[c]*x[c];
-            y[r] = acc;
-        }
-        __syncthreads();
-    };
-    auto vec_tanh_par = [&](float* a, int n){
-        for (int i=tid;i<n;i+=T) a[i] = tanhf(a[i]);
-        __syncthreads();
-    };
-    auto sgd_rank1_par = [&](float* W, float* B, const float* u, const float* v, float alpha, int rows, int cols){
-        for (int r=0;r<rows;++r) {
-            float ar = alpha * u[r];
-            for (int c=tid; c<cols; c+=T) {
-                W[(size_t)r*(size_t)cols + (size_t)c] += ar * v[c];
-            }
-        }
-        for (int r=tid; r<rows; r+=T) B[r] += alpha * u[r];
-        __syncthreads();
-    };
-    auto WT_times_vec_par = [&](const float* W, const float* u, float* out, int rows, int cols){
-        for (int c=tid; c<cols; c+=T) {
-            float acc=0.f;
-            for (int r=0;r<rows;++r) acc += W[(size_t)r*(size_t)cols + (size_t)c] * u[r];
-            out[c] = acc;
-        }
-        __syncthreads();
-    };
-    auto hadamard_dtanh_par = [&](float* v, const float* a, int n){
-        for (int i=tid;i<n;i+=T) v[i] *= dtanhf_out(a[i]);
-        __syncthreads();
-    };
+    const int tid = threadIdx.x;
+    const int T   = blockDim.x;
+    float* Z = const_cast<float*>(Z_in);
 
     float totalLoss = 0.f;
     float last = 0.f;
-    float* Z = const_cast<float*>(Z_in); // we update latents in-place
 
     for (int it=0; it<N; ++it) {
         const int idx = order[it];
@@ -101,16 +113,19 @@ void adt_persistent_epoch(
         }
         __syncthreads();
 
-        // forward store
+        // forward store in shared memory
         float* cur = A(0);
         for (int l=0; l<numLayers; ++l) {
             const int rows = layerOut[l];
             const int cols = layerIn[l];
-            float* W = Wflat + wOffsets[l];
-            float* B = Bflat + bOffsets[l];
+            float* W  = Wflat + wOffsets[l];
+            float* B  = Bflat + bOffsets[l];
 
-            matvec_par(W, cur, B, act1, rows, cols);
-            if (l < numLayers-1) vec_tanh_par(act1, rows);
+            matvec_rows<true>(W, cur, B, act1, rows, cols, tid, T);
+            if (l < numLayers-1) {
+                for (int i=tid;i<rows;i+=T) act1[i] = tanhf(act1[i]);
+                __syncthreads();
+            }
 
             for (int i=tid;i<rows;i+=T) A(l+1)[i] = act1[i];
             __syncthreads();
@@ -127,21 +142,25 @@ void adt_persistent_epoch(
         for (int l=numLayers-1; l>=0; --l) {
             const int rows = layerOut[l];
             const int cols = layerIn[l];
-            float* W = Wflat + wOffsets[l];
-            float* B = Bflat + bOffsets[l];
+            float* W  = Wflat + wOffsets[l];
+            float* B  = Bflat + bOffsets[l];
             float* aPrev = A(l);
 
             // W,B update
-            sgd_rank1_par(W, B, delta, aPrev, -lrW, rows, cols);
+            sgd_rank1(W, B, delta, aPrev, -lrW, rows, cols, tid, T);
 
-            // dInput for latent update (first layer)
+            // dInput for latent update (first layer) or prev delta
+            WT_times_vec(W, delta, act0, rows, cols, tid, T);
+
             if (l == 0) {
-                WT_times_vec_par(W, delta, dInput, rows, cols);
+                for (int i=tid;i<cols;i+=T) dInput[i] = act0[i];
+                __syncthreads();
             }
 
             if (l > 0) {
-                WT_times_vec_par(W, delta, act0, rows, cols);
-                hadamard_dtanh_par(act0, aPrev, cols);
+                // apply dtanh on aPrev
+                for (int i=tid;i<cols;i+=T) act0[i] *= (1.f - aPrev[i]*aPrev[i]);
+                __syncthreads();
                 for (int i=tid;i<cols;i+=T) delta[i] = act0[i];
                 __syncthreads();
             }
@@ -217,6 +236,11 @@ void AutoDecoderTrainerCUDA::allocDevice_(){
         h_bOffsets_[l+1] = h_bOffsets_[l] + h_layerOut_[l];
     }
 
+    // max width
+    maxWidth_ = 0;
+    for (int l=0; l<numLayers_; ++l) maxWidth_ = std::max(maxWidth_, h_layerOut_[l]);
+    maxWidth_ = std::max(maxWidth_, h_layerIn_[0]);
+
     // device allocs
     CUDA_CHECK(cudaMalloc(&d_layerIn_,  sizeof(int)*numLayers_));
     CUDA_CHECK(cudaMalloc(&d_layerOut_, sizeof(int)*numLayers_));
@@ -230,8 +254,8 @@ void AutoDecoderTrainerCUDA::allocDevice_(){
 
     int wCount = h_wOffsets_.back();
     int bCount = h_bOffsets_.back();
-    CUDA_CHECK(cudaMalloc(&d_W_, sizeof(float)*wCount));
-    CUDA_CHECK(cudaMalloc(&d_B_, sizeof(float)*bCount));
+    CUDA_CHECK(cudaMalloc(&d_W_,  sizeof(float)*wCount));
+    CUDA_CHECK(cudaMalloc(&d_B_,  sizeof(float)*bCount));
 
     int N = (int)dataset_.size();
     CUDA_CHECK(cudaMalloc(&d_Z_,        sizeof(float)*(size_t)numShapes_*(size_t)latentDim_));
@@ -261,16 +285,16 @@ void AutoDecoderTrainerCUDA::uploadModel_(){
     int inDim = hostMLP_.inputDim;
     int oW=0, oB=0;
     for (size_t l=0; l<hostMLP_.hidden.size(); ++l){
-        int rows = hostMLP_.hidden[l];
-        int cols = inDim;
+        const int rows = hostMLP_.hidden[l];
+        const int cols = inDim;
         CUDA_CHECK(cudaMemcpy(d_W_ + oW, hostMLP_.weights[l].data(), sizeof(float)*rows*cols, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_B_ + oB, hostMLP_.biases[l].data(),  sizeof(float)*rows,     cudaMemcpyHostToDevice));
         oW += rows*cols; oB += rows; inDim = rows;
     }
     // output
     {
-        int rows = hostMLP_.outputDim;
-        int cols = inDim;
+        const int rows = hostMLP_.outputDim;
+        const int cols = inDim;
         CUDA_CHECK(cudaMemcpy(d_W_ + oW, hostMLP_.weights.back().data(), sizeof(float)*rows*cols, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_B_ + oB, hostMLP_.biases.back().data(),  sizeof(float)*rows,     cudaMemcpyHostToDevice));
     }
@@ -281,15 +305,15 @@ void AutoDecoderTrainerCUDA::downloadModel_(){
     int inDim = hostMLP_.inputDim;
     int oW=0, oB=0;
     for (size_t l=0; l<hostMLP_.hidden.size(); ++l){
-        int rows = hostMLP_.hidden[l];
-        int cols = inDim;
+        const int rows = hostMLP_.hidden[l];
+        const int cols = inDim;
         CUDA_CHECK(cudaMemcpy(hostMLP_.weights[l].data(), d_W_ + oW, sizeof(float)*rows*cols, cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(hostMLP_.biases[l].data(),  d_B_ + oB, sizeof(float)*rows,     cudaMemcpyDeviceToHost));
         oW += rows*cols; oB += rows; inDim = rows;
     }
     {
-        int rows = hostMLP_.outputDim;
-        int cols = inDim;
+        const int rows = hostMLP_.outputDim;
+        const int cols = inDim;
         CUDA_CHECK(cudaMemcpy(hostMLP_.weights.back().data(), d_W_ + oW, sizeof(float)*rows*cols, cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(hostMLP_.biases.back().data(),  d_B_ + oB, sizeof(float)*rows,     cudaMemcpyDeviceToHost));
     }
@@ -324,36 +348,29 @@ ADTStats AutoDecoderTrainerCUDA::train(const ADTConfig& cfg){
     const int N = (int)dataset_.size();
     std::mt19937_64 rng(cfg.shuffleSeed);
 
-    // Scratch size (in floats): 2*maxW + maxW + in0 + (L+1)*maxW
-    int maxWidth = 0;
-    for (int l=0;l<numLayers_;++l) maxWidth = std::max(maxWidth, h_layerOut_[l]);
-    maxWidth = std::max(maxWidth, h_layerIn_[0]);
-    size_t scratchFloats = (size_t)(4*maxWidth + (numLayers_+1)*maxWidth);
+    ADTStats stats{};
 
-    float* d_scratch=nullptr;
-    CUDA_CHECK(cudaMalloc(&d_scratch, sizeof(float)*scratchFloats));
+    // choose threads and shared mem size
+    const int threads = 256;
+    size_t shmemFloats = (size_t)(3*maxWidth_ + latentDim_ + (numLayers_+1)*maxWidth_);
+    size_t shmemBytes  = shmemFloats * sizeof(float);
+
     float *d_loss=nullptr, *d_last=nullptr;
     CUDA_CHECK(cudaMalloc(&d_loss, sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_last, sizeof(float)));
-
-    ADTStats stats{};
-
-    // choose threads
-    const int threads = 128;
 
     for (int e=0; e<cfg.epochs; ++e){
         std::shuffle(order_.begin(), order_.end(), rng);
         CUDA_CHECK(cudaMemcpy(d_order_, order_.data(), sizeof(int32_t)*N, cudaMemcpyHostToDevice));
 
-        adt_persistent_epoch<<<1, threads>>>(
+        adt_persistent_epoch<<<1, threads, shmemBytes>>>(
             d_W_, d_B_,
             d_layerIn_, d_layerOut_, numLayers_,
             d_wOffsets_, d_bOffsets_,
-            d_Z_, numShapes_, latentDim_, 
+            d_Z_, numShapes_, latentDim_,
             d_coords_, d_targets_, d_shapeIdx_,
             d_order_, N, coordDim_,
-            cfg.lrW, cfg.lrZ, cfg.lambda,
-            d_scratch,
+            cfg.lrW, cfg.lrZ, cfg.lambda, maxWidth_,
             d_loss, d_last
         );
         CUDA_CHECK(cudaDeviceSynchronize());
@@ -362,7 +379,6 @@ ADTStats AutoDecoderTrainerCUDA::train(const ADTConfig& cfg){
         stats.epochsRun++;
     }
 
-    CUDA_CHECK(cudaFree(d_scratch));
     CUDA_CHECK(cudaFree(d_loss));
     CUDA_CHECK(cudaFree(d_last));
 
