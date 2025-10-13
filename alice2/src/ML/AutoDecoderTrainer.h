@@ -44,6 +44,9 @@ public:
     int getLatentDim() const { return latentDim; }
     int getCoordinateDim() const { return coordDim; }
 
+    const MLP& getDecoder() const { return model; }
+    MLP&       getDecoder()       { return model; }
+
     AutoDecoderTrainingStats train(const AutoDecoderTrainingConfig& config);
 
     bool saveToJson(const std::string& filePath) const;

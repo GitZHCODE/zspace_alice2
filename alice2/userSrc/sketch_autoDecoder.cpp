@@ -65,9 +65,9 @@ public:
 
     void setup() override
     {
-        scene().setBackgroundColor(Color(0.15f, 0.15f, 0.2f));
-        scene().setShowAxes(true);
-        scene().setShowGrid(true);
+        scene().setBackgroundColor(Color(0.0f, 0.0f, 0.0f));
+        scene().setShowAxes(false);
+        scene().setShowGrid(false);
 
         const std::filesystem::path defaultPath = std::filesystem::path("inFieldStack.json");
         loadDataset(defaultPath.string());
@@ -79,7 +79,6 @@ public:
     {
         renderer.setColor(Color(0.9f, 0.9f, 0.9f));
         renderer.drawString(getName(), 15, 30);
-        renderer.setColor(Color(0.75f, 0.75f, 0.9f));
         renderer.drawString(m_status, 15, 50);
         renderer.drawString("Loaded fields: " + std::to_string(m_originalGridFields.size()), 15, 70);
         renderer.drawString("Samples: " + std::to_string(m_samples.size()), 15, 90);

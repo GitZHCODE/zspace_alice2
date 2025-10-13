@@ -6,12 +6,16 @@
 #include <stdexcept>
 #include <cmath>
 
+#include <nlohmann/json.hpp>
+
 // Include CPU MLP to read/write weights
 // genericMLP is included via AutoDecoderTrainerCUDA.h
 
 using std::size_t;
 
 namespace alice2 {
+
+using json = nlohmann::json;
 
 // --- training state parity with CPU ---
 
@@ -446,12 +450,16 @@ AutoDecoderTrainingStats AutoDecoderTrainerCUDA::train(const AutoDecoderTraining
             // --- (d) accumulate loss (MSE + λ‖z_pre‖²) ---
             const double total = double(sampleMSE) + latentPenalty;
             epochLoss += total;
-            stats.lastLoss = float(total);
+
+            lastBatchLoss = float(total);
+            stats.lastLoss = lastBatchLoss;
             stats.totalSamples++;
         }
 
-        stats.averageLoss     = float(epochLoss / double(dataset_.size())); // last epoch avg
-        stats.epochsCompleted = ep + 1;
+        runningAverageLoss = float(epochLoss / double(dataset_.size())); // last epoch avg
+        epochsRun = ep + 1;
+        stats.averageLoss     = runningAverageLoss;
+        stats.epochsCompleted = epochsRun;
     }
 
     // Sync weights back to CPU model
@@ -468,6 +476,47 @@ AutoDecoderTrainingStats AutoDecoderTrainerCUDA::train(const AutoDecoderTraining
 
     epochsRun_ += cfg.epochs;
     return stats;
+}
+
+bool AutoDecoderTrainerCUDA::saveToJson(const std::string& filePath) const
+{
+    if (h_latents_.empty())
+        return false;
+
+    json root;
+
+    json decoder;
+    decoder["input_dim"] = model_.inputDim;
+    decoder["output_dim"] = model_.outputDim;
+    decoder["hidden_dims"] = model_.hiddenDims;
+    decoder["weights"] = model_.W;
+    decoder["biases"] = model_.b;
+    root["decoder"] = decoder;
+
+    root["latent_codes"] = h_latents_;
+
+    json training;
+    training["epochs_completed"] = epochsRun_;
+    training["last_loss"] = lastBatchLoss;
+    training["average_loss"] = runningAverageLoss;
+    training["latent_regularization"] = lastLatentRegularization;
+    training["samples_per_epoch"] = dataset_.size();
+    root["training"] = training;
+
+    json metadata;
+    metadata["num_shapes"] = h_latents_.size();
+    metadata["latent_dim"] = latentDim_;
+    metadata["coordinate_dim"] = coordDim_;
+    metadata["model_input_dim"] = model_.inputDim;
+    metadata["model_output_dim"] = model_.outputDim;
+    root["metadata"] = metadata;
+
+    std::ofstream file(filePath);
+    if (!file.is_open())
+        return false;
+
+    file << root.dump(4);
+    return true;
 }
 
 } // namespace alice2

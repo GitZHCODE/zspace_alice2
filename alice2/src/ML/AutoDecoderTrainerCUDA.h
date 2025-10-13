@@ -21,6 +21,9 @@ public:
     void initialize(int numShapes, int latentDim, int coordinateDim);
     void setSamples(const std::vector<AutoDecoderSample>& samples);
 
+    const MLP& getDecoder() const { return model_; }
+    MLP&       getDecoder()       { return model_; }
+
     AutoDecoderTrainingStats train(const AutoDecoderTrainingConfig& cfg);
 
     // Accessors
@@ -28,6 +31,8 @@ public:
     
     // Set initial latents from host (deterministic parity with CPU), uploads to device.
     void setLatentCodesHost(const std::vector<std::vector<float>>& Z);
+
+    bool saveToJson(const std::string& filePath) const;
 
 private:
     // CPU model reference
@@ -38,6 +43,10 @@ private:
     int latentDim_ = 0;
     int inputDim_ = 0;
     int outputDim_ = 0;
+    float lastBatchLoss = 0.0f;
+    float runningAverageLoss = 0.0f;
+    int epochsRun = 0;
+    float lastLatentRegularization = 0.0f;
     std::vector<int> layerIn_, layerOut_; // per-layer dims
 
     // Host copies
