@@ -1,522 +1,450 @@
 
-#include "CUDAUtils.h"
+// AutoDecoderTrainerCUDA.cu
 #include "AutoDecoderTrainerCUDA.h"
+#include <cuda_runtime.h>
+#include <curand_kernel.h>
 #include <algorithm>
 #include <numeric>
-#include <stdexcept>
-#include <cmath>
+#include <cstring>
+#include <cstdio>
 
-#include <nlohmann/json.hpp>
+#ifndef CUDA_CHECK
+#define CUDA_CHECK(expr) do { \
+    cudaError_t _err = (expr); \
+    if (_err != cudaSuccess) { \
+        fprintf(stderr, "[CUDA] %s failed at %s:%d : %s\n", #expr, __FILE__, __LINE__, cudaGetErrorString(_err)); \
+        abort(); \
+    } \
+} while(0)
+#endif
 
-// Include CPU MLP to read/write weights
-// genericMLP is included via AutoDecoderTrainerCUDA.h
-
-using std::size_t;
-
-namespace alice2 {
-
-using json = nlohmann::json;
-
-// --- training state parity with CPU ---
-
-void AutoDecoderTrainerCUDA::setLatentCodesHost(const std::vector<std::vector<float>>& Z)
-{
-    if ((int)Z.size() != numShapes_ || numShapes_ == 0)
-        throw std::runtime_error("setLatentCodesHost: numShapes mismatch or trainer not initialized");
-    if ((int)Z[0].size() != latentDim_)
-        throw std::runtime_error("setLatentCodesHost: latentDim mismatch");
-
-    h_latents_ = Z; // copy
-    // flatten and upload
-    std::vector<float> flat;
-    flat.reserve((size_t)numShapes_ * latentDim_);
-    for (const auto& row : h_latents_) flat.insert(flat.end(), row.begin(), row.end());
-    CUDA_CHECK(cudaMemcpy(d_Z_, flat.data(), flat.size()*sizeof(float), cudaMemcpyHostToDevice));
-    latentsInit_ = true; // skip random init
+// ---------------------- Device helpers ----------------------
+__device__ inline float dtanh(float y) { // derivative using output y = tanh(x)
+    return 1.f - y*y;
 }
 
-// ---------------- device kernels (B=1) ----------------
+// weights/biases are flattened per layer in row-major (out x in)
+// We pack all layers back-to-back; layerIn[k], layerOut[k] give sizes.
+// Offsets are computed by scanning.
+__device__ float* layerW(int layerIdx, float* Wflat, const int* layerIn, const int* layerOut) {
+    // compute offset
+    int offset = 0;
+    for (int l=0; l<layerIdx; ++l) offset += layerOut[l]*layerIn[l];
+    return Wflat + offset;
+}
+__device__ float* layerB(int layerIdx, float* Bflat, const int* layerOut) {
+    int offset = 0;
+    for (int l=0; l<layerIdx; ++l) offset += layerOut[l];
+    return Bflat + offset;
+}
+__device__ int weightOffset(int upto, const int* layerIn, const int* layerOut) {
+    int off=0; for(int l=0;l<upto;++l) off += layerOut[l]*layerIn[l]; return off;
+}
+__device__ int biasOffset(int upto, const int* layerOut) {
+    int off=0; for(int l=0;l<upto;++l) off += layerOut[l]; return off;
+}
 
-__global__ void kConcatInput(const float* __restrict__ z, const float* __restrict__ coord,
-                             int latentDim, int coordDim, float* __restrict__ out)
-{
-    // out = [z | coord]
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int total = latentDim + coordDim;
-    if (i < total) {
-        out[i] = (i < latentDim) ? z[i] : coord[i - latentDim];
+// Mat-vec: y = W*x + b ; W[rows x cols] row-major
+__device__ void matvec(const float* W, const float* x, const float* b,
+                       float* y, int rows, int cols) {
+    for (int r=0; r<rows; ++r) {
+        float acc = b ? b[r] : 0.f;
+        const float* wrow = W + r*cols;
+        for (int c=0; c<cols; ++c) acc += wrow[c]*x[c];
+        y[r] = acc;
     }
 }
 
-__global__ void kAffineRowMajor(const float* __restrict__ W, const float* __restrict__ b,
-                                const float* __restrict__ a_in,
-                                int outDim, int inDim,
-                                float* __restrict__ a_out)
-{
-    // z = W * a_in + b ; W row-major [out x in]
-    int o = threadIdx.x + blockIdx.x * blockDim.x;
-    if (o < outDim) {
-        float acc = b[o];
-        const float* wrow = W + o * inDim;
-        for (int j = 0; j < inDim; ++j) acc += wrow[j] * a_in[j];
-        a_out[o] = acc;
+// In-place tanh on vector
+__device__ void vec_tanh(float* a, int n) {
+    for (int i=0;i<n;++i) a[i] = tanhf(a[i]);
+}
+
+// y  := y + alpha*x
+__device__ void axpy(float* y, const float* x, float alpha, int n) {
+    for (int i=0;i<n;++i) y[i] += alpha * x[i];
+}
+
+// Outer product update: W += alpha * (u ⊗ v) where W is [rows x cols] row-major
+__device__ void sgd_rank1(float* W, const float* u, const float* v, float alpha, int rows, int cols) {
+    for (int r=0; r<rows; ++r) {
+        float ar = alpha * u[r];
+        float* wrow = W + r*cols;
+        for (int c=0; c<cols; ++c) wrow[c] += ar * v[c];
     }
 }
 
-__global__ void kTanhInplace(float* __restrict__ v, int n)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i < n) v[i] = tanhf(v[i]);
-}
+// ---------------- Persistent kernel (single block OK) ----------------
+extern "C" __global__
+void adt_persistent_epoch(
+    // network
+    float* Wflat, float* Bflat,
+    const int* layerIn, const int* layerOut, int numLayers,
+    // data
+    const float* Z, int numShapes, int latentDim,
+    const float* coords, const float* targets, const int32_t* shapeIdx,
+    const int32_t* order, int N, int coordDim,
+    // hparams
+    float lrW, float lrZ, float lambda,
+    // scratch (shared or global)
+    float* scratch,
+    // stats
+    float* lossOut, float* lastOut
+) {
+    // We'll use thread 0 to run the serial loop; other threads idle.
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
 
-__global__ void kTanhDerivInplace(float* __restrict__ v, const float* __restrict__ activ, int n)
-{
-    // v *= (1 - activ^2) ; where activ is the pre-existing activation A_l
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i < n) {
-        float a = activ[i];
-        v[i] *= (1.0f - a * a);
-    }
-}
+    float* act0 = scratch;                          // max width = max(layerIn[0], layerOut[..])
+    float* act1 = act0 + 1024;                      // same size scratch
+    float* delta = act1 + 1024;                     // for backprop
+    float* dInput = delta + 1024;                   // gradient wrt input of layer0
+    // Safety cap: assume max layer width <= 1024; adapt as needed.
+    // For compactness we allocate a fixed-size scratch; for production use, size dynamically.
 
-__global__ void kMSEGradAndLoss(float pred, float target, float* __restrict__ gradOut, float* __restrict__ lossOut)
-{
-    if (threadIdx.x == 0 && blockIdx.x == 0) {
-        float diff = pred - target;
-        *gradOut = 2.0f * diff;
-        *lossOut = diff * diff;
-    }
-}
+    float totalLoss = 0.f;
+    float last = 0.f;
 
-__global__ void kLatentUpdate(float* __restrict__ zRow, const float* __restrict__ gradLatent,
-                              int latentDim, float lrZ, float lambda)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i < latentDim) {
-        float g = gradLatent[i] + 2.0f * lambda * zRow[i];
-        zRow[i] -= lrZ * g;
-    }
-}
+    for (int it=0; it<N; ++it) {
+        int idx = order[it];
+        int s   = shapeIdx[idx];
+        const float* coord = coords + idx*coordDim;
+        float target = targets[idx];
 
-__global__ void kSGDParamUpdate(float* __restrict__ W, float* __restrict__ b,
-                                const float* __restrict__ delta, const float* __restrict__ prevAct,
-                                int outDim, int inDim, float lr)
-{
-    int o = blockIdx.x; // one block per output neuron
-    int j = threadIdx.x; // threads per input feature
-    // update weights
-    for (int idx = j; idx < inDim; idx += blockDim.x) {
-        float grad = delta[o] * prevAct[idx];
-        W[o * inDim + idx] -= lr * grad;
-    }
-    // update bias (thread 0)
-    if (j == 0) b[o] -= lr * delta[o];
-}
+        // Build input = [Z[s,*], coord[*]]
+        int in0 = layerIn[0];
+        // sanity
+        // load latent
+        for (int i=0;i<latentDim;++i) act0[i] = Z[s*latentDim + i];
+        // load coord
+        for (int i=0;i<coordDim;++i) act0[latentDim + i] = coord[i];
 
-// delta_{l-1} = W^T * delta_l
-__global__ void kBackpropDelta(const float* __restrict__ W, const float* __restrict__ deltaCur,
-                               int outDim, int inDim, float* __restrict__ deltaPrev)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x; // index in previous layer
-    if (i < inDim) {
-        float acc = 0.0f;
-        for (int o = 0; o < outDim; ++o) {
-            acc += W[o * inDim + i] * deltaCur[o];
+        // --- forward ---
+        float* cur = act0;
+        float* nxt = act1;
+        for (int l=0; l<numLayers; ++l) {
+            int rows = layerOut[l];
+            int cols = layerIn[l];
+            float* W = layerW(l, Wflat, layerIn, layerOut);
+            float* B = layerB(l, Bflat, layerOut);
+            matvec(W, cur, B, nxt, rows, cols);
+            if (l < numLayers-1) {
+                vec_tanh(nxt, rows);
+            }
+            // swap
+            float* tmp = cur; cur = nxt; nxt = tmp;
         }
-        deltaPrev[i] = acc;
+        float pred = cur[0];
+        float diff = pred - target;
+        float sampleLoss = diff*diff + lambda * 0.0f; // latent penalty added later for stats only
+        last = sampleLoss;
+
+        // --- backward --- (compute gradOut = 2*diff)
+        // We'll backprop layer by layer, updating W/B immediately (SGD)
+        float gradOut = 2.f*diff;
+
+        // We need activations per layer for backprop; for brevity, do a second forward storing them.
+        // (Still cheap because nets are small; and keeps code simple.)
+        // a[l] = activation after layer l (post-activation), with a[-1] = input
+        // We'll reuse scratch: act0/act1 toggling and keep a small array of pointers to copies.
+        // Here we store them in-place in a fixed buffer.
+        // Layout: we store only references by recomputing again (cheap & deterministic).
+
+        // Recompute with storage
+        // store input in act0_copy
+        float* act_in0 = dInput; // reuse region
+        for (int i=0;i<in0;++i) act_in0[i] = act0[i];
+        // act per layer will be written into contiguous areas after dInput; but to keep it simple
+        // we recompute on the fly during backward as well (two-pass technique).
+
+        // Backward pass requires deltas per layer. We do classic backprop with immediate SGD.
+        // We'll do layer L-1..0. First compute delta for output layer: size 1
+        delta[0] = gradOut; // dL/dy for linear output
+
+        // We also need previous activation vector to form rank-1 update
+        // So we forward again to get per-layer pre-activation vectors.
+        // Forward to store activations in a small array (max 16 layers assumed).
+        const int MAXL=16;
+        int inA[MAXL]; int outA[MAXL];
+        float* aStore[MAXL+1]; // a[0]=input, a[l+1]=post-act of layer l
+        aStore[0] = act_in0;
+        int curIn = in0;
+        cur = act_in0; nxt = act1;
+        for (int l=0;l<numLayers;++l){
+            int rows = layerOut[l], cols = layerIn[l];
+            float* W = layerW(l, Wflat, layerIn, layerOut);
+            float* B = layerB(l, Bflat, layerOut);
+            matvec(W, cur, B, nxt, rows, cols);
+            if (l < numLayers-1) vec_tanh(nxt, rows);
+            aStore[l+1] = nxt; // store pointer to current buffer (overwritten next iter but we copy below)
+            // copy to act0 region to preserve later
+            for (int i=0;i<rows;++i) act0[i] = nxt[i];
+            // swap: store saved to act0; move act0->nxt for next layer
+            for (int i=0;i<rows;++i) nxt[i]=act0[i];
+            cur = nxt; nxt = act1;
+            inA[l] = cols; outA[l]=rows;
+        }
+
+        // Now do backward + SGD updates
+        // Work arrays: curDelta size = outA[l]
+        for (int l=numLayers-1; l>=0; --l) {
+            int rows = outA[l];
+            int cols = inA[l];
+            float* W = layerW(l, Wflat, layerIn, layerOut);
+            float* B = layerB(l, Bflat, layerOut);
+
+            // Get a(l-1) (input to this layer) into act0; recompute if needed
+            // We'll recompute activations up to layer l-1 quickly
+            // For simplicity and determinism, recompute from input each time (still cheap for small nets).
+            // Build input again:
+            for (int i=0;i<latentDim;++i) act1[i] = Z[s*latentDim + i];
+            for (int i=0;i<coordDim;++i) act1[latentDim + i] = coord[i];
+            float* aPrev = act1;
+            float* aNext = act0;
+            for (int j=0;j<l;++j){
+                float* Wj = layerW(j, Wflat, layerIn, layerOut);
+                float* Bj = layerB(j, Bflat, layerOut);
+                matvec(Wj, aPrev, Bj, aNext, outA[j], inA[j]);
+                if (j < numLayers-1) vec_tanh(aNext, outA[j]);
+                float* t=aPrev; aPrev=aNext; aNext=t;
+            }
+            // aPrev now holds a(l-1)
+            // Update W and B: W += -lrW * (delta ⊗ aPrev^T), B += -lrW * delta
+            sgd_rank1(W, delta, aPrev, -lrW, rows, cols);
+            axpy(B, delta, -lrW, rows);
+
+            if (l == 0) {
+                // dInput = W^T * delta  (and tanh' applied to earlier layers handled in prev iterations)
+                // For l==0 we also need the gradient wrt input vector to update latent part
+                // Compute dInput (cols)
+                for (int c=0;c<cols;++c){
+                    float acc=0.f;
+                    for (int r=0;r<rows;++r) acc += W[r*cols + c] * delta[r];
+                    dInput[c] = acc;
+                }
+            }
+
+            // Prepare delta for previous layer if any
+            if (l>0){
+                // d(aPrev) = W^T * delta  hadamard dtanh(aPrev)
+                for (int c=0;c<cols;++c){
+                    float acc=0.f;
+                    for (int r=0;r<rows;++r) acc += W[r*cols + c] * delta[r];
+                    // aPrev is post-activation for layer l-1 (tanh)
+                    float ap = aPrev[c];
+                    act1[c] = acc * dtanh(ap);
+                }
+                // move act1 -> delta
+                for (int c=0;c<cols;++c) delta[c] = act1[c];
+            }
+        }
+
+        // --- update latent ---
+        // latent grad is first latentDim entries of dInput, add 2*lambda*z
+        for (int j=0;j<latentDim;++j){
+            float g = dInput[j] + 2.f*lambda * Z[s*latentDim + j];
+            // SGD
+            // Note: we cannot write Z (const) here because Z is const pointer;
+            // in this kernel design we keep Z immutable and only report loss. For strict update,
+            // we would pass Z as non-const and allow in-place update. Keep compatibility:
+        }
+        // We *do* need to update Z; so we cast away const-ness safely because we know it's our buffer.
+        float* Zmut = const_cast<float*>(Z);
+        for (int j=0;j<latentDim;++j){
+            float g = dInput[j] + 2.f*lambda * Zmut[s*latentDim + j];
+            Zmut[s*latentDim + j] -= lrZ * g;
+            // accumulate latent penalty to the loss for stats
+            sampleLoss += lambda * (Zmut[s*latentDim + j]*Zmut[s*latentDim + j]);
+        }
+
+        totalLoss += sampleLoss;
     }
+
+    *lossOut = totalLoss / (float)N;
+    *lastOut = last;
 }
 
-// ---------------- host impl ----------------
+// ---------------------- Host side impl ----------------------
 
-AutoDecoderTrainerCUDA::AutoDecoderTrainerCUDA(MLP& cpuDecoder)
-: model_(cpuDecoder), rng_(1337u) {}
+AutoDecoderTrainerCUDA::AutoDecoderTrainerCUDA() {}
+AutoDecoderTrainerCUDA::~AutoDecoderTrainerCUDA(){ freeDevice_(); }
 
-AutoDecoderTrainerCUDA::~AutoDecoderTrainerCUDA() {
-    freeDevice_();
-}
-
-void AutoDecoderTrainerCUDA::initialize(int numShapes, int latentDim, int coordinateDim)
-{
-    if (numShapes <= 0 || latentDim <= 0 || coordinateDim <= 0)
-        throw std::runtime_error("AutoDecoderTrainerCUDA::initialize invalid dims");
-
+void AutoDecoderTrainerCUDA::setNetwork(const SimpleMLP& mlp, int numShapes, int latentDim, int coordDim){
+    hostMLP_ = mlp;
     numShapes_ = numShapes;
     latentDim_ = latentDim;
-    coordDim_  = coordinateDim;
-
-    inputDim_ = latentDim_ + coordDim_;
-    outputDim_ = 1;
-
-    // Read CPU model structure
-    // genericMLP.h uses row-major W[l][out][in]
-    std::vector<int> layerDims;
-    layerDims.push_back(model_.inputDim);
-    for (int h : model_.hiddenDims) layerDims.push_back(h);
-    layerDims.push_back(model_.outputDim);
-
-    numLayers_ = (int)layerDims.size() - 1;
-    layerIn_.resize(numLayers_);
-    layerOut_.resize(numLayers_);
-    for (int l = 0; l < numLayers_; ++l) {
-        layerIn_[l]  = layerDims[l];
-        layerOut_[l] = layerDims[l+1];
-    }
-
-    // Host latents
-    h_latents_.assign((size_t)numShapes_, std::vector<float>((size_t)latentDim_, 0.0f));
-    latentsInit_ = false;
-
-    syncWeightsFromCPU_();
-    allocDevice_();
+    coordDim_ = coordDim;
+    // init latents
+    std::mt19937 rng(42);
+    std::normal_distribution<float> N01(0.f, 0.01f);
+    h_Z_.assign(numShapes_*latentDim_, 0.f);
+    for (auto& v : h_Z_) v = N01(rng);
 }
 
-void AutoDecoderTrainerCUDA::setSamples(const std::vector<AutoDecoderSample>& samples)
-{
-    if (inputDim_ != model_.inputDim)
-        throw std::runtime_error("CUDA trainer: model input dim mismatch");
-
+void AutoDecoderTrainerCUDA::setSamples(const std::vector<ADTSample>& samples){
     dataset_ = samples;
-    for (auto& s : dataset_) {
-        if ((int)s.coordinate.size() != coordDim_) throw std::runtime_error("sample coordDim mismatch");
-        if (s.shapeIndex < 0 || s.shapeIndex >= numShapes_) throw std::runtime_error("shape index OOB");
-    }
+    order_.resize((int)samples.size());
+    std::iota(order_.begin(), order_.end(), 0);
 }
 
-void AutoDecoderTrainerCUDA::ensureLatentInit_(float stddev)
-{
-    if (latentsInit_) return;
-    if (stddev <= 0.0f) stddev = 0.01f;
-    std::normal_distribution<float> dist(0.0f, stddev);
-    for (auto& row : h_latents_)
-        for (auto& v : row) v = dist(rng_);
-    // upload
-    std::vector<float> flat; flat.reserve((size_t)numShapes_ * latentDim_);
-    for (auto& row : h_latents_) flat.insert(flat.end(), row.begin(), row.end());
-    CUDA_CHECK(cudaMemcpy(d_Z_, flat.data(), flat.size()*sizeof(float), cudaMemcpyHostToDevice));
-    latentsInit_ = true;
-}
-
-void AutoDecoderTrainerCUDA::syncWeightsFromCPU_()
-{
-    // allocate raw device buffers for each layer & copy data
-    freeDevice_(); // in case called again
-    dW_raw_.resize(numLayers_, nullptr);
-    db_raw_.resize(numLayers_, nullptr);
-    dAct_raw_.resize(numLayers_ + 1, nullptr);   // A_0..A_L
-    dDelta_raw_.resize(numLayers_ + 1, nullptr); // δ_0..δ_L
-
-    for (int l = 0; l < numLayers_; ++l) {
-        int out = layerOut_[l], in = layerIn_[l];
-        CUDA_CHECK(cudaMalloc(&dW_raw_[l], out * in * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&db_raw_[l], out * sizeof(float)));
-
-        // pack CPU weights row-major [out x in]
-        std::vector<float> hostW(out * in);
-        for (int o = 0; o < out; ++o)
-            for (int j = 0; j < in; ++j)
-                hostW[o*in + j] = model_.W[l][o][j];
-        CUDA_CHECK(cudaMemcpy(dW_raw_[l], hostW.data(),
-                              hostW.size()*sizeof(float), cudaMemcpyHostToDevice));
-
-        std::vector<float> hostB(out);
-        for (int o = 0; o < out; ++o) hostB[o] = model_.b[l][o];
-        CUDA_CHECK(cudaMemcpy(db_raw_[l], hostB.data(),
-                              hostB.size()*sizeof(float), cudaMemcpyHostToDevice));
-
-        // allocate δ_l (note: index aligned with activations A_l)
-        CUDA_CHECK(cudaMalloc(&dDelta_raw_[l+1], out * sizeof(float)));
+void AutoDecoderTrainerCUDA::allocDevice_(){
+    freeDevice_();
+    // flatten weights & biases
+    numLayers_ = (int)hostMLP_.hidden.size() + 1;
+    std::vector<int> layerIn, layerOut;
+    int inDim = hostMLP_.inputDim;
+    for (size_t i=0;i<hostMLP_.hidden.size();++i){
+        layerIn.push_back(inDim);
+        layerOut.push_back(hostMLP_.hidden[i]);
+        inDim = hostMLP_.hidden[i];
     }
+    layerIn.push_back(inDim);
+    layerOut.push_back(hostMLP_.outputDim);
 
-    // input activation A_0 and output activations A_l
-    CUDA_CHECK(cudaMalloc(&dAct_raw_[0], layerIn_[0]*sizeof(float)));
-    for (int l = 0; l < numLayers_; ++l) {
-        CUDA_CHECK(cudaMalloc(&dAct_raw_[l+1], layerOut_[l]*sizeof(float)));
-    }
+    CUDA_CHECK(cudaMalloc(&d_layerIn_,  layerIn.size()*sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_layerOut_, layerOut.size()*sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(d_layerIn_,  layerIn.data(),  layerIn.size()*sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_layerOut_, layerOut.data(), layerOut.size()*sizeof(int), cudaMemcpyHostToDevice));
 
-    CUDA_CHECK(cudaMalloc(&dDelta_raw_[0], layerIn_[0] * sizeof(float)));
-}
+    int wCount=0, bCount=0;
+    for (int l=0;l<numLayers_;++l){ wCount += layerOut[l]*layerIn[l]; bCount += layerOut[l]; }
+    CUDA_CHECK(cudaMalloc(&d_W_, wCount*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_B_, bCount*sizeof(float)));
 
-void AutoDecoderTrainerCUDA::syncWeightsToCPU_()
-{
-    for (int l = 0; l < numLayers_; ++l) {
-        int out = layerOut_[l], in = layerIn_[l];
-        std::vector<float> hostW(out * in), hostB(out);
-        CUDA_CHECK(cudaMemcpy(hostW.data(), dW_raw_[l], hostW.size()*sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(hostB.data(), db_raw_[l], hostB.size()*sizeof(float), cudaMemcpyDeviceToHost));
-        for (int o = 0; o < out; ++o) {
-            for (int j = 0; j < in; ++j) {
-                model_.W[l][o][j] = hostW[o*in + j];
-            }
-            model_.b[l][o] = hostB[o];
-        }
-    }
-}
-
-void AutoDecoderTrainerCUDA::allocDevice_()
-{
-    // pointer arrays
-    CUDA_CHECK(cudaMalloc(&d_W_, numLayers_ * sizeof(float*)));
-    CUDA_CHECK(cudaMalloc(&d_b_, numLayers_ * sizeof(float*)));
-    CUDA_CHECK(cudaMalloc(&d_act_, (numLayers_ + 1) * sizeof(float*)));
-    CUDA_CHECK(cudaMalloc(&d_delta_, (numLayers_ + 1) * sizeof(float*)));
-
-    CUDA_CHECK(cudaMemcpy(d_W_, dW_raw_.data(), numLayers_ * sizeof(float*), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_b_, db_raw_.data(), numLayers_ * sizeof(float*), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_act_, dAct_raw_.data(), (numLayers_ + 1) * sizeof(float*), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_delta_, dDelta_raw_.data(), (numLayers_ + 1) * sizeof(float*), cudaMemcpyHostToDevice));
-
-    // input concat, target, loss
-    CUDA_CHECK(cudaMalloc(&d_inputConcat_, (latentDim_ + coordDim_) * sizeof(float)));
-
-    // latent table
-    CUDA_CHECK(cudaMalloc(&d_Z_, (size_t)numShapes_ * latentDim_ * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_Z_, numShapes_*latentDim_*sizeof(float)));
+    int N = (int)dataset_.size();
+    CUDA_CHECK(cudaMalloc(&d_coords_,  N*coordDim_*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_targets_, N*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_shapeIdx_, N*sizeof(int32_t)));
+    CUDA_CHECK(cudaMalloc(&d_order_,   N*sizeof(int32_t)));
 }
 
 void AutoDecoderTrainerCUDA::freeDevice_()
 {
-    auto freeVec = [](std::vector<float*>& v){
-        for (auto* p : v) if (p) cudaFree(p);
-        v.clear();
+    // explicit helper to avoid lambda capture issues with NVCC
+    auto freeIf = [](auto*& p) {
+        if (p) {
+            cudaFree(p);
+            p = nullptr;
+        }
     };
-    freeVec(dW_raw_);
-    freeVec(db_raw_);
-    freeVec(dAct_raw_);
-    freeVec(dDelta_raw_);
 
-    if (d_W_) cudaFree(d_W_), d_W_ = nullptr;
-    if (d_b_) cudaFree(d_b_), d_b_ = nullptr;
-    if (d_act_) cudaFree(d_act_), d_act_ = nullptr;
-    if (d_delta_) cudaFree(d_delta_), d_delta_ = nullptr;
-    if (d_inputConcat_) cudaFree(d_inputConcat_), d_inputConcat_ = nullptr;
-    if (d_Z_) cudaFree(d_Z_), d_Z_ = nullptr;
+    freeIf(d_W_);
+    freeIf(d_B_);
+    freeIf(d_layerIn_);
+    freeIf(d_layerOut_);
+    freeIf(d_Z_);
+    freeIf(d_coords_);
+    freeIf(d_targets_);
+    freeIf(d_shapeIdx_);
+    freeIf(d_order_);
 }
 
-void AutoDecoderTrainerCUDA::stepSample_(int shapeIndex, const float* h_coord, float target,
-                                         float lrW, float lrZ, float lambda, float& outLoss)
-{
-    // Gather latent row
-    float* zRow = d_Z_ + (size_t)shapeIndex * latentDim_;
-
-    // Build A_0 = [z | coord]
-    CUDA_CHECK(cudaMemcpy(dAct_raw_[0] + 0,           zRow,    latentDim_ * sizeof(float), cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(dAct_raw_[0] + latentDim_,  h_coord,  coordDim_ * sizeof(float), cudaMemcpyHostToDevice));
-
-    // Forward pass
-    for (int l = 0; l < numLayers_; ++l) {
-        const int in  = layerIn_[l];
-        const int out = layerOut_[l];
-
-        int block = 128;
-        int grid  = (out + block - 1) / block;
-        kAffineRowMajor<<<grid, block>>>(dW_raw_[l], db_raw_[l], dAct_raw_[l], out, in, dAct_raw_[l+1]);
-        CUDA_CHECK(cudaGetLastError());
-
-        // tanh on hidden layers only
-        if (l < numLayers_ - 1) {
-            int n   = out;
-            int g2  = (n + block - 1) / block;
-            kTanhInplace<<<g2, block>>>(dAct_raw_[l+1], n);
-            CUDA_CHECK(cudaGetLastError());
-        }
+void AutoDecoderTrainerCUDA::uploadModel_(){
+    // Flatten and upload
+    int inDim = hostMLP_.inputDim;
+    int offsetW=0, offsetB=0;
+    for (size_t l=0;l<hostMLP_.hidden.size();++l){
+        int rows = hostMLP_.hidden[l];
+        int cols = inDim;
+        CUDA_CHECK(cudaMemcpy((float*)d_W_ + offsetW, hostMLP_.weights[l].data(), rows*cols*sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy((float*)d_B_ + offsetB, hostMLP_.biases[l].data(), rows*sizeof(float), cudaMemcpyHostToDevice));
+        offsetW += rows*cols; offsetB += rows; inDim = rows;
     }
-
-    // Read prediction (outputDim == 1)
-    float h_pred = 0.0f;
-    CUDA_CHECK(cudaMemcpy(&h_pred, dAct_raw_[numLayers_], sizeof(float), cudaMemcpyDeviceToHost));
-
-    // Compute loss and output grad on host
-    float diff    = h_pred - target;
-    float gradOut = 2.0f * diff;     // d(MSE)/d(pred) with no 1/2 factor
-    outLoss       = diff * diff;
-
-    // Set delta_L on device
-    CUDA_CHECK(cudaMemcpy(dDelta_raw_[numLayers_], &gradOut, sizeof(float), cudaMemcpyHostToDevice));
-
-    // Backward pass that mirrors CPU order exactly:
-    // For l = L-1..0:
-    //   1) deltaPrev = W[l]^T * deltaCur   (pre-update weights)
-    //   2) if (l > 0) deltaPrev *= tanh'(activations[l])
-    //   3) SGD update on W[l], b[l] using deltaCur and activations[l]
-    for (int l = numLayers_ - 1; l >= 0; --l) {
-        const int out = layerOut_[l];
-        const int in  = layerIn_[l];
-
-        // (1) Propagate to previous layer with current weights
-        if (l > 0) {
-            int block = 128, grid = (in + block - 1) / block;
-            kBackpropDelta<<<grid, block>>>(dW_raw_[l], dDelta_raw_[l+1], out, in, dDelta_raw_[l]);
-            CUDA_CHECK(cudaGetLastError());
-
-            // (2) Apply tanh' on deltaPrev using activations[l] (post-activation at layer l)
-            grid = (in + block - 1) / block;
-            kTanhDerivInplace<<<grid, block>>>(dDelta_raw_[l], dAct_raw_[l], in);
-            CUDA_CHECK(cudaGetLastError());
-        }
-
-        // (3) SGD update W,b using deltaCur and activations[l] (prev activations)
-        int threads = std::min(256, ((in + 31) / 32) * 32);
-        kSGDParamUpdate<<<out, threads>>>(dW_raw_[l], db_raw_[l],
-                                        dDelta_raw_[l+1],  // deltaCur at layer l
-                                        dAct_raw_[l],      // activations[l]
-                                        out, in, lrW);
-        CUDA_CHECK(cudaGetLastError());
+    // output layer
+    {
+        int rows = hostMLP_.outputDim;
+        int cols = inDim;
+        CUDA_CHECK(cudaMemcpy((float*)d_W_ + offsetW, hostMLP_.weights.back().data(), rows*cols*sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy((float*)d_B_ + offsetB, hostMLP_.biases.back().data(), rows*sizeof(float), cudaMemcpyHostToDevice));
     }
+    CUDA_CHECK(cudaMemcpy(d_Z_, h_Z_.data(), h_Z_.size()*sizeof(float), cudaMemcpyHostToDevice));
 }
 
-AutoDecoderTrainingStats AutoDecoderTrainerCUDA::train(const AutoDecoderTrainingConfig& cfg)
-{
-    AutoDecoderTrainingStats stats{};
+void AutoDecoderTrainerCUDA::downloadModel_(){
+    // read back weights and Z
+    int inDim = hostMLP_.inputDim;
+    int offsetW=0, offsetB=0;
+    for (size_t l=0;l<hostMLP_.hidden.size();++l){
+        int rows = hostMLP_.hidden[l];
+        int cols = inDim;
+        CUDA_CHECK(cudaMemcpy(hostMLP_.weights[l].data(), (float*)d_W_ + offsetW, rows*cols*sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(hostMLP_.biases[l].data(),  (float*)d_B_ + offsetB, rows*sizeof(float), cudaMemcpyDeviceToHost));
+        offsetW += rows*cols; offsetB += rows; inDim = rows;
+    }
+    {
+        int rows = hostMLP_.outputDim;
+        int cols = inDim;
+        CUDA_CHECK(cudaMemcpy(hostMLP_.weights.back().data(), (float*)d_W_ + offsetW, rows*cols*sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(hostMLP_.biases.back().data(),  (float*)d_B_ + offsetB, rows*sizeof(float), cudaMemcpyDeviceToHost));
+    }
+    CUDA_CHECK(cudaMemcpy(h_Z_.data(), d_Z_, h_Z_.size()*sizeof(float), cudaMemcpyDeviceToHost));
+}
 
-    if (dataset_.empty()) return stats;
-    if (model_.outputDim != 1) throw std::runtime_error("CUDA trainer expects outputDim=1");
-    if (model_.inputDim != inputDim_) throw std::runtime_error("CUDA trainer inputDim mismatch");
+void AutoDecoderTrainerCUDA::uploadData_(){
+    int N = (int)dataset_.size();
+    std::vector<float> hcoords(N*coordDim_);
+    std::vector<float> htargets(N);
+    std::vector<int32_t> hshape(N);
+    for (int i=0;i<N;++i){
+        std::memcpy(&hcoords[i*coordDim_], dataset_[i].coord.data(), coordDim_*sizeof(float));
+        htargets[i] = dataset_[i].target;
+        hshape[i]   = dataset_[i].shapeIndex;
+    }
+    CUDA_CHECK(cudaMemcpy(d_coords_,  hcoords.data(),  hcoords.size()*sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_targets_, htargets.data(), N*sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_shapeIdx_,hshape.data(),   N*sizeof(int32_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_order_,   order_.data(),   N*sizeof(int32_t), cudaMemcpyHostToDevice));
+}
 
-    // --- Seed once like CPU ---
-    if (epochsRun_ == 0) {
-        rng_.seed(cfg.shuffleSeed);
+ADTStats AutoDecoderTrainerCUDA::train(const ADTConfig& cfg){
+    if (dataset_.empty()) throw std::runtime_error("No dataset set.");
+    if (latentDim_ + coordDim_ != hostMLP_.inputDim)
+        throw std::runtime_error("MLP inputDim must equal latentDim + coordDim");
+
+    allocDevice_();
+    uploadModel_();
+    uploadData_();
+
+    int N = (int)dataset_.size();
+    // make an order per epoch
+    std::mt19937_64 rng(cfg.shuffleSeed);
+
+    // Scratch buffer (4 * 1024 floats)
+    float* d_scratch=nullptr;
+    CUDA_CHECK(cudaMalloc(&d_scratch, 4*1024*sizeof(float)));
+    float *d_loss, *d_last;
+    CUDA_CHECK(cudaMalloc(&d_loss, sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_last, sizeof(float)));
+
+    ADTStats stats{};
+
+    for (int e=0;e<cfg.epochs;++e){
+        std::shuffle(order_.begin(), order_.end(), rng);
+        CUDA_CHECK(cudaMemcpy(d_order_, order_.data(), N*sizeof(int32_t), cudaMemcpyHostToDevice));
+        adt_persistent_epoch<<<1, 1>>>(
+            (float*)d_W_, (float*)d_B_,
+            d_layerIn_, d_layerOut_, numLayers_,
+            d_Z_, numShapes_, latentDim_,
+            d_coords_, d_targets_, d_shapeIdx_,
+            d_order_, N, coordDim_,
+            cfg.lrW, cfg.lrZ, cfg.lambda,
+            d_scratch,
+            d_loss, d_last
+        );
+        CUDA_CHECK(cudaDeviceSynchronize());
+        float h_loss=0.f, h_last=0.f;
+        CUDA_CHECK(cudaMemcpy(&h_loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&h_last, d_last, sizeof(float), cudaMemcpyDeviceToHost));
+        stats.avgLoss = h_loss;
+        stats.lastLoss = h_last;
+        stats.epochsRun++;
     }
 
-    // Ensure latents exist
-    if (!latentsInit_) ensureLatentInit_(cfg.latentInitStd);
+    CUDA_CHECK(cudaFree(d_scratch));
+    CUDA_CHECK(cudaFree(d_loss));
+    CUDA_CHECK(cudaFree(d_last));
 
-    // Order vector
-    std::vector<size_t> order(dataset_.size());
-    std::iota(order.begin(), order.end(), 0);
-
-    // Host scratch buffers for parity (latent + grad copies are tiny)
-    std::vector<float> z_before(latentDim_);
-    std::vector<float> gradA0(inputDim_, 0.0f); // δ_0 size = inputDim (latentDim + coordDim)
-
-    for (int ep = 0; ep < cfg.epochs; ++ep) {
-        std::shuffle(order.begin(), order.end(), rng_);
-
-        double epochLoss = 0.0;
-
-        for (size_t idx : order) {
-            const auto& s = dataset_[idx];
-            const int shapeIndex = s.shapeIndex;
-
-            // --- (a) read z BEFORE update for penalty parity ---
-            CUDA_CHECK(cudaMemcpy(z_before.data(),
-                                  d_Z_ + (size_t)shapeIndex * latentDim_,
-                                  latentDim_ * sizeof(float),
-                                  cudaMemcpyDeviceToHost));
-
-            double latentPenalty = 0.0;
-            if (cfg.latentRegularization > 0.0f) {
-                for (float v : z_before) latentPenalty += double(v) * double(v);
-                latentPenalty *= double(cfg.latentRegularization);
-            }
-
-            // --- (b) one SGD step up to δ_0 on device, WITHOUT applying device-side latent update ---
-            float sampleMSE = 0.0f;
-
-            // stepSample_ currently does the device-side latent update.
-            // For strict parity, we reroute latent update to host:
-            //  -> duplicate stepSample_ logic here: forward, loss grad, backward to δ_0, W/b updates
-            //  -> then perform latent update on host
-            // To minimize surgery, we’ll keep stepSample_ but disable its latent update part.
-            // If your current stepSample_ always updates latents, move that small kernel into a helper
-            // and guard it behind a flag. For now, we emulate by:
-            //   1) run stepSample_ as-is
-            //   2) immediately overwrite z on device with host-updated z (this wins deterministically)
-
-            stepSample_(shapeIndex, s.coordinate.data(), s.sdf,
-                        cfg.learningRateWeights, /* lrZ unused here */ 0.0f,
-                        cfg.latentRegularization, sampleMSE);
-
-            // Fetch δ_0 (device) to host
-            CUDA_CHECK(cudaMemcpy(gradA0.data(),
-                                  dDelta_raw_[0],
-                                  inputDim_ * sizeof(float),
-                                  cudaMemcpyDeviceToHost));
-
-            // --- (c) host-side latent update for strict parity ---
-            // Use grad wrt A_0's first latentDim entries + 2λz
-            // z_host := z_before (we’ll update this and write back)
-            for (int k = 0; k < latentDim_; ++k) {
-                float g = gradA0[k] + 2.0f * cfg.latentRegularization * z_before[k];
-                z_before[k] -= cfg.learningRateLatent * g;
-            }
-
-            // Write updated z back to device and to host mirror table
-            CUDA_CHECK(cudaMemcpy(d_Z_ + (size_t)shapeIndex * latentDim_,
-                                  z_before.data(),
-                                  latentDim_ * sizeof(float),
-                                  cudaMemcpyHostToDevice));
-            h_latents_[shapeIndex] = z_before; // keep host mirror in sync
-
-            // --- (d) accumulate loss (MSE + λ‖z_pre‖²) ---
-            const double total = double(sampleMSE) + latentPenalty;
-            epochLoss += total;
-
-            lastBatchLoss = float(total);
-            stats.lastLoss = lastBatchLoss;
-            stats.totalSamples++;
-        }
-
-        runningAverageLoss = float(epochLoss / double(dataset_.size())); // last epoch avg
-        epochsRun = ep + 1;
-        stats.averageLoss     = runningAverageLoss;
-        stats.epochsCompleted = epochsRun;
-    }
-
-    // Sync weights back to CPU model
-    syncWeightsToCPU_();
-
-    // Latents are already mirrored into h_latents_ each step; no need to read back now,
-    // but keep this for safety in case of out-of-band changes:
-    std::vector<float> flat((size_t)numShapes_ * latentDim_);
-    CUDA_CHECK(cudaMemcpy(flat.data(), d_Z_, flat.size()*sizeof(float), cudaMemcpyDeviceToHost));
-    for (int s = 0; s < numShapes_; ++s) {
-        auto& row = h_latents_[(size_t)s];
-        std::copy(flat.begin() + s*latentDim_, flat.begin() + (s+1)*latentDim_, row.begin());
-    }
-
-    epochsRun_ += cfg.epochs;
+    downloadModel_();
+    freeDevice_();
     return stats;
 }
-
-bool AutoDecoderTrainerCUDA::saveToJson(const std::string& filePath) const
-{
-    if (h_latents_.empty())
-        return false;
-
-    json root;
-
-    json decoder;
-    decoder["input_dim"] = model_.inputDim;
-    decoder["output_dim"] = model_.outputDim;
-    decoder["hidden_dims"] = model_.hiddenDims;
-    decoder["weights"] = model_.W;
-    decoder["biases"] = model_.b;
-    root["decoder"] = decoder;
-
-    root["latent_codes"] = h_latents_;
-
-    json training;
-    training["epochs_completed"] = epochsRun_;
-    training["last_loss"] = lastBatchLoss;
-    training["average_loss"] = runningAverageLoss;
-    training["latent_regularization"] = lastLatentRegularization;
-    training["samples_per_epoch"] = dataset_.size();
-    root["training"] = training;
-
-    json metadata;
-    metadata["num_shapes"] = h_latents_.size();
-    metadata["latent_dim"] = latentDim_;
-    metadata["coordinate_dim"] = coordDim_;
-    metadata["model_input_dim"] = model_.inputDim;
-    metadata["model_output_dim"] = model_.outputDim;
-    root["metadata"] = metadata;
-
-    std::ofstream file(filePath);
-    if (!file.is_open())
-        return false;
-
-    file << root.dump(4);
-    return true;
-}
-
-} // namespace alice2
