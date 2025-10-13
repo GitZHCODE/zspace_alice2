@@ -1,19 +1,14 @@
-
 #pragma once
 // AutoDecoderTrainerCUDA.h
-// Persistent-kernel per-sample SGD trainer for an auto-decoder (MLP + latent codes).
-// Mirrors CPU schedule: forward -> update W/b -> compute dInput -> update latent Z[s].
-// Hidden: tanh; Output: linear. Loss: L = (y - f)^2 + lambda * ||z_s||^2.
-//
-// This header is self-contained and does not depend on the user's CPU trainer headers.
-// If you want it as a drop-in, you can replace the small MLP definition below with your own.
+// GPU trainer for Auto-Decoder with strict per-sample SGD schedule.
+// Parallel persistent-kernel implementation (one kernel per epoch).
 
 #include <vector>
 #include <cstdint>
-#include <random>
 #include <string>
 #include <stdexcept>
 
+// ---------------- Public data structures ----------------
 struct ADTSample {
     int32_t shapeIndex;
     std::vector<float> coord; // length = coordDim
@@ -21,21 +16,21 @@ struct ADTSample {
 };
 
 struct ADTConfig {
-    int epochs = 1;
-    float lrW = 1e-3f;
-    float lrZ = 1e-2f;
-    float lambda = 1e-3f;
+    int   epochs  = 1;
+    float lrW     = 1e-3f;
+    float lrZ     = 1e-2f;
+    float lambda  = 1e-3f;
     uint64_t shuffleSeed = 1234ull;
-    float latentInitStd = 0.01f;
 };
 
 struct ADTStats {
-    int epochsRun = 0;
-    float avgLoss = 0.f;
-    float lastLoss = 0.f;
+    int   epochsRun = 0;
+    float avgLoss   = 0.f;
+    float lastLoss  = 0.f;
 };
 
-// A minimal MLP layout we also use on device (row-major: out x in)
+// Minimal MLP descriptor used by GPU trainer.
+// All weights are row-major per layer: W[out][in].
 struct SimpleMLP {
     int inputDim = 0;
     int outputDim = 1;
@@ -46,47 +41,55 @@ struct SimpleMLP {
     std::vector<std::vector<float>> biases;
 };
 
+// ---------------- Trainer ----------------
 class AutoDecoderTrainerCUDA {
 public:
     AutoDecoderTrainerCUDA();
     ~AutoDecoderTrainerCUDA();
 
-    // Model/latent/dataset spec
+    // Setup
     void setNetwork(const SimpleMLP& mlp, int numShapes, int latentDim, int coordDim);
     void setSamples(const std::vector<ADTSample>& samples);
 
-    // Train with strict per-sample SGD schedule on GPU
+    // Train (strict per-sample SGD)
     ADTStats train(const ADTConfig& cfg);
 
-    // Read back trained parameters
-    const SimpleMLP& getTrainedMLP() const { return hostMLP_; }
-    const std::vector<float>& getLatents() const { return h_Z_; } // numShapes * latentDim
+    // Access
+    const SimpleMLP&       getTrainedMLP() const { return hostMLP_; }
+    const std::vector<float>& getLatents() const { return h_Z_; } // flattened [numShapes * latentDim]
 
 private:
-    // host-side storage
+    // host-side
     SimpleMLP hostMLP_;
     int numShapes_ = 0;
     int latentDim_ = 0;
-    int coordDim_ = 0;
+    int coordDim_  = 0;
 
     std::vector<ADTSample> dataset_;
-    std::vector<int32_t> order_;
+    std::vector<int32_t>   order_;
+
+    // layer dims & offsets (host)
+    int numLayers_ = 0; // hidden.size() + 1
+    std::vector<int> h_layerIn_, h_layerOut_;
+    std::vector<int> h_wOffsets_, h_bOffsets_;
 
     // device pointers
-    void* d_W_ = nullptr;    // flattened weights for all layers
-    void* d_B_ = nullptr;    // flattened biases   for all layers
-    int*  d_layerIn_  = nullptr;
-    int*  d_layerOut_ = nullptr;
-    int   numLayers_ = 0; // including output layer
+    float* d_W_ = nullptr;     // flattened weights
+    float* d_B_ = nullptr;     // flattened biases
+    int*   d_layerIn_  = nullptr;
+    int*   d_layerOut_ = nullptr;
+    int*   d_wOffsets_ = nullptr;
+    int*   d_bOffsets_ = nullptr;
 
-    float* d_Z_ = nullptr;   // [numShapes, latentDim]
-    float* d_coords_ = nullptr; // [N, coordDim]
-    float* d_targets_ = nullptr; // [N]
-    int32_t* d_shapeIdx_ = nullptr; // [N]
-    int32_t* d_order_ = nullptr;    // [N]
+    float*   d_Z_ = nullptr;         // [numShapes, latentDim]
+    float*   d_coords_ = nullptr;    // [N, coordDim]
+    float*   d_targets_ = nullptr;   // [N]
+    int32_t* d_shapeIdx_ = nullptr;  // [N]
+    int32_t* d_order_ = nullptr;     // [N]
 
-    std::vector<float> h_Z_; // for reading back
+    std::vector<float> h_Z_;
 
+    // device allocs
     void allocDevice_();
     void freeDevice_();
     void uploadModel_();

@@ -52,7 +52,7 @@ class AutoDecoderParitySketch : public ISketch {
 public:
     AutoDecoderParitySketch() : m_status("Press 'P' to train both (CPU+GPU)") {}
 
-    std::string getName()  const override { return "AutoDecoder CPU–GPU Parity (JSON)"; }
+    std::string getName()  const override { return "AutoDecoder CPU-GPU Parity (JSON)"; }
     std::string getDescription() const override { return "Train CPU & GPU auto-decoder on JSON fields and compare"; }
     std::string getAuthor() const override { return "alice2 User"; }
 
