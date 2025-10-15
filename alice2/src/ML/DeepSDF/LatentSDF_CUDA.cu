@@ -1,10 +1,14 @@
-#include "LatentSDF.h"
+#include "LatentSDF_CUDA.h"
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <random>
 
+#define ALICE2_USE_CUDA
+
 #ifdef ALICE2_USE_CUDA
 #define ALICE2_USE_CUDA
+
+namespace DeepSDF {
 
 #define CUDA_CHECK(x) do{ cudaError_t e=(x); if(e!=cudaSuccess){ \
   fprintf(stderr,"[CUDA] %s failed (%s:%d): %s\n", #x, __FILE__, __LINE__, cudaGetErrorString(e)); abort(); } }while(0)
@@ -560,3 +564,5 @@ void TinyAutoDecoderCUDA::forwardRowGPU(int shapeIdx, const std::vector<float>& 
 }
 
 #endif //ALICE2_USE_CUDA
+
+} // namescape DeepSDF

@@ -3,219 +3,257 @@
 
 #include <alice2.h>
 #include <sketches/SketchRegistry.h>
-#include "ML/LatentSDF.h"
+
+#include <ML/DeepSDF/FieldViewer.h>
+#include <ML/DeepSDF/LatentSDF_CUDA.h>
+
+#include <fstream>
+#include <random>
 
 using namespace alice2;
+using namespace DeepSDF;
 
-inline Color valueToGray(float t){ t=std::clamp(t,0.0f,1.0f); return Color(t,t,t); }
-
-class LatentSDFSketch_CUDA : public ISketch {
+class Sketch_LatentSDF_CUDA : public ISketch {
 public:
-    std::string getName() const override { return "LatentSDFSketch_CUDA_Split"; }
-    std::string getDescription() const override { return "GPU-batched auto-decoder (Fourier, row-batched recon)"; }
-    std::string getAuthor() const override { return "alice2 User"; }
+    std::string getName()        const override { return "LatentSDF (CUDA)"; }
+    std::string getDescription() const override { return "GPU auto-decoder with FieldViewer UI + TrainingDataSet IO."; }
+    std::string getAuthor()      const override { return "alice2 User"; }
 
     void setup() override {
-        scene().setBackgroundColor(Color(0,0,0));
-        scene().setShowGrid(false); scene().setShowAxes(false);
+        scene().setBackgroundColor(Color(0.0f, 0.0f, 0.0f));
+        scene().setShowGrid(false);
+        scene().setShowAxes(false);
 
-        // Domain
-        m_domain.resX = m_gridResolutionX;
-        m_domain.resY = m_gridResolutionY;
-        m_domain.xMin = m_xMin; m_domain.xMax = m_xMax;
-        m_domain.yMin = m_yMin; m_domain.yMax = m_yMax;
+        // --- Domain (matches what FieldViewer expects)
+        domain_.resX = gridResX_;
+        domain_.resY = gridResY_;
+        domain_.xMin = xMin_;
+        domain_.xMax = xMax_;
+        domain_.yMin = yMin_;
+        domain_.yMax = yMax_;
 
-        // Analytic originals
-        m_original.assign(3, GridField{});
-        for (int s=0;s<3;++s){
-            buildAnalyticGrid(s, m_domain.resX, m_domain.resY,
-                              m_domain.xMin, m_domain.xMax,
-                              m_domain.yMin, m_domain.yMax,
-                              m_original[s].values, m_original[s].minValue, m_original[s].maxValue);
+        // --- Prepare analytic originals for 3 canonical shapes (0=circle,1=box,2=triangle)
+        originals_.resize(numShapes_);
+        for (int s = 0; s < numShapes_; ++s) {
+            buildAnalyticGrid(s, domain_.resX, domain_.resY,
+                              domain_.xMin, domain_.xMax, domain_.yMin, domain_.yMax,
+                              originals_[s].values, originals_[s].minValue, originals_[s].maxValue);
         }
 
-        // CUDA AD
-        ad_.setLambdaLatent(lambdaLatent);   // L2 on latents
-        ad_.setWeightDecayW(weitDecayW);   // weight decay on MLP weights
+        // --- Allocate reconstruction buffers (one per shape for side-by-side view, if desired)
+        recon_.resize(numShapes_);
+        for (int s = 0; s < numShapes_; ++s) {
+            recon_[s].values.assign(size_t(domain_.resX) * size_t(domain_.resY), 0.0f);
+            recon_[s].minValue = 0.0f;
+            recon_[s].maxValue = 0.0f;
+        }
 
-        const std::vector<int> hidden = {64,64,64};
-        ad_.initialize(/*numShapes*/3, /*latentDim*/m_latentDim, hidden, /*seed*/1234, /*maxBatch*/1024, /*numFreqs*/6, /*includeInput*/true);
+        // --- Bind FieldViewer
+        // If your FieldViewer supports multi-shape rows, great. If not, we show one shape at a time (activeShape_).
+        viewer_.setDomain(&domain_);
+        viewer_.setOriginal(&originals_);
+        viewer_.setReconstructed(&recon_);
 
-        trainBurst(1, 200, m_batchSize);
-        generateReconstruction();
+        // --- Try to load a dataset (optional, mirrors CPU sketch behavior)
+        std::ifstream fin(datasetPath_);
+        if (fin.good()) {
+            if (dataset_.loadJSON(datasetPath_)) {
+                std::printf("[CUDA][Dataset] Loaded '%s' (samples=%zu)\n", datasetPath_.c_str(), dataset_.size());
+            } else {
+                std::printf("[CUDA][Dataset] Found '%s' but failed to parse. Proceeding without it.\n", datasetPath_.c_str());
+            }
+        } else {
+            std::printf("[CUDA][Dataset] No dataset file found at '%s'.\n", datasetPath_.c_str());
+        }
+
+        // --- Init CUDA model
+        // (We keep maxBatch_ modest; trainMicroBatchGPU handles per-sample Z, batch W updates.)
+        decoder_.initialize(/*numShapes*/ numShapes_,
+                            /*latentDim*/ latentDim_,
+                            /*hidden*/    {64,64,64},
+                            /*seed*/      initSeed_,
+                            /*maxBatch*/  maxBatch_,
+                            /*numFreqs*/  6,
+                            /*includeInput*/ true);
+
+        // Training knobs
+        decoder_.setLambdaLatent(lambdaLatent_);
+        decoder_.setWeightDecayW(weightDecayW_);
+
+        // Prebuild X coordinates per row for forward pass
+        buildScanlineXs();
+        // Initial reconstruction
+        rebuildReconstruction();
     }
 
-    void update(float /*time*/) override {}
+    void update(float /*dt*/) override {
+        // no-op: we train on keypress to stay deterministic with your workflow
+    }
 
     void draw(Renderer& r, Camera&) override {
-        const float startY=20.f, gapY=40.f;
-        r.setColor(Color(0.9f,0.9f,0.9f));
-        r.drawString("Original (analytic scaled SDF)", 20.f, startY-8.f);
-        drawRow(r, m_original, startY);
+        const float startY = 20.0f;
+        const float gapY   = 36.0f;
 
-        const float reconTop = startY + m_tile + gapY;
-        r.setColor(Color(0.9f,0.9f,0.9f));
-        r.drawString(m_mask? (m_soft? "Reconstructed (soft mask; CUDA)":"Reconstructed (hard mask; CUDA)")
-                            : "Reconstructed (continuous SDF; CUDA)", 20.f, reconTop-8.f);
-        drawRow(r, m_recon, reconTop);
-
-        r.setColor(Color(0.7f,0.7f,0.7f));
-        char buf[256];
-        std::snprintf(buf,sizeof(buf),"Hotkeys: [T] train x1  [B/b] ++/-- batch  [M] mask  [S] soft  [[]/[]] tau=%.3f  B=%d",
-                      m_tau, m_batchSize);
-        r.drawString(buf, 20.f, reconTop + m_tile + 40.f);
+        // If you want to preview all shapes stacked, uncomment the loop; here we just use activeShape_
+        viewer_.drawOriginalRow(r, startY);
+        viewer_.drawReconstructionRow(r, startY + viewer_.config().tileSize + gapY);
+        viewer_.drawHelp(r, startY + 2*viewer_.config().tileSize + gapY + 40.0f);
     }
 
     bool onKeyPress(unsigned char k, int, int) override {
-        switch(k){
-            case 't': case 'T': 
-            {
-                std::printf("\nRunning CUDA\n");
-                trainBurst(50, 200, m_batchSize); 
-                generateReconstruction(); 
-                m_numEpoch+=50;
+        switch (k) {
+        // --- FieldViewer toggles (match CPU sketch)
+        case '1': viewer_.config().debugMode = 0; return true;
+        case '2': viewer_.config().debugMode = 1; return true;
+        case '3': viewer_.config().debugMode = 2; return true;
+        case '4': viewer_.config().debugMode = 3; return true;
 
-                double avgLoss=0.0, meanZ=0.0;
-                ad_.syncStatsToHost(avgLoss, meanZ, /*reset=*/true);
-                std::printf("[TrainCUDA] epoch=%d  avgLoss=%.6f  mean||z||=%.6f  (B=%d)\n",
-                            m_numEpoch, float(avgLoss), float(meanZ), m_batchSize);
+        case 'm': case 'M':
+            viewer_.config().softMask = !viewer_.config().softMask; return true;
 
-                if(lrW > 5e-3f && avgLoss < 1e-2f)
-                {
-                    lrW = 5e-3f;
-                    lrZ = 1e-2f;
+        case '[':
+            viewer_.config().tau = std::max(0.005f, viewer_.config().tau * 0.80f); return true;
+        case ']':
+            viewer_.config().tau = std::min(0.50f,  viewer_.config().tau * 1.25f); return true;
+
+        // --- Train a small number of micro-batches
+        case 't': case 'T': {
+            std::mt19937 rng(trainSeed_);
+            Sampler localSampler(sampleSeed_);
+            for (int e = 0; e < trainEpochs_; ++e) {
+                for (int step = 0; step < stepsPerEpoch_; ++step) {
+                    decoder_.trainMicroBatchGPU(/*B*/ microBatchB_, localSampler, rng, lrW_, lrZ_);
                 }
-
-                return true;
+                epochsDone_++;
             }
-            case 'r': case 'R': generateReconstruction(); return true;
-            case 'b': m_batchSize = std::max(16, m_batchSize/2); return true;
-            case 'B': m_batchSize = std::min(1024, m_batchSize*2); return true;
-            case 'm': case 'M': m_mask=!m_mask; return true;
-            case 's': case 'S': m_soft=!m_soft; return true;
-            case '[': m_tau=std::max(0.005f, m_tau*0.8f); return true;
-            case ']': m_tau=std::min(0.5f, m_tau*1.25f); return true;
+
+            // read stats
+            double avgLoss = 0.0, meanZ = 0.0;
+            decoder_.syncStatsToHost(avgLoss, meanZ, /*reset*/true);
+            std::printf("[CUDA][Train] epoch %d  avgLoss=%.6f  mean||z||=%.6f\n", epochsDone_, float(avgLoss), float(meanZ));
+
+            decoder_.syncLatentsToHost();
+            rebuildReconstruction();
+            return true;
+        }
+
+        // --- Rebuild reconstruction without training
+        case 'r': case 'R':
+            decoder_.syncLatentsToHost();
+            rebuildReconstruction();
+            return true;
+
+        // --- Save / Load dataset (optional)
+        case 'j': case 'J': // save
+            if (dataset_.saveJSON(datasetPath_)) {
+                std::printf("[CUDA][Dataset] Saved '%s'\n", datasetPath_.c_str());
+            } else {
+                std::printf("[CUDA][Dataset] Save failed for '%s'\n", datasetPath_.c_str());
+            }
+            return true;
+
+        case 'k': case 'K': { // load
+            DeepSDF::TrainingDataset tmp;
+            if (tmp.loadJSON(datasetPath_)) {
+                dataset_ = std::move(tmp);
+                std::printf("[CUDA][Dataset] Reloaded '%s' (samples=%zu)\n", datasetPath_.c_str(), dataset_.size());
+            } else {
+                std::printf("[CUDA][Dataset] Load failed for '%s'\n", datasetPath_.c_str());
+            }
+            return true;
+        }
+
+        default:
+            break;
         }
         return false;
     }
 
 private:
-    void trainBurst(int epochs,int microBatches,int B){
-        Sampler samp(777); std::mt19937 rng(2025);
-        for (int e=1;e<=epochs;++e){
-            double epochLoss=0.0, meanZ=0.0;
-            for (int mb=0;mb<microBatches;++mb){
-                double L=0.0, mZ=0.0; ad_.trainMicroBatchGPU(B, samp, rng, lrW, lrZ);
-                epochLoss += L; meanZ += mZ;
-            }
+    // ---- Helpers ----------------------------------------------------------
+
+    void setActiveShape(int s) {
+        viewer_.setOriginal(&originals_);
+        viewer_.setReconstructed(&recon_);
+        rebuildReconstruction();
+    }
+
+    void buildScanlineXs() {
+        xs_.resize(domain_.resX);
+        const float dx = (domain_.resX > 1) ? (domain_.xMax - domain_.xMin) / float(domain_.resX - 1) : 0.0f;
+        for (int x = 0; x < domain_.resX; ++x) {
+            xs_[x] = domain_.xMin + dx * float(x);
         }
     }
 
-    void generateReconstruction(){
-        const auto& Z = ad_.latents(); if (Z.empty()) return;
-        m_recon.assign(Z.size(), GridField{});
-        const int W=m_gridResolutionX, H=m_gridResolutionY;
-        const float xStep=(W>1)?(m_xMax-m_xMin)/float(W-1):0.f;
-        const float yStep=(H>1)?(m_yMax-m_yMin)/float(H-1):0.f;
+    void rebuildReconstruction() {
+        const float dy = (domain_.resY > 1) ? (domain_.yMax - domain_.yMin) / float(domain_.resY - 1) : 0.0f;
+        std::vector<float> row; row.resize(domain_.resX);
 
-        std::vector<float> xs(W), yrow;
-        for (size_t s=0;s<Z.size();++s){
-            auto& g = m_recon[s];
-            g.values.resize(size_t(W)*size_t(H));
-            g.minValue= std::numeric_limits<float>::max(); g.maxValue=-g.minValue;
+        for (int s = 0; s < numShapes_; ++s) {
+            GridField& g = recon_[s];
+            g.values.resize(size_t(domain_.resX) * size_t(domain_.resY));
+            g.minValue = +1e9f; g.maxValue = -1e9f;
 
-            for (int y=0;y<H;++y){
-                float yy = m_yMin + yStep*float(y);
-                for (int x=0;x<W;++x) xs[x] = m_xMin + xStep*float(x);
-                ad_.forwardRowGPU((int)s, xs, yy, yrow);
-                for (int x=0;x<W;++x){
-                    size_t idx = size_t(y)*size_t(W)+size_t(x);
-                    float v=yrow[x];
-                    g.values[idx]=v; g.minValue=std::min(g.minValue,v); g.maxValue=std::max(g.maxValue,v);
-                }
-            }
-        }
-    }
-
-    inline float sigmoid01(float x) const { return 1.f/(1.f+std::exp(-x)); }
-    inline float softMask01(float v,float t) const { return sigmoid01(v/t); }
-
-    void drawRow(Renderer& r, const std::vector<GridField>& grids, float top) const {
-        const float gap=25.f, cellW=m_tile/float(m_gridResolutionX), cellH=m_tile/float(m_gridResolutionY);
-        for (size_t i=0;i<grids.size();++i){
-            float left=20.f + float(i)*(m_tile+gap);
-            const auto& g=grids[i];
-            if (!m_mask){
-                float mn=g.minValue, mx=g.maxValue, rg=(mx-mn)==0.f?1.f:(mx-mn);
-                for (int y=0;y<m_gridResolutionY;++y) for (int x=0;x<m_gridResolutionX;++x){
-                    float norm=(g.values[size_t(y)*size_t(m_gridResolutionX)+size_t(x)]-mn)/rg;
-                    float px=left+(float(x)+0.5f)*cellW, py=top+(float(y)+0.5f)*cellH;
-                    r.draw2dPoint(Vec2(px,py), valueToGray(norm), std::max(cellW,cellH)*0.8f);
-                }
-            } else {
-                for (int y=0;y<m_gridResolutionY;++y) for (int x=0;x<m_gridResolutionX;++x){
-                    float v=g.values[size_t(y)*size_t(m_gridResolutionX)+size_t(x)];
-                    float v01 = m_soft? softMask01(v,m_tau) : (v<0.f?0.f:1.f);
-                    float px=left+(float(x)+0.5f)*cellW, py=top+(float(y)+0.5f)*cellH;
-                    r.draw2dPoint(Vec2(px,py), valueToGray(v01), std::max(cellW,cellH)*0.8f);
-                }
-            }
-            r.setColor(Color(0.7f,0.7f,0.9f));
-            r.drawString("#"+std::to_string(i), left, top+m_tile+16.f);
-
-            // Optional: thin contour overlay (zero-crossings) for extra “crisp”
-            r.setColor(Color(1.0f, 0.2f, 0.2f));
-            const float ps = std::max(cellW, cellH) * 0.25f; // small dot
-
-            for (int y = 0; y < m_gridResolutionY - 1; ++y) {
-                for (int x = 0; x < m_gridResolutionX - 1; ++x) {
-                    const size_t i00 = size_t(y)   * size_t(m_gridResolutionX) + size_t(x);
-                    const size_t i10 = size_t(y)   * size_t(m_gridResolutionX) + size_t(x+1);
-                    const size_t i01 = size_t(y+1) * size_t(m_gridResolutionX) + size_t(x);
-                    const size_t i11 = size_t(y+1) * size_t(m_gridResolutionX) + size_t(x+1);
-
-                    const float s00 = g.values[i00];
-                    const float s10 = g.values[i10];
-                    const float s01 = g.values[i01];
-                    const float s11 = g.values[i11];
-
-                    const bool signMix =
-                        ((s00 < 0) != (s10 < 0)) ||
-                        ((s10 < 0) != (s11 < 0)) ||
-                        ((s11 < 0) != (s01 < 0)) ||
-                        ((s01 < 0) != (s00 < 0));
-
-                    if (signMix) {
-                        const float cx = left + (float(x) + 1.0f) * cellW;
-                        const float cy = top  + (float(y) + 1.0f) * cellH;
-                        r.draw2dPoint(Vec2(cx, cy), Color(1.0f, 0.2f, 0.2f), ps);
-                    }
+            for (int y = 0; y < domain_.resY; ++y) {
+                const float yy = domain_.yMin + dy * float(y);
+                decoder_.forwardRowGPU(s, xs_, yy, row);
+                for (int x = 0; x < domain_.resX; ++x) {
+                    const float v = row[x];
+                    g.values[size_t(y) * size_t(domain_.resX) + size_t(x)] = v;
+                    g.minValue = std::min(g.minValue, v);
+                    g.maxValue = std::max(g.maxValue, v);
                 }
             }
         }
     }
 
 private:
-    FieldDomain m_domain;
-    float m_tile = 220.f;
+    // --- Viewer + fields
+    FieldViewer        viewer_;
+    FieldDomain        domain_;
+    std::vector<GridField> originals_;
+    std::vector<GridField> recon_;
 
-    bool m_mask=true, m_soft=true; float m_tau=0.05f;
+    // --- Model
+    TinyAutoDecoderCUDA decoder_;
 
-    std::vector<GridField> m_original, m_recon;
+    // --- Optional dataset (kept for parity with CPU workflow)
+    DeepSDF::TrainingDataset    dataset_;
+    std::string        datasetPath_ = "latentSDF_dataset.json";
 
-    TinyAutoDecoderCUDA ad_;
+    // --- Params (kept close to CPU defaults)
+    int   gridResX_       = 128;
+    int   gridResY_       = 128;
+    float xMin_           = -1.2f, xMax_ = 1.2f;
+    float yMin_           = -1.2f, yMax_ = 1.2f;
 
-    int m_gridResolutionX = 128, m_gridResolutionY = 128, m_latentDim = 16;
-    float m_xMin = -1.2f, m_xMax = 1.2f, m_yMin = -1.2f, m_yMax = 1.2f;
-    int m_batchSize = 16;
-    int m_numEpoch = 0;
+    int   numShapes_      = 3;     // circle / box / triangle
 
-    float lrW = 5e-2f;
-    float lrZ = 5e-2f;
-    float lambdaLatent = 1e-4f;
-    float weitDecayW = 1e-6f;
+    int   latentDim_      = 16;
+    int   maxBatch_       = 256;   // upper bound for micro-batching inside the CUDA trainer
+
+    // training
+    int   trainEpochs_    = 50;
+    int   stepsPerEpoch_  = 200;
+    int   microBatchB_    = 16;
+
+    float lrW_            = 5e-2f;
+    float lrZ_            = 5e-2f;
+
+    float lambdaLatent_   = 1e-4f;
+    float weightDecayW_   = 1e-6f;
+
+    unsigned initSeed_    = 1234;
+    unsigned trainSeed_   = 2025;
+    unsigned sampleSeed_  = 777;
+
+    int epochsDone_       = 0;
+
+    // precomputed scanline positions for forwardRowGPU
+    std::vector<float> xs_;
 };
 
-ALICE2_REGISTER_SKETCH_AUTO(LatentSDFSketch_CUDA)
+ALICE2_REGISTER_SKETCH_AUTO(Sketch_LatentSDF_CUDA)
 
 #endif // __MAIN__
