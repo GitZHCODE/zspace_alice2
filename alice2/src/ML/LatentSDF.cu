@@ -3,6 +3,9 @@
 #include <cstdio>
 #include <random>
 
+#ifdef ALICE2_USE_CUDA
+#define ALICE2_USE_CUDA
+
 #define CUDA_CHECK(x) do{ cudaError_t e=(x); if(e!=cudaSuccess){ \
   fprintf(stderr,"[CUDA] %s failed (%s:%d): %s\n", #x, __FILE__, __LINE__, cudaGetErrorString(e)); abort(); } }while(0)
 
@@ -555,3 +558,5 @@ void TinyAutoDecoderCUDA::forwardRowGPU(int shapeIdx, const std::vector<float>& 
 
     CUDA_CHECK(cudaMemcpy(outY.data(), impl_->layers.back().A, W*sizeof(float), cudaMemcpyDeviceToHost));
 }
+
+#endif //ALICE2_USE_CUDA
