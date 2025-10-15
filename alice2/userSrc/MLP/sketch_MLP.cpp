@@ -1,7 +1,7 @@
 // alice2 MLP Educational Sketch
 // Demonstrates Multi-Layer Perceptron learning for polygon SDF approximation
 
-#define __MAIN__
+//#define __MAIN__
 #ifdef __MAIN__
 
 #include <alice2.h>
