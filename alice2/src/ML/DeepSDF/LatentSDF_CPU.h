@@ -261,6 +261,7 @@ public:
     const FieldDomain&            getDomain()        const { return domain; }
     const std::vector<GridField>& getOriginal()      const { return original; }
     const std::vector<GridField>& getReconstructed() const { return reconstructed; }
+    const std::vector<std::vector<float>>& getLatentCodes()const { return ad.Z; }
 
     void initialize(int gridX, int gridY,
                     float xMin, float xMax, float yMin, float yMax,
@@ -316,6 +317,48 @@ public:
             meanZ /= std::max(1, ad.numShapes);
             std::printf("[TrainBurst] avgLoss=%.6f  mean||z||=%.6f\n", (float)avgLoss, (float)meanZ);
         }
+    }
+
+    bool decodeGrid(const std::vector<float>& z, GridField& out)
+    {
+        if ((int)z.size() != ad.latentDim) return false;
+
+        const int resX = domain.resX;
+        const int resY = domain.resY;
+        out.values.resize(size_t(resX) * size_t(resY));
+
+        float vmin =  std::numeric_limits<float>::max();
+        float vmax = -std::numeric_limits<float>::max();
+
+        std::vector<float> in(size_t(ad.latentDim + ad.coordEncDim), 0.f);
+
+        const float xStep = (resX > 1) ? (domain.xMax - domain.xMin) / float(resX - 1) : 0.0f;
+        const float yStep = (resY > 1) ? (domain.yMax - domain.yMin) / float(resY - 1) : 0.0f;
+
+        for (int y = 0; y < resY; ++y)
+        {
+            const float yy = domain.yMin + yStep * float(y);
+            for (int x = 0; x < resX; ++x)
+            {
+                const float xx = domain.xMin + xStep * float(x);
+                const size_t idx = size_t(y) * size_t(resX) + size_t(x);
+
+                // Build [z ; encoded(x,y)]
+                std::copy(z.begin(), z.end(), in.begin());
+                ad.enc.encode(xx, yy, ad.encBuf);
+                for (int j = 0; j < ad.coordEncDim; ++j)
+                    in[ad.latentDim + j] = ad.encBuf[j];
+
+                const float v = ad.decoder.forward(in);
+                out.values[idx] = v;
+                vmin = std::min(vmin, v);
+                vmax = std::max(vmax, v);
+            }
+        }
+
+        out.minValue = vmin;
+        out.maxValue = vmax;
+        return true;
     }
 
     void generateReconstruction() {
