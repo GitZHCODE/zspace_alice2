@@ -6,9 +6,12 @@
 #include <limits>
 #include <algorithm>
 #include <cstring>
-#include <cuda_runtime.h>
+#include <string>
+
+struct uchar4;
 
 #include "TrainingDataSet.h"
+#include "FieldViewer.h"
 
 namespace DeepSDF {
 
@@ -28,9 +31,11 @@ inline void buildAnalyticGrid(int shapeIdx,int resX,int resY,float xMin,float xM
 
 struct FieldRenderConfig {
     int   debugMode = 0;
-    int   softMask  = 1;   // 0 or 1
+    bool  softMask  = true;
     float tau       = 0.05f;
 };
+
+class LatentNavigator_CUDA;
 
 // ---------- CUDA auto-decoder (opaque API; implemented in .cu) ----------
 class TinyAutoDecoderCUDA {
@@ -51,15 +56,6 @@ public:
     void forwardRowGPU(int shapeIdx, const std::vector<float>& xs, float y,
                        std::vector<float>& outY) const;
 
-    void decodeLatentGridToDevice(const std::vector<float>& latent,
-                                  int resX, int resY,
-                                  float xMin, float xMax,
-                                  float yMin, float yMax,
-                                  float* dstDevice,
-                                  int dstStride,
-                                  int dstOffsetX,
-                                  int dstOffsetY);
-
     void decodeLatentGridToDevice(const float* latentHost,
                                   int resX, int resY,
                                   float xMin, float xMax,
@@ -67,12 +63,15 @@ public:
                                   float* dstDevice,
                                   int dstStride,
                                   int dstOffsetX,
-                                  int dstOffsetY);
+                                  int dstOffsetY,
+                                  float* scratchLatentDevice);
 
     void panelToRGBA(const float* panelFieldDevice,
                      int panelWidth, int panelHeight,
                      int tileRes, int gap, int panelN,
                      const FieldRenderConfig& cfg,
+                     float* tileMinDevice,
+                     float* tileMaxDevice,
                      uchar4* rgbaDevice);
 
     // sync device latents to host (e.g., before visualization)
@@ -81,6 +80,13 @@ public:
     // pull running stats (no training sync unless you call this)
     // If reset=true, running loss & sample counters are zeroed after read.
     void syncStatsToHost(double& avgLoss, double& meanZ, bool reset = true);
+
+    void saveModelJSON(const std::string& path,
+                       const FieldDomain& domain) const;
+    bool loadModelJSON(const std::string& path,
+                       FieldDomain& outDomain,
+                       int maxBatch = 256,
+                       unsigned seed = 1234);
 
     // accessors / knobs
     const std::vector<std::vector<float>>& latents() const { return Z_; }
@@ -93,6 +99,8 @@ public:
     void setWeightDecayW(float v){ weightDecayW_ = v; }
 
 private:
+    friend class LatentNavigator_CUDA;
+
     struct Impl; Impl* impl_ = nullptr;
 
     int   numShapes_    = 0;

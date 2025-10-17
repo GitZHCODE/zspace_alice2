@@ -1,7 +1,9 @@
 #include "LatentSDF_CUDA.h"
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <fstream>
 #include <random>
+#include <nlohmann/json.hpp>
 
 #define ALICE2_USE_CUDA
 
@@ -48,20 +50,6 @@ __global__ void kAssembleZX(const float* __restrict__ dZ, int numShapes, int lat
     const float* zj = dZ + si*latentDim;
     for (int p=0;p<latentDim;++p) X[p*B + j] = zj[p];
     for (int p=0;p<encDim;  ++p) X[(latentDim+p)*B + j] = enc[p*B + j];
-}
-
-__global__ void kAssembleZXSingle(const float* __restrict__ z, int latentDim,
-                                  const float* __restrict__ enc, int encDim,
-                                  float* __restrict__ X, int B)
-{
-    int j = blockIdx.x*blockDim.x + threadIdx.x;
-    if (j >= B) return;
-    for (int p = 0; p < latentDim; ++p) {
-        X[p*B + j] = z[p];
-    }
-    for (int p = 0; p < encDim; ++p) {
-        X[(latentDim + p)*B + j] = enc[p*B + j];
-    }
 }
 
 // C[m x n] = A[m x k] * B[k x n]
@@ -245,6 +233,20 @@ __global__ void kMeanZReduce(const float* __restrict__ Z, int numShapes, int lat
     atomicAdd(meanZOut, nz);
 }
 
+__global__ void kAssembleZXSingle(const float* __restrict__ z, int latentDim,
+                                  const float* __restrict__ enc, int encDim,
+                                  float* __restrict__ X, int B)
+{
+    int j = blockIdx.x*blockDim.x + threadIdx.x;
+    if (j >= B) return;
+    for (int p = 0; p < latentDim; ++p) {
+        X[p*B + j] = z[p];
+    }
+    for (int p = 0; p < encDim; ++p) {
+        X[(latentDim + p)*B + j] = enc[p*B + j];
+    }
+}
+
 struct DeviceFieldRenderConfig {
     int   debugMode;
     int   softMask;
@@ -395,7 +397,6 @@ struct TinyAutoDecoderCUDA::Impl {
 
     // latent grad buffer (race-free path)
     float* dZgrad = nullptr;      // [numShapes * latentDim]
-    float* scratchZ = nullptr;    // [latentDim] single latent buffer
 
     // --- stats accumulators on device ---
     float*        dLossPerSample = nullptr;  // [maxBatch]
@@ -403,23 +404,9 @@ struct TinyAutoDecoderCUDA::Impl {
     unsigned int* dNSamplesAcc   = nullptr;  // scalar running count of samples
     float*        dMeanZ         = nullptr;  // scalar (scratch for getter)
 
-    // panel helpers
-    float* tileMin = nullptr;
-    float* tileMax = nullptr;
-    int    tileCapacity = 0;
-
     // API-like helpers (member functions so we can access private fields)
     void forwardBatch(int B);
     void backwardBatchAndUpdate(int B, float lrW);
-
-    void ensureTileCapacity(int tileCount) {
-        if (tileCount <= tileCapacity) return;
-        if (tileMin) cudaFree(tileMin);
-        if (tileMax) cudaFree(tileMax);
-        CUDA_CHECK(cudaMalloc(&tileMin, tileCount * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&tileMax, tileCount * sizeof(float)));
-        tileCapacity = tileCount;
-    }
 
     void initMLP(int inputDim, const std::vector<int>& hidden, int outDim, int maxBatch, int numFreqs, bool includeInput){
         inDim = inputDim; maxB = maxBatch;
@@ -673,6 +660,154 @@ void TinyAutoDecoderCUDA::syncStatsToHost(double& avgLoss, double& meanZ, bool r
     }
 }
 
+void TinyAutoDecoderCUDA::saveModelJSON(const std::string& path,
+                                        const FieldDomain& domain) const
+{
+    using nlohmann::json;
+    json j;
+
+    j["domain"] = {
+        {"resX", domain.resX}, {"resY", domain.resY},
+        {"xMin", domain.xMin}, {"xMax", domain.xMax},
+        {"yMin", domain.yMin}, {"yMax", domain.yMax}
+    };
+
+    j["numShapes"] = numShapes_;
+    j["latentDim"] = latentDim_;
+    j["latents"]   = Z_;
+    j["posenc"] = {
+        {"numFreqs", impl_->enc.numFreqs},
+        {"includeInput", impl_->enc.includeInput},
+        {"coordEncDim", impl_->coordEncDim}
+    };
+
+    std::vector<int> dims;
+    std::vector<std::vector<float>> hostW;
+    std::vector<std::vector<float>> hostB;
+    dims.reserve(impl_->layers.size() + 1);
+    if (!impl_->layers.empty()) {
+        dims.push_back(impl_->layers[0].inDim);
+    }
+    for (const auto& layer : impl_->layers) {
+        const int rows = layer.outDim;
+        const int cols = layer.inDim;
+
+        std::vector<float> w(rows * cols);
+        std::vector<float> b(rows);
+        CUDA_CHECK(cudaMemcpy(w.data(), layer.W, rows * cols * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(b.data(), layer.b, rows * sizeof(float), cudaMemcpyDeviceToHost));
+
+        hostW.push_back(std::move(w));
+        hostB.push_back(std::move(b));
+        dims.push_back(rows);
+    }
+
+    j["decoder"] = {
+        {"dims", dims},
+        {"W", hostW},
+        {"b", hostB}
+    };
+
+    std::ofstream ofs(path, std::ios::binary);
+    if (!ofs) {
+        std::fprintf(stderr, "[CUDA][Model] Failed to open '%s' for writing.\n", path.c_str());
+        return;
+    }
+    ofs << j.dump(2);
+    std::printf("[CUDA][Model] Saved model -> %s\n", path.c_str());
+}
+
+bool TinyAutoDecoderCUDA::loadModelJSON(const std::string& path,
+                                        FieldDomain& outDomain,
+                                        int maxBatch,
+                                        unsigned seed)
+{
+    using nlohmann::json;
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs) {
+        std::fprintf(stderr, "[CUDA][Model] Cannot open '%s'\n", path.c_str());
+        return false;
+    }
+
+    json j;
+    try {
+        ifs >> j;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[CUDA][Model] Failed to parse '%s': %s\n", path.c_str(), e.what());
+        return false;
+    }
+
+    outDomain.resX = j["domain"]["resX"].get<int>();
+    outDomain.resY = j["domain"]["resY"].get<int>();
+    outDomain.xMin = j["domain"]["xMin"].get<float>();
+    outDomain.xMax = j["domain"]["xMax"].get<float>();
+    outDomain.yMin = j["domain"]["yMin"].get<float>();
+    outDomain.yMax = j["domain"]["yMax"].get<float>();
+
+    auto latents = j["latents"].get<std::vector<std::vector<float>>>();
+    const int numShapes = static_cast<int>(latents.size());
+    const int latentDim = j["latentDim"].get<int>();
+
+    const auto& posenc = j["posenc"];
+    const int numFreqs = posenc["numFreqs"].get<int>();
+    const bool includeInput = posenc["includeInput"].get<bool>();
+
+    const auto& jd = j["decoder"];
+    auto dims = jd["dims"].get<std::vector<int>>();
+    auto hostW = jd["W"].get<std::vector<std::vector<float>>>();
+    auto hostB = jd["b"].get<std::vector<std::vector<float>>>();
+
+    if (dims.size() < 2 || hostW.size() != hostB.size()) {
+        std::fprintf(stderr, "[CUDA][Model] Invalid decoder layout in '%s'\n", path.c_str());
+        return false;
+    }
+
+    std::vector<int> hidden;
+    if (dims.size() > 2) {
+        hidden.assign(dims.begin() + 1, dims.end() - 1);
+    }
+
+    initialize(numShapes, latentDim, hidden, seed, maxBatch, numFreqs, includeInput);
+
+    Z_ = std::move(latents);
+    std::vector<float> flatLatents(size_t(numShapes) * size_t(latentDim));
+    for (int s = 0; s < numShapes; ++s) {
+        if ((int)Z_[s].size() != latentDim) {
+            std::fprintf(stderr, "[CUDA][Model] Latent dimension mismatch while loading '%s'\n", path.c_str());
+            return false;
+        }
+        std::memcpy(flatLatents.data() + size_t(s) * size_t(latentDim),
+                    Z_[s].data(),
+                    size_t(latentDim) * sizeof(float));
+    }
+    CUDA_CHECK(cudaMemcpy(impl_->dZ, flatLatents.data(),
+                          flatLatents.size() * sizeof(float),
+                          cudaMemcpyHostToDevice));
+
+    if (hostW.size() != impl_->layers.size()) {
+        std::fprintf(stderr, "[CUDA][Model] Layer count mismatch while loading '%s'\n", path.c_str());
+        return false;
+    }
+
+    for (size_t l = 0; l < impl_->layers.size(); ++l) {
+        const int rows = impl_->layers[l].outDim;
+        const int cols = impl_->layers[l].inDim;
+        if ((int)hostB[l].size() != rows || (int)hostW[l].size() != rows * cols) {
+            std::fprintf(stderr, "[CUDA][Model] Layer shape mismatch while loading '%s'\n", path.c_str());
+            return false;
+        }
+        CUDA_CHECK(cudaMemcpy(impl_->layers[l].W, hostW[l].data(),
+                              rows * cols * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(impl_->layers[l].b, hostB[l].data(),
+                              rows * sizeof(float), cudaMemcpyHostToDevice));
+    }
+
+    CUDA_CHECK(cudaMemset(impl_->dZgrad, 0, sizeof(float) * size_t(numShapes) * size_t(latentDim)));
+
+    std::printf("[CUDA][Model] Loaded model <- %s\n", path.c_str());
+    return true;
+}
+
 void TinyAutoDecoderCUDA::forwardRowGPU(int shapeIdx, const std::vector<float>& xs, float y,
                                         std::vector<float>& outY) const
 {
@@ -699,21 +834,6 @@ void TinyAutoDecoderCUDA::forwardRowGPU(int shapeIdx, const std::vector<float>& 
     CUDA_CHECK(cudaMemcpy(outY.data(), impl_->layers.back().A, W*sizeof(float), cudaMemcpyDeviceToHost));
 }
 
-void TinyAutoDecoderCUDA::decodeLatentGridToDevice(const std::vector<float>& latent,
-                                                   int resX, int resY,
-                                                   float xMin, float xMax,
-                                                   float yMin, float yMax,
-                                                   float* dstDevice,
-                                                   int dstStride,
-                                                   int dstOffsetX,
-                                                   int dstOffsetY)
-{
-    if ((int)latent.size() != latentDim_) return;
-    decodeLatentGridToDevice(latent.data(), resX, resY,
-                             xMin, xMax, yMin, yMax,
-                             dstDevice, dstStride, dstOffsetX, dstOffsetY);
-}
-
 void TinyAutoDecoderCUDA::decodeLatentGridToDevice(const float* latentHost,
                                                    int resX, int resY,
                                                    float xMin, float xMax,
@@ -721,15 +841,15 @@ void TinyAutoDecoderCUDA::decodeLatentGridToDevice(const float* latentHost,
                                                    float* dstDevice,
                                                    int dstStride,
                                                    int dstOffsetX,
-                                                   int dstOffsetY)
+                                                   int dstOffsetY,
+                                                   float* scratchLatentDevice)
 {
-    if (!latentHost || !dstDevice || resX <= 0 || resY <= 0) return;
-    if (impl_->latentDim != latentDim_) return;
+    if (!latentHost || !dstDevice || !scratchLatentDevice || !impl_) return;
+    if (resX <= 0 || resY <= 0) return;
 
-    if (!impl_->scratchZ) {
-        CUDA_CHECK(cudaMalloc(&impl_->scratchZ, latentDim_ * sizeof(float)));
-    }
-    CUDA_CHECK(cudaMemcpy(impl_->scratchZ, latentHost, latentDim_ * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(scratchLatentDevice, latentHost,
+                          size_t(latentDim_) * sizeof(float),
+                          cudaMemcpyHostToDevice));
 
     const float dx = (resX > 1) ? (xMax - xMin) / float(resX - 1) : 0.0f;
     const float dy = (resY > 1) ? (yMax - yMin) / float(resY - 1) : 0.0f;
@@ -754,7 +874,7 @@ void TinyAutoDecoderCUDA::decodeLatentGridToDevice(const float* latentHost,
             int tpb = 256;
             int bpg = (B + tpb - 1) / tpb;
             kEncodeXY<<<bpg, tpb>>>(impl_->Xs, impl_->Ys, impl_->Enc, B, impl_->enc);
-            kAssembleZXSingle<<<bpg, tpb>>>(impl_->scratchZ, latentDim_,
+            kAssembleZXSingle<<<bpg, tpb>>>(scratchLatentDevice, latentDim_,
                                             impl_->Enc, impl_->coordEncDim,
                                             impl_->X, B);
             CUDA_CHECK(cudaMemcpy(impl_->layers[0].A, impl_->X,
@@ -773,23 +893,23 @@ void TinyAutoDecoderCUDA::panelToRGBA(const float* panelFieldDevice,
                                       int panelWidth, int panelHeight,
                                       int tileRes, int gap, int panelN,
                                       const FieldRenderConfig& cfg,
+                                      float* tileMinDevice,
+                                      float* tileMaxDevice,
                                       uchar4* rgbaDevice)
 {
-    if (!panelFieldDevice || !rgbaDevice) return;
-    if (panelWidth <= 0 || panelHeight <= 0 || panelN <= 0) return;
-
-    impl_->ensureTileCapacity(panelN * panelN);
+    if (!panelFieldDevice || !tileMinDevice || !tileMaxDevice || !rgbaDevice) return;
+    if (panelWidth <= 0 || panelHeight <= 0 || panelN <= 0 || !impl_) return;
 
     dim3 reduceBlock(256);
     dim3 reduceGrid(panelN * panelN);
     kComputeTileMinMax<<<reduceGrid, reduceBlock>>>(panelFieldDevice, panelWidth,
                                                     tileRes, gap, panelN,
-                                                    impl_->tileMin, impl_->tileMax);
+                                                    tileMinDevice, tileMaxDevice);
     CUDA_CHECK(cudaGetLastError());
 
     DeviceFieldRenderConfig cfgDev;
     cfgDev.debugMode = cfg.debugMode;
-    cfgDev.softMask  = cfg.softMask;
+    cfgDev.softMask  = cfg.softMask ? 1 : 0;
     cfgDev.tau       = cfg.tau;
 
     dim3 block(16,16);
@@ -798,10 +918,141 @@ void TinyAutoDecoderCUDA::panelToRGBA(const float* panelFieldDevice,
     kPanelToRGBA<<<grid, block>>>(panelFieldDevice, rgbaDevice,
                                   panelWidth, panelHeight,
                                   tileRes, gap, panelN,
-                                  cfgDev, impl_->tileMin, impl_->tileMax);
+                                  cfgDev, tileMinDevice, tileMaxDevice);
     CUDA_CHECK(cudaGetLastError());
 }
 
 #endif //ALICE2_USE_CUDA
 
 } // namescape DeepSDF
+
+#ifdef ALICE2_USE_CUDA
+
+#include "LatentNavigator_CUDA.h"
+
+namespace detail {
+
+__global__ void kAssembleZXSingle(const float* __restrict__ z, int latentDim,
+                                  const float* __restrict__ enc, int encDim,
+                                  float* __restrict__ X, int B)
+{
+    int j = blockIdx.x*blockDim.x + threadIdx.x;
+    if (j >= B) return;
+    for (int p = 0; p < latentDim; ++p) {
+        X[p*B + j] = z[p];
+    }
+    for (int p = 0; p < encDim; ++p) {
+        X[(latentDim + p)*B + j] = enc[p*B + j];
+    }
+}
+
+struct DeviceFieldRenderConfig {
+    int   debugMode;
+    int   softMask;
+    float tau;
+};
+
+__global__ void kComputeTileMinMax(const float* __restrict__ panel,
+                                   int panelWidth,
+                                   int tileRes,
+                                   int gap,
+                                   int panelN,
+                                   float* __restrict__ tileMin,
+                                   float* __restrict__ tileMax)
+{
+    const int tileIdx = blockIdx.x;
+    if (tileIdx >= panelN * panelN) return;
+    const int tileX = tileIdx % panelN;
+    const int tileY = tileIdx / panelN;
+    const int offsetX = tileX * tileRes + tileX * gap;
+    const int offsetY = tileY * tileRes + tileY * gap;
+    const int total = tileRes * tileRes;
+
+    float minVal = 1e30f;
+    float maxVal = -1e30f;
+
+    for (int idx = threadIdx.x; idx < total; idx += blockDim.x) {
+        const int localX = idx % tileRes;
+        const int localY = idx / tileRes;
+        const float v = panel[(offsetY + localY) * panelWidth + (offsetX + localX)];
+        minVal = fminf(minVal, v);
+        maxVal = fmaxf(maxVal, v);
+    }
+
+    __shared__ float sMin[256];
+    __shared__ float sMax[256];
+    sMin[threadIdx.x] = minVal;
+    sMax[threadIdx.x] = maxVal;
+    __syncthreads();
+
+    for (int stride = blockDim.x >> 1; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            sMin[threadIdx.x] = fminf(sMin[threadIdx.x], sMin[threadIdx.x + stride]);
+            sMax[threadIdx.x] = fmaxf(sMax[threadIdx.x], sMax[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        tileMin[tileIdx] = sMin[0];
+        tileMax[tileIdx] = sMax[0];
+    }
+}
+
+__global__ void kPanelToRGBA(const float* __restrict__ panel,
+                             uchar4* __restrict__ out,
+                             int panelWidth,
+                             int panelHeight,
+                             int tileRes,
+                             int gap,
+                             int panelN,
+                             DeviceFieldRenderConfig cfg,
+                             const float* __restrict__ tileMin,
+                             const float* __restrict__ tileMax)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= panelWidth || y >= panelHeight) return;
+
+    const int tileSpan = tileRes + gap;
+    const int tileX = x / tileSpan;
+    const int tileY = y / tileSpan;
+    const int outIdx = y * panelWidth + x;
+
+    if (tileX >= panelN || tileY >= panelN) {
+        out[outIdx] = make_uchar4(255, 255, 255, 255);
+        return;
+    }
+
+    const int localX = x - tileX * tileSpan;
+    const int localY = y - tileY * tileSpan;
+    if (localX >= tileRes || localY >= tileRes) {
+        out[outIdx] = make_uchar4(255, 255, 255, 255);
+        return;
+    }
+
+    const int tileIdx = tileY * panelN + tileX;
+    const float sdf = panel[outIdx];
+
+    float gray = 0.5f;
+    if (cfg.debugMode == 0) {
+        if (cfg.softMask) {
+            const float tau = fmaxf(cfg.tau, 1e-6f);
+            gray = 1.0f / (1.0f + __expf(-(sdf / tau)));
+        } else {
+            gray = sdf < 0.0f ? 0.0f : 1.0f;
+        }
+    } else {
+        const float vmin = tileMin[tileIdx];
+        const float vmax = tileMax[tileIdx];
+        const float range = (vmax - vmin == 0.0f) ? 1.0f : (vmax - vmin);
+        gray = fminf(fmaxf((sdf - vmin) / range, 0.0f), 1.0f);
+    }
+
+    const unsigned char v = static_cast<unsigned char>(roundf(gray * 255.0f));
+    out[outIdx] = make_uchar4(v, v, v, 255);
+}
+
+} // namespace DeepSDF
+
+#endif //ALICE2_USE_CUDA
