@@ -6,6 +6,7 @@
 #include <limits>
 #include <algorithm>
 #include <cstring>
+#include <cuda_runtime.h>
 
 #include "TrainingDataSet.h"
 
@@ -25,6 +26,12 @@ inline void buildAnalyticGrid(int shapeIdx,int resX,int resY,float xMin,float xM
     }
 }
 
+struct FieldRenderConfig {
+    int   debugMode = 0;
+    int   softMask  = 1;   // 0 or 1
+    float tau       = 0.05f;
+};
+
 // ---------- CUDA auto-decoder (opaque API; implemented in .cu) ----------
 class TinyAutoDecoderCUDA {
 public:
@@ -43,6 +50,30 @@ public:
     // row forward for visualization
     void forwardRowGPU(int shapeIdx, const std::vector<float>& xs, float y,
                        std::vector<float>& outY) const;
+
+    void decodeLatentGridToDevice(const std::vector<float>& latent,
+                                  int resX, int resY,
+                                  float xMin, float xMax,
+                                  float yMin, float yMax,
+                                  float* dstDevice,
+                                  int dstStride,
+                                  int dstOffsetX,
+                                  int dstOffsetY);
+
+    void decodeLatentGridToDevice(const float* latentHost,
+                                  int resX, int resY,
+                                  float xMin, float xMax,
+                                  float yMin, float yMax,
+                                  float* dstDevice,
+                                  int dstStride,
+                                  int dstOffsetX,
+                                  int dstOffsetY);
+
+    void panelToRGBA(const float* panelFieldDevice,
+                     int panelWidth, int panelHeight,
+                     int tileRes, int gap, int panelN,
+                     const FieldRenderConfig& cfg,
+                     uchar4* rgbaDevice);
 
     // sync device latents to host (e.g., before visualization)
     void syncLatentsToHost();

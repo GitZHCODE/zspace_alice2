@@ -50,6 +50,20 @@ __global__ void kAssembleZX(const float* __restrict__ dZ, int numShapes, int lat
     for (int p=0;p<encDim;  ++p) X[(latentDim+p)*B + j] = enc[p*B + j];
 }
 
+__global__ void kAssembleZXSingle(const float* __restrict__ z, int latentDim,
+                                  const float* __restrict__ enc, int encDim,
+                                  float* __restrict__ X, int B)
+{
+    int j = blockIdx.x*blockDim.x + threadIdx.x;
+    if (j >= B) return;
+    for (int p = 0; p < latentDim; ++p) {
+        X[p*B + j] = z[p];
+    }
+    for (int p = 0; p < encDim; ++p) {
+        X[(latentDim + p)*B + j] = enc[p*B + j];
+    }
+}
+
 // C[m x n] = A[m x k] * B[k x n]
 template<int TILE>
 __global__ void kMatmul(const float* __restrict__ A,const float* __restrict__ B,float* __restrict__ C,int m,int n,int k){
@@ -231,6 +245,113 @@ __global__ void kMeanZReduce(const float* __restrict__ Z, int numShapes, int lat
     atomicAdd(meanZOut, nz);
 }
 
+struct DeviceFieldRenderConfig {
+    int   debugMode;
+    int   softMask;
+    float tau;
+};
+
+__global__ void kComputeTileMinMax(const float* __restrict__ panel,
+                                   int panelWidth,
+                                   int tileRes,
+                                   int gap,
+                                   int panelN,
+                                   float* __restrict__ tileMin,
+                                   float* __restrict__ tileMax)
+{
+    const int tileIdx = blockIdx.x;
+    if (tileIdx >= panelN * panelN) return;
+    const int tileX = tileIdx % panelN;
+    const int tileY = tileIdx / panelN;
+    const int offsetX = tileX * tileRes + tileX * gap;
+    const int offsetY = tileY * tileRes + tileY * gap;
+    const int total = tileRes * tileRes;
+
+    float minVal = 1e30f;
+    float maxVal = -1e30f;
+
+    for (int idx = threadIdx.x; idx < total; idx += blockDim.x) {
+        const int localX = idx % tileRes;
+        const int localY = idx / tileRes;
+        const float v = panel[(offsetY + localY) * panelWidth + (offsetX + localX)];
+        minVal = fminf(minVal, v);
+        maxVal = fmaxf(maxVal, v);
+    }
+
+    __shared__ float sMin[256];
+    __shared__ float sMax[256];
+    sMin[threadIdx.x] = minVal;
+    sMax[threadIdx.x] = maxVal;
+    __syncthreads();
+
+    for (int stride = blockDim.x >> 1; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            sMin[threadIdx.x] = fminf(sMin[threadIdx.x], sMin[threadIdx.x + stride]);
+            sMax[threadIdx.x] = fmaxf(sMax[threadIdx.x], sMax[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        tileMin[tileIdx] = sMin[0];
+        tileMax[tileIdx] = sMax[0];
+    }
+}
+
+__global__ void kPanelToRGBA(const float* __restrict__ panel,
+                             uchar4* __restrict__ out,
+                             int panelWidth,
+                             int panelHeight,
+                             int tileRes,
+                             int gap,
+                             int panelN,
+                             DeviceFieldRenderConfig cfg,
+                             const float* __restrict__ tileMin,
+                             const float* __restrict__ tileMax)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= panelWidth || y >= panelHeight) return;
+
+    const int tileSpan = tileRes + gap;
+    const int tileX = x / tileSpan;
+    const int tileY = y / tileSpan;
+    const int outIdx = y * panelWidth + x;
+
+    if (tileX >= panelN || tileY >= panelN) {
+        out[outIdx] = make_uchar4(255, 255, 255, 255);
+        return;
+    }
+
+    const int localX = x - tileX * tileSpan;
+    const int localY = y - tileY * tileSpan;
+    if (localX >= tileRes || localY >= tileRes) {
+        out[outIdx] = make_uchar4(255, 255, 255, 255);
+        return;
+    }
+
+    const int tileIdx = tileY * panelN + tileX;
+    const float sdf = panel[outIdx];
+
+    float gray = 0.5f;
+    if (cfg.debugMode == 0) {
+        if (cfg.softMask) {
+            const float tau = fmaxf(cfg.tau, 1e-6f);
+            gray = 1.0f / (1.0f + __expf(-(sdf / tau)));
+        } else {
+            gray = sdf < 0.0f ? 0.0f : 1.0f;
+        }
+    } else {
+        const float vmin = tileMin[tileIdx];
+        const float vmax = tileMax[tileIdx];
+        const float range = (vmax - vmin == 0.0f) ? 1.0f : (vmax - vmin);
+        gray = fminf(fmaxf((sdf - vmin) / range, 0.0f), 1.0f);
+    }
+
+    const unsigned char v = static_cast<unsigned char>(roundf(gray * 255.0f));
+    out[outIdx] = make_uchar4(v, v, v, 255);
+}
+
 //=========================== MLP state ===========================
 struct Layer {
     int inDim=0, outDim=0;
@@ -274,6 +395,7 @@ struct TinyAutoDecoderCUDA::Impl {
 
     // latent grad buffer (race-free path)
     float* dZgrad = nullptr;      // [numShapes * latentDim]
+    float* scratchZ = nullptr;    // [latentDim] single latent buffer
 
     // --- stats accumulators on device ---
     float*        dLossPerSample = nullptr;  // [maxBatch]
@@ -281,9 +403,23 @@ struct TinyAutoDecoderCUDA::Impl {
     unsigned int* dNSamplesAcc   = nullptr;  // scalar running count of samples
     float*        dMeanZ         = nullptr;  // scalar (scratch for getter)
 
+    // panel helpers
+    float* tileMin = nullptr;
+    float* tileMax = nullptr;
+    int    tileCapacity = 0;
+
     // API-like helpers (member functions so we can access private fields)
     void forwardBatch(int B);
     void backwardBatchAndUpdate(int B, float lrW);
+
+    void ensureTileCapacity(int tileCount) {
+        if (tileCount <= tileCapacity) return;
+        if (tileMin) cudaFree(tileMin);
+        if (tileMax) cudaFree(tileMax);
+        CUDA_CHECK(cudaMalloc(&tileMin, tileCount * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&tileMax, tileCount * sizeof(float)));
+        tileCapacity = tileCount;
+    }
 
     void initMLP(int inputDim, const std::vector<int>& hidden, int outDim, int maxBatch, int numFreqs, bool includeInput){
         inDim = inputDim; maxB = maxBatch;
@@ -561,6 +697,109 @@ void TinyAutoDecoderCUDA::forwardRowGPU(int shapeIdx, const std::vector<float>& 
     impl_->forwardBatch(W);
 
     CUDA_CHECK(cudaMemcpy(outY.data(), impl_->layers.back().A, W*sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+void TinyAutoDecoderCUDA::decodeLatentGridToDevice(const std::vector<float>& latent,
+                                                   int resX, int resY,
+                                                   float xMin, float xMax,
+                                                   float yMin, float yMax,
+                                                   float* dstDevice,
+                                                   int dstStride,
+                                                   int dstOffsetX,
+                                                   int dstOffsetY)
+{
+    if ((int)latent.size() != latentDim_) return;
+    decodeLatentGridToDevice(latent.data(), resX, resY,
+                             xMin, xMax, yMin, yMax,
+                             dstDevice, dstStride, dstOffsetX, dstOffsetY);
+}
+
+void TinyAutoDecoderCUDA::decodeLatentGridToDevice(const float* latentHost,
+                                                   int resX, int resY,
+                                                   float xMin, float xMax,
+                                                   float yMin, float yMax,
+                                                   float* dstDevice,
+                                                   int dstStride,
+                                                   int dstOffsetX,
+                                                   int dstOffsetY)
+{
+    if (!latentHost || !dstDevice || resX <= 0 || resY <= 0) return;
+    if (impl_->latentDim != latentDim_) return;
+
+    if (!impl_->scratchZ) {
+        CUDA_CHECK(cudaMalloc(&impl_->scratchZ, latentDim_ * sizeof(float)));
+    }
+    CUDA_CHECK(cudaMemcpy(impl_->scratchZ, latentHost, latentDim_ * sizeof(float), cudaMemcpyHostToDevice));
+
+    const float dx = (resX > 1) ? (xMax - xMin) / float(resX - 1) : 0.0f;
+    const float dy = (resY > 1) ? (yMax - yMin) / float(resY - 1) : 0.0f;
+
+    const int maxChunk = std::max(1, impl_->maxB);
+    if ((int)impl_->hXs.size() < maxChunk) impl_->hXs.resize(maxChunk);
+    if ((int)impl_->hYs.size() < maxChunk) impl_->hYs.resize(maxChunk);
+
+    for (int y = 0; y < resY; ++y) {
+        const float yy = yMin + dy * float(y);
+        for (int baseX = 0; baseX < resX; baseX += maxChunk) {
+            const int B = std::min(maxChunk, resX - baseX);
+            for (int i = 0; i < B; ++i) {
+                const int xIdx = baseX + i;
+                impl_->hXs[i] = xMin + dx * float(xIdx);
+                impl_->hYs[i] = yy;
+            }
+
+            CUDA_CHECK(cudaMemcpy(impl_->Xs, impl_->hXs.data(), B*sizeof(float), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(impl_->Ys, impl_->hYs.data(), B*sizeof(float), cudaMemcpyHostToDevice));
+
+            int tpb = 256;
+            int bpg = (B + tpb - 1) / tpb;
+            kEncodeXY<<<bpg, tpb>>>(impl_->Xs, impl_->Ys, impl_->Enc, B, impl_->enc);
+            kAssembleZXSingle<<<bpg, tpb>>>(impl_->scratchZ, latentDim_,
+                                            impl_->Enc, impl_->coordEncDim,
+                                            impl_->X, B);
+            CUDA_CHECK(cudaMemcpy(impl_->layers[0].A, impl_->X,
+                                  (latentDim_ + impl_->coordEncDim)*B*sizeof(float),
+                                  cudaMemcpyDeviceToDevice));
+            impl_->forwardBatch(B);
+
+            float* destRow = dstDevice + (dstOffsetY + y) * dstStride + dstOffsetX + baseX;
+            CUDA_CHECK(cudaMemcpy(destRow, impl_->layers.back().A,
+                                  B*sizeof(float), cudaMemcpyDeviceToDevice));
+        }
+    }
+}
+
+void TinyAutoDecoderCUDA::panelToRGBA(const float* panelFieldDevice,
+                                      int panelWidth, int panelHeight,
+                                      int tileRes, int gap, int panelN,
+                                      const FieldRenderConfig& cfg,
+                                      uchar4* rgbaDevice)
+{
+    if (!panelFieldDevice || !rgbaDevice) return;
+    if (panelWidth <= 0 || panelHeight <= 0 || panelN <= 0) return;
+
+    impl_->ensureTileCapacity(panelN * panelN);
+
+    dim3 reduceBlock(256);
+    dim3 reduceGrid(panelN * panelN);
+    kComputeTileMinMax<<<reduceGrid, reduceBlock>>>(panelFieldDevice, panelWidth,
+                                                    tileRes, gap, panelN,
+                                                    impl_->tileMin, impl_->tileMax);
+    CUDA_CHECK(cudaGetLastError());
+
+    DeviceFieldRenderConfig cfgDev;
+    cfgDev.debugMode = cfg.debugMode;
+    cfgDev.softMask  = cfg.softMask;
+    cfgDev.tau       = cfg.tau;
+
+    dim3 block(16,16);
+    dim3 grid((panelWidth + block.x - 1) / block.x,
+              (panelHeight + block.y - 1) / block.y);
+    kPanelToRGBA<<<grid, block>>>(panelFieldDevice, rgbaDevice,
+                                  panelWidth, panelHeight,
+                                  tileRes, gap, panelN,
+                                  cfgDev, impl_->tileMin, impl_->tileMax);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 #endif //ALICE2_USE_CUDA
