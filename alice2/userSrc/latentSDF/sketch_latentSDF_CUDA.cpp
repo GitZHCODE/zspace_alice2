@@ -5,12 +5,11 @@
 #include <sketches/SketchRegistry.h>
 
 #include <ML/DeepSDF/LatentSDF_CUDA.h>
-#include <ML/DeepSDF/FieldViewer.h>
+#include <ML/DeepSDF/LatentNavigator_CUDA.h>
 
-#include <fstream>
 #include <random>
 #include <algorithm>
-#include <cmath>
+#include <vector>
 #include <limits>
 #include <string>
 #include <cstdio>
@@ -62,6 +61,13 @@ public:
 
         buildScanlineXs();
         rebuildReconstruction();
+
+        navigator_.shutdown();
+        navigator_.initialize(&decoder_, &domain_, &decoder_.latents());
+    }
+
+    void cleanup() override {
+        navigator_.shutdown();
     }
 
     void update(float) override {}
@@ -141,6 +147,8 @@ public:
                 recon_.assign(numShapes_, GridField{});
                 buildScanlineXs();
                 rebuildReconstruction();
+                navigator_.shutdown();
+                navigator_.initialize(&decoder_, &domain_, &decoder_.latents());
                 std::printf("[CUDA][Model] Reloaded '%s'\n", modelPath_.c_str());
             }
             return true;
@@ -212,47 +220,12 @@ private:
         renderer.setColor(Color(0.9f, 0.9f, 0.9f));
         renderer.drawString(label, 20.0f, top - 8.0f);
 
-        const float gap = 25.0f;
+        const float gap  = 25.0f;
         const float tile = displayCfg_.tileSize;
-        const float cellW = tile / float(domain_.resX);
-        const float cellH = tile / float(domain_.resY);
-
+        const FieldRenderConfig cfg = toFieldRenderConfig();
         for (size_t i = 0; i < grids.size(); ++i) {
             const float left = 20.0f + float(i) * (tile + gap);
-            drawField(renderer, grids[i], left, top, cellW, cellH);
-        }
-    }
-
-    void drawField(Renderer& renderer,
-                   const GridField& field,
-                   float left, float top,
-                   float cellW, float cellH) const
-    {
-        const bool forceMask = (displayCfg_.debugMode == 0);
-        for (int y = 0; y < domain_.resY; ++y) {
-            for (int x = 0; x < domain_.resX; ++x) {
-                const size_t idx = size_t(y) * size_t(domain_.resX) + size_t(x);
-                const float sdf = field.values[idx];
-                float g = 0.5f;
-                if (forceMask) {
-                    if (displayCfg_.softMask) {
-                        const float tau = std::max(displayCfg_.tau, 1e-6f);
-                        g = 1.0f / (1.0f + std::exp(-(sdf / tau)));
-                    } else {
-                        g = sdf < 0.0f ? 0.0f : 1.0f;
-                    }
-                } else {
-                    const float range = (field.maxValue - field.minValue == 0.0f)
-                                      ? 1.0f
-                                      : (field.maxValue - field.minValue);
-                    g = std::clamp((sdf - field.minValue) / range, 0.0f, 1.0f);
-                }
-                const Color color(g, g, g);
-                const float px = left + (float(x) + 0.5f) * cellW;
-                const float py = top  + (float(y) + 0.5f) * cellH;
-                const float ps = std::max(cellW, cellH);
-                renderer.draw2dPoint(Vec2(px, py), color, ps);
-            }
+            navigator_.drawField(renderer, grids[i], left, top, tile, cfg);
         }
     }
 
@@ -260,6 +233,14 @@ private:
         renderer.setColor(Color(0.7f, 0.7f, 0.7f));
         renderer.drawString("Keys: T train  R rebuild  M mask  [ ] tau  1-4 debug  J save model  L load model",
                             20.0f, y);
+    }
+
+    FieldRenderConfig toFieldRenderConfig() const {
+        FieldRenderConfig cfg{};
+        cfg.debugMode = displayCfg_.debugMode;
+        cfg.softMask  = displayCfg_.softMask;
+        cfg.tau       = displayCfg_.tau;
+        return cfg;
     }
 
 private:
@@ -293,6 +274,7 @@ private:
     int epochsDone_ = 0;
 
     std::vector<float> xs_;
+    LatentNavigator_CUDA navigator_;
 };
 
 ALICE2_REGISTER_SKETCH_AUTO(Sketch_LatentSDF_CUDA)
