@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <cmath>
 
 // Include nlohmann/json for JSON parsing
 #include <nlohmann/json.hpp>
@@ -55,132 +56,175 @@ inline float labelFromSDF(float d, float eps = 0.02f) {
 
 // ---------- Sampler ----------
 struct Sampler {
-    float range = 1.2f;
-    float boundaryFrac = 0.5f;
-    float boundaryBand = 0.02f;
-    float cornerFrac   = 0.15f;
+    Sampler(unsigned seed = 999) : rng(seed) {}
 
-    std::mt19937 rng;
-    std::uniform_real_distribution<float> U;
+    struct GridDesc {
+        std::vector<float> values;   // flattened (row-major) length = resX*resY
+        int   resX = 0, resY = 0;
+        float xMin = -1.f, xMax = 1.f;
+        float yMin = -1.f, yMax = 1.f;
+    };
 
-    Sampler(unsigned seed = 999) : rng(seed), U(-1.f, 1.f) {}
+    void clear() { custom_.clear(); }
+    int  numShapes() const { return static_cast<int>(custom_.size()); }
 
-    static float sdf(int shapeIdx, float x, float y) {
+    void addShapeGrid(const std::vector<float>& sdfValues,
+                      int resX, int resY,
+                      float xMin, float xMax,
+                      float yMin, float yMax)
+    {
+        GridDesc g;
+        g.values = sdfValues;
+        g.resX = resX; g.resY = resY;
+        g.xMin = xMin; g.xMax = xMax;
+        g.yMin = yMin; g.yMax = yMax;
+        custom_.push_back(std::move(g));
+    }
+
+    std::tuple<float,float,float> sampleForShape(int shapeIdx) {
+        if (custom_.empty()) {
+            return {0.f, 0.f, 0.f};
+        }
+        const int clampedIdx = std::clamp(shapeIdx, 0, numShapes() - 1);
+        const GridDesc& g = custom_[clampedIdx];
+        if (g.values.empty() || g.resX <= 0 || g.resY <= 0) {
+            return {0.f, 0.f, 0.f};
+        }
+
+        std::uniform_real_distribution<float> Ux(g.xMin, g.xMax);
+        std::uniform_real_distribution<float> Uy(g.yMin, g.yMax);
+        const float x = Ux(rng);
+        const float y = Uy(rng);
+        const float d = sampleGridBilinear(g, x, y);
+        return {x, y, clampSDF(d)};
+    }
+
+    // Legacy analytic helpers remain available for other places that still rely on them.
+    static float sdf_analytic(int shapeIdx, float x, float y) {
         switch (shapeIdx) {
             case 0: return sdCircle(x, y, 0.6f);
-            case 1: return sdBox(x, y, 0.55f, 0.55f);
+            case 1: return sdBox   (x, y, 0.55f, 0.55f);
             case 2: return sdTriangleUp(x, y, 1.1f);
             default: return 1e9f;
         }
     }
 
-    std::tuple<float,float,float> sampleForShape(int shapeIdx) {
-        std::uniform_real_distribution<float> Udom(-range, range);
-        std::uniform_real_distribution<float> U01(0.f, 1.f);
+    static float sdf(int shapeIdx, float x, float y) {
+        return sdf_analytic(shapeIdx, x, y);
+    }
 
-        auto emit = [&](float X, float Y){
-            float d = sdf(shapeIdx, X, Y);
-            return std::tuple<float,float,float>{X, Y, clampSDF(d)};
+private:
+    static float sampleGridBilinear(const GridDesc& g, float x, float y) {
+        if (g.values.empty() || g.resX <= 0 || g.resY <= 0) {
+            return 0.f;
+        }
+
+        const float u = std::clamp((x - g.xMin) / (g.xMax - g.xMin), 0.f, 1.f);
+        const float v = std::clamp((y - g.yMin) / (g.yMax - g.yMin), 0.f, 1.f);
+
+        const float fx = u * float(g.resX - 1);
+        const float fy = v * float(g.resY - 1);
+        const int x0 = static_cast<int>(std::floor(fx));
+        const int y0 = static_cast<int>(std::floor(fy));
+        const int x1 = std::min(x0 + 1, g.resX - 1);
+        const int y1 = std::min(y0 + 1, g.resY - 1);
+        const float tx = fx - float(x0);
+        const float ty = fy - float(y0);
+
+        auto idx = [&](int ix, int iy) {
+            return static_cast<size_t>(iy) * static_cast<size_t>(g.resX) + static_cast<size_t>(ix);
         };
 
-        float r = U01(rng);
-        if (r < cornerFrac) {
-            for (int tries=0; tries<200; ++tries){
-                float x = Udom(rng)*0.8f;
-                float y = Udom(rng)*0.8f;
-                float d = sdf(shapeIdx, x, y);
-                if (std::fabs(d) < boundaryBand*1.5f && (std::fabs(x)+std::fabs(y) > 0.6f))
-                    return emit(x,y);
-            }
-        }
-        if (r < cornerFrac + boundaryFrac) {
-            for (int tries = 0; tries < 200; ++tries) {
-                float x = Udom(rng), y = Udom(rng);
-                float d = sdf(shapeIdx, x, y);
-                if (std::fabs(d) < boundaryBand) return emit(x,y);
-            }
-        }
-        float x = Udom(rng), y = Udom(rng);
-        return emit(x,y);
+        const float v00 = g.values[idx(x0, y0)];
+        const float v10 = g.values[idx(x1, y0)];
+        const float v01 = g.values[idx(x0, y1)];
+        const float v11 = g.values[idx(x1, y1)];
+
+        const float vx0 = v00 * (1.f - tx) + v10 * tx;
+        const float vx1 = v01 * (1.f - tx) + v11 * tx;
+        return vx0 * (1.f - ty) + vx1 * ty;
     }
+
+    std::mt19937 rng;
+    std::vector<GridDesc> custom_;
 };
 
 // ---------- TrainingDataSet ----------
-struct TrainingDataset {
-    std::vector<int>   shapeIdx;
-    std::vector<float> x, y, target, pred;
+// struct TrainingDataset {
+//     std::vector<int>   shapeIdx;
+//     std::vector<float> x, y, target, pred;
 
-    void reserve(size_t n){
-        shapeIdx.reserve(n); x.reserve(n); y.reserve(n); target.reserve(n); pred.reserve(n);
-    }
-    void add(int s, float xx, float yy, float t, float p){
-        shapeIdx.push_back(s); x.push_back(xx); y.push_back(yy); target.push_back(t); pred.push_back(p);
-    }
-    void clear(){
-        shapeIdx.clear(); x.clear(); y.clear(); target.clear(); pred.clear();
-    }
-    size_t size() const { return x.size(); }
+//     void reserve(size_t n){
+//         shapeIdx.reserve(n); x.reserve(n); y.reserve(n); target.reserve(n); pred.reserve(n);
+//     }
+//     void add(int s, float xx, float yy, float t, float p){
+//         shapeIdx.push_back(s); x.push_back(xx); y.push_back(yy); target.push_back(t); pred.push_back(p);
+//     }
+//     void clear(){
+//         shapeIdx.clear(); x.clear(); y.clear(); target.clear(); pred.clear();
+//     }
+//     size_t size() const { return x.size(); }
 
-    // ---- NEW: persistence helpers ----
-    // Save all samples to a JSON file (newline-free, compact)
-    bool saveJSON(const std::string& path) const {
-        using nlohmann::json;
-        try {
-            json j;
-            j["version"] = 1;
-            j["count"]   = size();
-            j["shapeIdx"] = shapeIdx;
-            j["x"]        = x;
-            j["y"]        = y;
-            j["target"]   = target;
-            j["pred"]     = pred;
-            std::ofstream ofs(path, std::ios::binary);
-            if (!ofs) return false;
-            ofs << j.dump(); // compact
-            return true;
-        } catch (...) { return false; }
-    }
+//     // ---- NEW: persistence helpers ----
+//     // Save all samples to a JSON file (newline-free, compact)
+//     bool saveJSON(const std::string& path) const {
+//         using nlohmann::json;
+//         try {
+//             json j;
+//             j["version"] = 1;
+//             j["count"]   = size();
+//             j["shapeIdx"] = shapeIdx;
+//             j["x"]        = x;
+//             j["y"]        = y;
+//             j["target"]   = target;
+//             j["pred"]     = pred;
+//             std::ofstream ofs(path, std::ios::binary);
+//             if (!ofs) return false;
+//             ofs << j.dump(); // compact
+//             return true;
+//         } catch (...) { return false; }
+//     }
 
-    // Load samples from a JSON file (replaces current content)
-    bool loadJSON(const std::string& path) {
-        using nlohmann::json;
-        try {
-            std::ifstream ifs(path, std::ios::binary);
-            if (!ifs) return false;
-            json j; ifs >> j;
+//     // Load samples from a JSON file (replaces current content)
+//     bool loadJSON(const std::string& path) {
+//         using nlohmann::json;
+//         try {
+//             std::ifstream ifs(path, std::ios::binary);
+//             if (!ifs) return false;
+//             json j; ifs >> j;
 
-            // basic validation
-            if (!j.contains("shapeIdx") || !j.contains("x") || !j.contains("y") ||
-                !j.contains("target") || !j.contains("pred")) return false;
+//             // basic validation
+//             if (!j.contains("shapeIdx") || !j.contains("x") || !j.contains("y") ||
+//                 !j.contains("target") || !j.contains("pred")) return false;
 
-            std::vector<int>   s  = j["shapeIdx"].get<std::vector<int>>();
-            std::vector<float> vx = j["x"].get<std::vector<float>>();
-            std::vector<float> vy = j["y"].get<std::vector<float>>();
-            std::vector<float> vt = j["target"].get<std::vector<float>>();
-            std::vector<float> vp = j["pred"].get<std::vector<float>>();
+//             std::vector<int>   s  = j["shapeIdx"].get<std::vector<int>>();
+//             std::vector<float> vx = j["x"].get<std::vector<float>>();
+//             std::vector<float> vy = j["y"].get<std::vector<float>>();
+//             std::vector<float> vt = j["target"].get<std::vector<float>>();
+//             std::vector<float> vp = j["pred"].get<std::vector<float>>();
 
-            const size_t n = s.size();
-            if (vx.size()!=n || vy.size()!=n || vt.size()!=n || vp.size()!=n) return false;
+//             const size_t n = s.size();
+//             if (vx.size()!=n || vy.size()!=n || vt.size()!=n || vp.size()!=n) return false;
 
-            shapeIdx = std::move(s);
-            x = std::move(vx);
-            y = std::move(vy);
-            target = std::move(vt);
-            pred = std::move(vp);
-            return true;
-        } catch (...) { return false; }
-    }
+//             shapeIdx = std::move(s);
+//             x = std::move(vx);
+//             y = std::move(vy);
+//             target = std::move(vt);
+//             pred = std::move(vp);
+//             return true;
+//         } catch (...) { return false; }
+//     }
 
-    // Generate a default dataset (current behaviour): empty (fresh) or a tiny seed.
-    void generateDefault(bool withTinySeed=false) {
-        clear();
-        if (!withTinySeed) return;
-        // Minimal seed: one sample per shape at origin
-        for (int s=0; s<3; ++s) {
-            float d = clampSDF(Sampler::sdf(s, 0.f, 0.f));
-            add(s, 0.f, 0.f, d, d);
-        }
-    }
-};
+//     // Generate a default dataset (current behaviour): empty (fresh) or a tiny seed.
+//     void generateDefault(bool withTinySeed=false) {
+//         clear();
+//         if (!withTinySeed) return;
+//         // Minimal seed: one sample per shape at origin
+//         for (int s=0; s<3; ++s) {
+//             float d = clampSDF(Sampler::sdf(s, 0.f, 0.f));
+//             add(s, 0.f, 0.f, d, d);
+//         }
+//     }
+// };
 
 }
