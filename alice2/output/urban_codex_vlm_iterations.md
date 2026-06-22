@@ -66,11 +66,14 @@ The score must be a number from 0 to 10, where:
 
 ## Iteration Template
 
-## Iteration 001
+```text
+## Iteration NNN
 
-Screenshot: `alice2/src/screenshots/...png`
+Screenshot: `alice2/output/iterations/...png`
 
-Score: `0.0 / 10`
+VLM model:
+
+Score: `0 / 10`
 
 VLM description:
 
@@ -88,10 +91,8 @@ Codex code/design update:
 
 Key C++ snippet:
 
-    // Parameters or SDF rules changed in this iteration.
-
 Commit:
-
+```
 ## Iteration 001
 
 Screenshot: `alice2/output/iterations/iter_001_baseline.png`
@@ -147,52 +148,110 @@ Key C++ snippet:
 
 Commit: `fec2442`
 
-## Iteration 005
+## Iteration 002
 
-Screenshot: `alice2/output/iterations/iter_005_density_colormap.png`
+Screenshot: `alice2/output/iterations/iter_002_open_space_sdf.png`
 
 VLM model: `llava:latest` through Ollama.
 
-Score: `2.5 / 10`
+Score: `2 / 10`
 
 VLM description:
 
-The image appears to be a figure-ground plan with streets, open spaces, public-space or building-footprint elements, and color-coded zones.
+The image shows an early iterative figure-ground plan with some built massing, a street/open-space gesture, and limited open-space allocation.
 
 VLM urban design critique:
 
-The VLM read the plan as fragmented. It said the building footprints are plausible, but street hierarchy remains unclear, public/open-space distribution is insufficiently defined, and the density gradient is not yet strong enough.
+The VLM recognized some open-space intent but judged the plan as still weak. It called out sparse and poorly connected massing, an unclear street hierarchy, limited public/green space, and no coherent density gradient.
 
 VLM strengths:
 
-- Flexible layout with potential for adaptation.
+- Some thought is visible in the arrangement of open spaces.
 
 VLM weaknesses:
 
-- Weak urban hierarchy.
-- Insufficient visual information to assess green/open-space quality.
-- Density gradient and center/periphery relationship remain unclear.
+- Street hierarchy and density gradients are not well-defined.
+- Building footprints lack coherence in placement.
+- Green/public space remains limited and weakly integrated.
 
 VLM suggested design directions:
 
-- Define public/open spaces more clearly.
-- Improve movement flow and spatial hierarchy.
-- Strengthen the density gradient through building and open-space placement.
+- Add a more defined street hierarchy to connect built areas.
+- Improve open-space integration.
+- Establish a clearer density gradient.
 
 Codex interpretation:
 
-The colormap improved human legibility, but the critic still wants stronger spatial hierarchy. The next likely design move should be a more explicit center/periphery structure, possibly with a larger central public-space node, clearer secondary streets, and a stronger massing gradient around the civic spine.
+The next intervention should make connectivity and hierarchy visible before adding more elaborate urban features. Codex will add a primary/secondary street SDF and a simple density field that places more massing near the core/spine while preserving the existing minimum building dimension checks.
 
 Codex code/design update:
 
-- No further code update applied after this critique yet.
-- This is a loop checkpoint for review before continuing.
+- Added primary and secondary street SDF corridors.
+- Added a density field based on core proximity and primary-street proximity.
+- Suppressed buildings inside street corridors.
+- Increased parcel coverage in denser areas while retaining minimum building length/depth and max aspect ratio.
 
 Key C++ snippet:
 
-    float density = densityValue(center);
-    float coverage = m_parcelCoverage + density * 0.22f;
-    std::vector<Vec3> footprint = makeConstrainedBuildingFootprint(center, positions, coverage);
+    float densityValue(const Vec3& p) const
+    {
+        float centerDistance = (p - toVec3(m_meshCenter)).length() / m_maxDistance;
+        float core = 1.0f - smoothstep(0.12f, 0.58f, centerDistance);
+        float spineProximity = 1.0f - smoothstep(0.04f, 0.34f, distanceToSegment2d(p, m_primaryStreetA, m_primaryStreetB));
+        return saturate(core * 0.72f + spineProximity * 0.28f);
+    }
+
+Commit: `fec2442`
+
+## Iteration 003
+
+Screenshot: `alice2/output/iterations/iter_003_street_density_sdf.png`
+
+VLM model: `llava:latest` through Ollama.
+
+Score: `4 / 10`
+
+VLM description:
+
+The image shows an early iterative figure-ground plan with visible building footprints, street hierarchy, and public-space structure. It has a clearer figure-ground relationship and some street hierarchy.
+
+VLM urban design critique:
+
+The plan shows promise but remains fragmented. Public-space distribution is uneven, open spaces are not connected enough, building proportions could be improved visually, and there is still no strong density gradient or center-periphery relationship.
+
+VLM strengths:
+
+- Figure-ground clarity.
+- Some legibility in street hierarchy.
+
+VLM weaknesses:
+
+- Building footprint proportions need refinement.
+- Block structure is fragmented.
+- Spatial hierarchy and public-space distribution are weak.
+
+VLM suggested design directions:
+
+- Refine spatial hierarchy to improve place-making and cohesion.
+- Connect open spaces more clearly.
+- Improve building footprint proportions for visual balance.
+
+Codex interpretation:
+
+The next intervention should strengthen public-space hierarchy without overcomplicating the sketch. Codex will add secondary neighborhood open-space nodes connected to the civic spine and tighten building proportion constraints.
+
+Codex code/design update:
+
+- Add two neighborhood plaza SDF circles along the civic structure.
+- Keep the civic spine as the connective open-space element.
+- Increase minimum building depth and reduce the maximum allowed aspect ratio.
+- Increase parcel coverage slightly to improve footprint visual balance.
+
+Key C++ snippet:
+
+    float plazaB = (p - m_neighborhoodPlazaA).length() - m_neighborhoodPlazaRadius;
+    float plazaC = (p - m_neighborhoodPlazaB).length() - m_neighborhoodPlazaRadius;
+    return std::min(std::min(spine, plaza), std::min(plazaB, plazaC));
 
 Commit: `fec2442`
 
@@ -253,109 +312,52 @@ Key C++ snippet:
 
 Commit: `fec2442`
 
-## Iteration 003
+## Iteration 005
 
-Screenshot: `alice2/output/iterations/iter_003_street_density_sdf.png`
-
-VLM model: `llava:latest` through Ollama.
-
-Score: `4 / 10`
-
-VLM description:
-
-The image shows an early iterative figure-ground plan with visible building footprints, street hierarchy, and public-space structure. It has a clearer figure-ground relationship and some street hierarchy.
-
-VLM urban design critique:
-
-The plan shows promise but remains fragmented. Public-space distribution is uneven, open spaces are not connected enough, building proportions could be improved visually, and there is still no strong density gradient or center-periphery relationship.
-
-VLM strengths:
-
-- Figure-ground clarity.
-- Some legibility in street hierarchy.
-
-VLM weaknesses:
-
-- Building footprint proportions need refinement.
-- Block structure is fragmented.
-- Spatial hierarchy and public-space distribution are weak.
-
-VLM suggested design directions:
-
-- Refine spatial hierarchy to improve place-making and cohesion.
-- Connect open spaces more clearly.
-- Improve building footprint proportions for visual balance.
-
-Codex interpretation:
-
-The next intervention should strengthen public-space hierarchy without overcomplicating the sketch. Codex will add secondary neighborhood open-space nodes connected to the civic spine and tighten building proportion constraints.
-
-Codex code/design update:
-
-- Add two neighborhood plaza SDF circles along the civic structure.
-- Keep the civic spine as the connective open-space element.
-- Increase minimum building depth and reduce the maximum allowed aspect ratio.
-- Increase parcel coverage slightly to improve footprint visual balance.
-
-Key C++ snippet:
-
-    float plazaB = (p - m_neighborhoodPlazaA).length() - m_neighborhoodPlazaRadius;
-    float plazaC = (p - m_neighborhoodPlazaB).length() - m_neighborhoodPlazaRadius;
-    return std::min(std::min(spine, plaza), std::min(plazaB, plazaC));
-
-Commit: `fec2442`
-
-## Iteration 002
-
-Screenshot: `alice2/output/iterations/iter_002_open_space_sdf.png`
+Screenshot: `alice2/output/iterations/iter_005_density_colormap.png`
 
 VLM model: `llava:latest` through Ollama.
 
-Score: `2 / 10`
+Score: `2.5 / 10`
 
 VLM description:
 
-The image shows an early iterative figure-ground plan with some built massing, a street/open-space gesture, and limited open-space allocation.
+The image appears to be a figure-ground plan with streets, open spaces, public-space or building-footprint elements, and color-coded zones.
 
 VLM urban design critique:
 
-The VLM recognized some open-space intent but judged the plan as still weak. It called out sparse and poorly connected massing, an unclear street hierarchy, limited public/green space, and no coherent density gradient.
+The VLM read the plan as fragmented. It said the building footprints are plausible, but street hierarchy remains unclear, public/open-space distribution is insufficiently defined, and the density gradient is not yet strong enough.
 
 VLM strengths:
 
-- Some thought is visible in the arrangement of open spaces.
+- Flexible layout with potential for adaptation.
 
 VLM weaknesses:
 
-- Street hierarchy and density gradients are not well-defined.
-- Building footprints lack coherence in placement.
-- Green/public space remains limited and weakly integrated.
+- Weak urban hierarchy.
+- Insufficient visual information to assess green/open-space quality.
+- Density gradient and center/periphery relationship remain unclear.
 
 VLM suggested design directions:
 
-- Add a more defined street hierarchy to connect built areas.
-- Improve open-space integration.
-- Establish a clearer density gradient.
+- Define public/open spaces more clearly.
+- Improve movement flow and spatial hierarchy.
+- Strengthen the density gradient through building and open-space placement.
 
 Codex interpretation:
 
-The next intervention should make connectivity and hierarchy visible before adding more elaborate urban features. Codex will add a primary/secondary street SDF and a simple density field that places more massing near the core/spine while preserving the existing minimum building dimension checks.
+The colormap improved human legibility, but the critic still wants stronger spatial hierarchy. The next likely design move should be a more explicit center/periphery structure, possibly with a larger central public-space node, clearer secondary streets, and a stronger massing gradient around the civic spine.
 
 Codex code/design update:
 
-- Added primary and secondary street SDF corridors.
-- Added a density field based on core proximity and primary-street proximity.
-- Suppressed buildings inside street corridors.
-- Increased parcel coverage in denser areas while retaining minimum building length/depth and max aspect ratio.
+- No further code update applied after this critique yet.
+- This is a loop checkpoint for review before continuing.
 
 Key C++ snippet:
 
-    float densityValue(const Vec3& p) const
-    {
-        float centerDistance = (p - toVec3(m_meshCenter)).length() / m_maxDistance;
-        float core = 1.0f - smoothstep(0.12f, 0.58f, centerDistance);
-        float spineProximity = 1.0f - smoothstep(0.04f, 0.34f, distanceToSegment2d(p, m_primaryStreetA, m_primaryStreetB));
-        return saturate(core * 0.72f + spineProximity * 0.28f);
-    }
+    float density = densityValue(center);
+    float coverage = m_parcelCoverage + density * 0.22f;
+    std::vector<Vec3> footprint = makeConstrainedBuildingFootprint(center, positions, coverage);
 
 Commit: `fec2442`
+
