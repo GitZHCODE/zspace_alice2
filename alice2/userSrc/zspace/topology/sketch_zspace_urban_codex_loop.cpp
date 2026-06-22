@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +29,10 @@ public:
         scene().setShowGrid(false);
         scene().setShowAxes(false);
 
+        m_ui = std::make_unique<SimpleUI>(input());
+        m_ui->setTheme(SimpleUI::UITheme::Dark);
+        m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.0f, 1.0f, m_p);
+
         loadMesh();
         if (!m_loaded) return;
 
@@ -39,11 +44,16 @@ public:
     {
         if (!m_loaded || m_screenshotTaken) return;
 
+        if (std::abs(m_p - m_lastBuiltP) > 0.001f) {
+            zSpace::zFnMesh fn(m_mesh);
+            buildStreetEdges(fn);
+        }
+
         m_frameCount++;
         if (m_frameCount == 10) {
             setPlanCamera();
         }
-        else if (m_frameCount > 30) {
+        else if (m_autoCapture && m_frameCount > 30) {
             Application::getInstance()->takeScreenshot();
             m_screenshotTaken = true;
             std::cout << "[URBAN CODEX LOOP] Screenshot captured. Exiting." << std::endl;
@@ -61,19 +71,43 @@ public:
         drawStreetEdgeHierarchy(renderer);
         drawOpenSpaceSdf(renderer, fn);
         drawSimpleMassing(renderer, fn);
+
+        if (m_ui) {
+            m_ui->draw(renderer);
+        }
     }
 
-    bool onKeyPress(unsigned char, int, int) override
+    bool onKeyPress(unsigned char key, int, int) override
     {
+        if (key == 's' || key == 'S') {
+            Application::getInstance()->takeScreenshot();
+            m_screenshotTaken = true;
+            std::cout << "[URBAN CODEX LOOP] Manual screenshot captured. Exiting." << std::endl;
+            exit(0);
+        }
+        return false;
+    }
+
+    bool onMousePress(int button, int state, int x, int y) override
+    {
+        if (m_ui && m_ui->onMousePress(button, state, x, y)) return true;
+        return false;
+    }
+
+    bool onMouseMove(int x, int y) override
+    {
+        if (m_ui && m_ui->onMouseMove(x, y)) return true;
         return false;
     }
 
 private:
     zSpace::zObjectMesh m_mesh;
     std::string m_meshPath = "data/input_grid_01.obj";
+    std::unique_ptr<SimpleUI> m_ui;
 
     bool m_loaded = false;
     bool m_screenshotTaken = false;
+    bool m_autoCapture = false;
     int m_frameCount = 0;
 
     zSpace::zPoint m_boundsMin;
@@ -92,6 +126,8 @@ private:
     float m_maxBuildingAspect = 2.6f;
     float m_edgeClearanceFactor = 0.82f;
     float m_openSpaceZ = 0.001f;
+    float m_p = 0.50f;
+    float m_lastBuiltP = -1.0f;
     float m_civicSpineWidth = 0.055f;
     float m_civicPlazaRadius = 0.135f;
     float m_primaryStreetOffset = 0.040f;
@@ -337,11 +373,16 @@ private:
             float civicDistance = distanceToSegment2d(mid, m_civicSpineA, m_civicSpineB);
             float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
 
+            float primaryLengthThreshold = 0.84f - m_p * 0.24f;
+            float secondaryLengthThreshold = 0.58f - m_p * 0.20f;
+            float primaryCivicThreshold = 0.045f + m_p * 0.090f;
+            float secondaryCivicThreshold = 0.110f + m_p * 0.130f;
+
             StreetClass streetClass = StreetClass::Tertiary;
-            if (normalizedLength > 0.72f || civicDistance < 0.08f) {
+            if (normalizedLength > primaryLengthThreshold || civicDistance < primaryCivicThreshold) {
                 streetClass = StreetClass::Primary;
             }
-            else if (normalizedLength > 0.42f || civicDistance < 0.18f) {
+            else if (normalizedLength > secondaryLengthThreshold || civicDistance < secondaryCivicThreshold) {
                 streetClass = StreetClass::Secondary;
             }
 
@@ -354,7 +395,8 @@ private:
             });
         }
 
-        std::cout << "[URBAN CODEX LOOP] Street edges: " << m_streetEdges.size() << std::endl;
+        m_lastBuiltP = m_p;
+        std::cout << "[URBAN CODEX LOOP] Street edges: " << m_streetEdges.size() << " | p=" << m_p << std::endl;
     }
 
     bool edgeAlreadyAdded(const std::vector<std::pair<Vec3, Vec3>>& edges, const Vec3& a, const Vec3& b) const
@@ -370,32 +412,25 @@ private:
 
     float streetOffsetWidth(StreetClass streetClass) const
     {
+        float widthScale = 0.65f + m_p * 1.35f;
         switch (streetClass) {
-            case StreetClass::Primary: return m_primaryStreetOffset;
-            case StreetClass::Secondary: return m_secondaryStreetOffset;
-            case StreetClass::Tertiary: return m_tertiaryStreetOffset;
+            case StreetClass::Primary: return m_primaryStreetOffset * widthScale;
+            case StreetClass::Secondary: return m_secondaryStreetOffset * widthScale;
+            case StreetClass::Tertiary: return m_tertiaryStreetOffset * widthScale;
         }
-        return m_tertiaryStreetOffset;
+        return m_tertiaryStreetOffset * widthScale;
     }
 
     Color streetColor(StreetClass streetClass) const
     {
-        switch (streetClass) {
-            case StreetClass::Primary: return Color(1.0f, 0.0f, 0.0f, 1.0f);    // zRed
-            case StreetClass::Secondary: return Color(0.0f, 0.0f, 1.0f, 1.0f);  // zBlue
-            case StreetClass::Tertiary: return Color(0.0f, 0.75f, 0.0f, 1.0f);  // zGreen
-        }
-        return Color(0.0f, 0.75f, 0.0f, 1.0f);
+        (void)streetClass;
+        return Color(1.0f, 1.0f, 1.0f, 1.0f);
     }
 
     Color streetOffsetColor(StreetClass streetClass) const
     {
-        switch (streetClass) {
-            case StreetClass::Primary: return Color(1.0f, 0.78f, 0.76f, 1.0f);
-            case StreetClass::Secondary: return Color(0.76f, 0.82f, 1.0f, 1.0f);
-            case StreetClass::Tertiary: return Color(0.78f, 0.90f, 0.76f, 1.0f);
-        }
-        return Color(0.78f, 0.90f, 0.76f, 1.0f);
+        (void)streetClass;
+        return Color(1.0f, 1.0f, 1.0f, 1.0f);
     }
 
     void drawNeutralBaseMesh(Renderer& renderer, zSpace::zFnMesh& fn)

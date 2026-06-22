@@ -179,6 +179,18 @@ Design method:
 
 The street SDF now affects both visualization and building placement. Buildings are suppressed where `streetOffsetSdf(p) < 0.0`.
 
+## Method Update: Interactive Street Parameter `p`
+
+Visible street colors are now white. The street hierarchy still exists internally, but it controls offset width and classification rather than display color.
+
+The sketch exposes a slider named `p`:
+
+- `p = 0.0` keeps classification stricter and street offsets narrower.
+- `p = 1.0` classifies more edges into higher street classes and scales offsets wider.
+- moving the slider rebuilds the mesh-edge street classification live.
+
+For interactive tuning, automatic screenshot-and-exit is disabled. Press `S` in the sketch window to capture the current view and exit when the chosen `p` value looks right.
+
 ## Iteration 002
 
 Screenshot: `alice2/output/iterations/iter_002_open_space_sdf.png`

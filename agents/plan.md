@@ -36,9 +36,10 @@ The local VLM interface is Ollama.
 - Add SDF methods later only when Codex interprets VLM critique and decides they are the next design move.
 - Street methods should be parametric:
   - classify actual mesh edges as primary, secondary, or tertiary
-  - draw primary edges as zRed, secondary as zBlue, tertiary as zGreen
+  - keep street hierarchy internal but draw all visible streets as white
   - derive street offset SDFs from the colored/classified edges
   - use edge class/color to control offset width
+  - expose a live `p` slider for street classification and offset-width tuning
 - Make the sketch deterministic:
   - fixed top-down orthographic camera
   - white background
