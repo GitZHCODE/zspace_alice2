@@ -11,6 +11,7 @@
 #include <cmath>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace alice2;
@@ -56,7 +57,8 @@ public:
 
         zSpace::zFnMesh fn(m_mesh);
         drawNeutralBaseMesh(renderer, fn);
-        drawStreetHierarchySdf(renderer, fn);
+        drawStreetOffsets(renderer, fn);
+        drawStreetEdgeHierarchy(renderer);
         drawOpenSpaceSdf(renderer, fn);
         drawSimpleMassing(renderer, fn);
     }
@@ -92,17 +94,30 @@ private:
     float m_openSpaceZ = 0.001f;
     float m_civicSpineWidth = 0.055f;
     float m_civicPlazaRadius = 0.135f;
-    float m_primaryStreetWidth = 0.032f;
-    float m_secondaryStreetWidth = 0.024f;
+    float m_primaryStreetOffset = 0.040f;
+    float m_secondaryStreetOffset = 0.028f;
+    float m_tertiaryStreetOffset = 0.018f;
     float m_neighborhoodPlazaRadius = 0.105f;
     Vec3 m_civicSpineA;
     Vec3 m_civicSpineB;
     Vec3 m_neighborhoodPlazaA;
     Vec3 m_neighborhoodPlazaB;
-    Vec3 m_primaryStreetA;
-    Vec3 m_primaryStreetB;
-    Vec3 m_secondaryStreetA;
-    Vec3 m_secondaryStreetB;
+
+    enum class StreetClass {
+        Primary,
+        Secondary,
+        Tertiary
+    };
+
+    struct StreetEdge {
+        Vec3 a;
+        Vec3 b;
+        StreetClass streetClass;
+        float offsetWidth;
+        Color color;
+    };
+
+    std::vector<StreetEdge> m_streetEdges;
 
     static Vec3 toVec3(const zSpace::zVector& p)
     {
@@ -163,16 +178,32 @@ private:
         return civicOpenSpaceSdf(p) < 0.0f;
     }
 
-    float streetHierarchySdf(const Vec3& p) const
+    float streetOffsetSdf(const Vec3& p) const
     {
-        float primary = distanceToSegment2d(p, m_primaryStreetA, m_primaryStreetB) - m_primaryStreetWidth;
-        float secondary = distanceToSegment2d(p, m_secondaryStreetA, m_secondaryStreetB) - m_secondaryStreetWidth;
-        return std::min(primary, secondary);
+        float d = 1e9f;
+        for (const auto& edge : m_streetEdges) {
+            d = std::min(d, distanceToSegment2d(p, edge.a, edge.b) - edge.offsetWidth);
+        }
+        return d;
+    }
+
+    const StreetEdge* nearestStreetEdge(const Vec3& p) const
+    {
+        const StreetEdge* nearest = nullptr;
+        float bestDistance = 1e9f;
+        for (const auto& edge : m_streetEdges) {
+            float distance = distanceToSegment2d(p, edge.a, edge.b) - edge.offsetWidth;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                nearest = &edge;
+            }
+        }
+        return nearest;
     }
 
     bool isStreetSpace(const Vec3& p) const
     {
-        return streetHierarchySdf(p) < 0.0f;
+        return streetOffsetSdf(p) < 0.0f;
     }
 
     Color lerpColor(const Color& a, const Color& b, float t) const
@@ -201,7 +232,12 @@ private:
     {
         float centerDistance = (p - toVec3(m_meshCenter)).length() / m_maxDistance;
         float core = 1.0f - smoothstep(0.12f, 0.58f, centerDistance);
-        float spineProximity = 1.0f - smoothstep(0.04f, 0.34f, distanceToSegment2d(p, m_primaryStreetA, m_primaryStreetB));
+        float primaryProximity = 0.0f;
+        for (const auto& edge : m_streetEdges) {
+            if (edge.streetClass != StreetClass::Primary) continue;
+            primaryProximity = std::max(primaryProximity, 1.0f - smoothstep(0.04f, 0.34f, distanceToSegment2d(p, edge.a, edge.b)));
+        }
+        float spineProximity = std::max(primaryProximity, 1.0f - smoothstep(0.04f, 0.34f, distanceToSegment2d(p, m_civicSpineA, m_civicSpineB)));
         return saturate(core * 0.72f + spineProximity * 0.28f);
     }
 
@@ -230,10 +266,6 @@ private:
         m_civicSpineB = Vec3(bMax.x - span.x * 0.18f, bMin.y + span.y * 0.58f, 0.0f);
         m_neighborhoodPlazaA = Vec3(bMin.x + span.x * 0.32f, bMin.y + span.y * 0.47f, 0.0f);
         m_neighborhoodPlazaB = Vec3(bMin.x + span.x * 0.74f, bMin.y + span.y * 0.61f, 0.0f);
-        m_primaryStreetA = Vec3(bMin.x + span.x * 0.08f, bMin.y + span.y * 0.34f, 0.0f);
-        m_primaryStreetB = Vec3(bMax.x - span.x * 0.08f, bMin.y + span.y * 0.66f, 0.0f);
-        m_secondaryStreetA = Vec3(bMin.x + span.x * 0.56f, bMin.y + span.y * 0.10f, 0.0f);
-        m_secondaryStreetB = Vec3(bMin.x + span.x * 0.60f, bMax.y - span.y * 0.10f, 0.0f);
 
         zSpace::zPointArray vertices;
         fn.getVertexPositions(vertices);
@@ -242,6 +274,7 @@ private:
             m_maxDistance = std::max(m_maxDistance, (toVec3(v) - toVec3(m_meshCenter)).length());
         }
         if (m_maxDistance < 1e-5f) m_maxDistance = 1.0f;
+        buildStreetEdges(fn);
 
         m_loaded = true;
     }
@@ -265,6 +298,104 @@ private:
         planState.position = Vec3(center.x, center.y, center.z + planState.orbitDistance);
         planState.rotation = alice2::Quaternion::fromAxisAngle(Vec3(1.0f, 0.0f, 0.0f), -90.0f * ALICE2_DEG_TO_RAD);
         Application::getInstance()->getCameraController().setCameraState(planState);
+    }
+
+    void buildStreetEdges(zSpace::zFnMesh& fn)
+    {
+        m_streetEdges.clear();
+
+        std::vector<std::pair<Vec3, Vec3>> uniqueEdges;
+        for (int i = 0; i < fn.numPolygons(); ++i) {
+            zSpace::zItMeshFace face(m_mesh, i);
+            if (!face.isActive()) continue;
+
+            std::vector<zSpace::zVector> positions;
+            face.getVertexPositions(positions);
+            if (positions.size() < 2) continue;
+
+            for (size_t j = 0; j < positions.size(); ++j) {
+                Vec3 a = toVec3(positions[j]);
+                Vec3 b = toVec3(positions[(j + 1) % positions.size()]);
+                if (!edgeAlreadyAdded(uniqueEdges, a, b)) {
+                    uniqueEdges.emplace_back(a, b);
+                }
+            }
+        }
+
+        if (uniqueEdges.empty()) return;
+
+        float longest = 0.0f;
+        for (const auto& edge : uniqueEdges) {
+            longest = std::max(longest, (edge.second - edge.first).length());
+        }
+
+        for (const auto& edge : uniqueEdges) {
+            Vec3 a = edge.first;
+            Vec3 b = edge.second;
+            Vec3 mid = (a + b) * 0.5f;
+            float length = (b - a).length();
+            float civicDistance = distanceToSegment2d(mid, m_civicSpineA, m_civicSpineB);
+            float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
+
+            StreetClass streetClass = StreetClass::Tertiary;
+            if (normalizedLength > 0.72f || civicDistance < 0.08f) {
+                streetClass = StreetClass::Primary;
+            }
+            else if (normalizedLength > 0.42f || civicDistance < 0.18f) {
+                streetClass = StreetClass::Secondary;
+            }
+
+            m_streetEdges.push_back({
+                a,
+                b,
+                streetClass,
+                streetOffsetWidth(streetClass),
+                streetColor(streetClass)
+            });
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Street edges: " << m_streetEdges.size() << std::endl;
+    }
+
+    bool edgeAlreadyAdded(const std::vector<std::pair<Vec3, Vec3>>& edges, const Vec3& a, const Vec3& b) const
+    {
+        const float eps = 1e-4f;
+        for (const auto& edge : edges) {
+            bool same = (edge.first - a).length() < eps && (edge.second - b).length() < eps;
+            bool reverse = (edge.first - b).length() < eps && (edge.second - a).length() < eps;
+            if (same || reverse) return true;
+        }
+        return false;
+    }
+
+    float streetOffsetWidth(StreetClass streetClass) const
+    {
+        switch (streetClass) {
+            case StreetClass::Primary: return m_primaryStreetOffset;
+            case StreetClass::Secondary: return m_secondaryStreetOffset;
+            case StreetClass::Tertiary: return m_tertiaryStreetOffset;
+        }
+        return m_tertiaryStreetOffset;
+    }
+
+    Color streetColor(StreetClass streetClass) const
+    {
+        switch (streetClass) {
+            case StreetClass::Primary: return Color(1.0f, 0.0f, 0.0f, 1.0f);    // zRed
+            case StreetClass::Secondary: return Color(0.0f, 0.0f, 1.0f, 1.0f);  // zBlue
+            case StreetClass::Tertiary: return Color(0.0f, 0.75f, 0.0f, 1.0f);  // zGreen
+        }
+        return Color(0.0f, 0.75f, 0.0f, 1.0f);
+    }
+
+    Color streetOffsetColor(StreetClass streetClass) const
+    {
+        switch (streetClass) {
+            case StreetClass::Primary: return Color(1.0f, 0.78f, 0.76f, 1.0f);
+            case StreetClass::Secondary: return Color(0.76f, 0.82f, 1.0f, 1.0f);
+            case StreetClass::Tertiary: return Color(0.78f, 0.90f, 0.76f, 1.0f);
+        }
+        return Color(0.78f, 0.90f, 0.76f, 1.0f);
     }
 
     void drawNeutralBaseMesh(Renderer& renderer, zSpace::zFnMesh& fn)
@@ -346,7 +477,7 @@ private:
         }
     }
 
-    void drawStreetHierarchySdf(Renderer& renderer, zSpace::zFnMesh& fn)
+    void drawStreetOffsets(Renderer& renderer, zSpace::zFnMesh& fn)
     {
         for (int i = 0; i < fn.numPolygons(); ++i) {
             zSpace::zItMeshFace face(m_mesh, i);
@@ -360,12 +491,24 @@ private:
             if (positions.size() < 3) continue;
 
             Vec3 c = withZ(center, m_openSpaceZ + 0.001f);
-            Color streetColor(0.98f, 0.98f, 0.95f, 1.0f);
+            const StreetEdge* edge = nearestStreetEdge(center);
+            Color streetFaceColor = edge ? streetOffsetColor(edge->streetClass) : Color(0.98f, 0.98f, 0.95f, 1.0f);
             for (size_t j = 0; j < positions.size(); ++j) {
                 Vec3 p1 = withZ(toVec3(positions[j]), m_openSpaceZ + 0.001f);
                 Vec3 p2 = withZ(toVec3(positions[(j + 1) % positions.size()]), m_openSpaceZ + 0.001f);
-                renderer.drawTriangle(c, p1, p2, streetColor);
+                renderer.drawTriangle(c, p1, p2, streetFaceColor);
             }
+        }
+    }
+
+    void drawStreetEdgeHierarchy(Renderer& renderer)
+    {
+        for (const auto& edge : m_streetEdges) {
+            float width = 1.5f;
+            if (edge.streetClass == StreetClass::Primary) width = 5.0f;
+            else if (edge.streetClass == StreetClass::Secondary) width = 3.5f;
+
+            renderer.drawLine(withZ(edge.a, m_openSpaceZ + 0.006f), withZ(edge.b, m_openSpaceZ + 0.006f), edge.color, width);
         }
     }
 

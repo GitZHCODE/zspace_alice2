@@ -97,6 +97,8 @@ Commit:
 
 Screenshot: `alice2/output/iterations/iter_001_baseline.png`
 
+![Iteration 001](C:/Users/vishu.b/source/repos/GitZHCODE/zspace_alice2/alice2/output/iterations/iter_001_baseline.png)
+
 VLM model: `llava:latest` through Ollama, used because `qwen2.5:latest` is text-only and `llama3.2-vision:latest` failed to load in the local Ollama runtime.
 
 Score: `2 / 10`
@@ -148,9 +150,40 @@ Key C++ snippet:
 
 Commit: `fec2442`
 
+## Method Update: Parametric Street Edge SDF
+
+Codex changed the street system from arbitrary guide-line SDFs to actual mesh-edge-based street methods.
+
+Design method:
+
+- Extract unique edges from the base mesh faces.
+- Classify each edge as primary, secondary, or tertiary.
+- Draw edge hierarchy using zSpace-style colors:
+  - primary = zRed
+  - secondary = zBlue
+  - tertiary = zGreen
+- Assign offset widths by edge class:
+  - primary edges receive the widest street offset
+  - secondary edges receive a medium offset
+  - tertiary edges receive the narrowest offset
+- Evaluate street space with an offset SDF:
+
+    float streetOffsetSdf(const Vec3& p) const
+    {
+        float d = 1e9f;
+        for (const auto& edge : m_streetEdges) {
+            d = std::min(d, distanceToSegment2d(p, edge.a, edge.b) - edge.offsetWidth);
+        }
+        return d;
+    }
+
+The street SDF now affects both visualization and building placement. Buildings are suppressed where `streetOffsetSdf(p) < 0.0`.
+
 ## Iteration 002
 
 Screenshot: `alice2/output/iterations/iter_002_open_space_sdf.png`
+
+![Iteration 002](C:/Users/vishu.b/source/repos/GitZHCODE/zspace_alice2/alice2/output/iterations/iter_002_open_space_sdf.png)
 
 VLM model: `llava:latest` through Ollama.
 
@@ -207,6 +240,8 @@ Commit: `fec2442`
 
 Screenshot: `alice2/output/iterations/iter_003_street_density_sdf.png`
 
+![Iteration 003](C:/Users/vishu.b/source/repos/GitZHCODE/zspace_alice2/alice2/output/iterations/iter_003_street_density_sdf.png)
+
 VLM model: `llava:latest` through Ollama.
 
 Score: `4 / 10`
@@ -258,6 +293,8 @@ Commit: `fec2442`
 ## Iteration 004
 
 Screenshot: `alice2/output/iterations/iter_004_open_space_hierarchy.png`
+
+![Iteration 004](C:/Users/vishu.b/source/repos/GitZHCODE/zspace_alice2/alice2/output/iterations/iter_004_open_space_hierarchy.png)
 
 VLM model: `llava:latest` through Ollama.
 
@@ -315,6 +352,8 @@ Commit: `fec2442`
 ## Iteration 005
 
 Screenshot: `alice2/output/iterations/iter_005_density_colormap.png`
+
+![Iteration 005](C:/Users/vishu.b/source/repos/GitZHCODE/zspace_alice2/alice2/output/iterations/iter_005_density_colormap.png)
 
 VLM model: `llava:latest` through Ollama.
 
