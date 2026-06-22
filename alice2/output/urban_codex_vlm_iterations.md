@@ -145,7 +145,7 @@ Key C++ snippet:
         return std::min(spine, plaza);
     }
 
-Commit: `5559f3b`
+Commit: `fec2442`
 
 ## Iteration 005
 
@@ -194,7 +194,7 @@ Key C++ snippet:
     float coverage = m_parcelCoverage + density * 0.22f;
     std::vector<Vec3> footprint = makeConstrainedBuildingFootprint(center, positions, coverage);
 
-Commit: `5559f3b`
+Commit: `fec2442`
 
 ## Iteration 004
 
@@ -251,7 +251,7 @@ Key C++ snippet:
         return lerpColor(mid, high, (density - 0.5f) * 2.0f);
     }
 
-Commit: `5559f3b`
+Commit: `fec2442`
 
 ## Iteration 003
 
@@ -303,7 +303,7 @@ Key C++ snippet:
     float plazaC = (p - m_neighborhoodPlazaB).length() - m_neighborhoodPlazaRadius;
     return std::min(std::min(spine, plaza), std::min(plazaB, plazaC));
 
-Commit: `5559f3b`
+Commit: `fec2442`
 
 ## Iteration 002
 
@@ -358,4 +358,4 @@ Key C++ snippet:
         return saturate(core * 0.72f + spineProximity * 0.28f);
     }
 
-Commit: `5559f3b`
+Commit: `fec2442`
