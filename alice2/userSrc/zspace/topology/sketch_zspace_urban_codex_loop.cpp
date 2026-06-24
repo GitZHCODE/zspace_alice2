@@ -172,6 +172,21 @@ private:
         TypeB
     };
 
+    struct ShapeParams {
+        float typeBWeight = 0.0f;
+        float buildingWidthMeters = 20.0f;
+        float typeAEdgeLengthFraction = 0.5f;
+        float typeBXFraction = 0.5f;
+        float typeBInternalEdgeFraction = 0.25f;
+    };
+
+    struct TypologyAnchor {
+        Vec3 position;
+        ShapeParams params;
+        float strength = 1.0f;
+        float radius = 1.0f;
+    };
+
     struct StreetEdge {
         Vec3 a;
         Vec3 b;
@@ -450,6 +465,7 @@ private:
 
     std::vector<StreetEdge> m_streetEdges;
     std::vector<plot> m_plots;
+    std::vector<TypologyAnchor> m_typologyAnchors;
     zSpace::zObjectMeshScalarField m_streetSdfField;
     zSpace::zObjectGraph m_streetIsoContour;
     zSpace::zObjectMeshScalarField m_typeASdfField;
@@ -615,6 +631,7 @@ private:
         m_civicSpineB = Vec3(bMax.x - span.x * 0.18f, bMin.y + span.y * 0.58f, 0.0f);
         m_neighborhoodPlazaA = Vec3(bMin.x + span.x * 0.32f, bMin.y + span.y * 0.47f, 0.0f);
         m_neighborhoodPlazaB = Vec3(bMin.x + span.x * 0.74f, bMin.y + span.y * 0.61f, 0.0f);
+        initializeTypologyAnchors(bMin, bMax);
 
         zSpace::zPointArray vertices;
         fn.getVertexPositions(vertices);
@@ -632,6 +649,48 @@ private:
         buildTypeBSdfField();
 
         m_loaded = true;
+    }
+
+    void initializeTypologyAnchors(const Vec3& bMin, const Vec3& bMax)
+    {
+        m_typologyAnchors.clear();
+
+        Vec3 span = bMax - bMin;
+        float radius = std::max(span.x, span.y);
+        Vec3 bottomLeft(bMin.x, bMin.y, 0.0f);
+        Vec3 bottomRight(bMax.x, bMin.y, 0.0f);
+        Vec3 topLeft(bMin.x, bMax.y, 0.0f);
+        Vec3 topRight(bMax.x, bMax.y, 0.0f);
+
+        ShapeParams aFull;
+        aFull.typeBWeight = 0.0f;
+        aFull.buildingWidthMeters = 22.0f;
+        aFull.typeAEdgeLengthFraction = 1.0f;
+
+        ShapeParams aShort;
+        aShort.typeBWeight = 0.0f;
+        aShort.buildingWidthMeters = 18.0f;
+        aShort.typeAEdgeLengthFraction = 0.40f;
+
+        ShapeParams bHalf;
+        bHalf.typeBWeight = 1.0f;
+        bHalf.buildingWidthMeters = 22.0f;
+        bHalf.typeBXFraction = 0.5f;
+        bHalf.typeBInternalEdgeFraction = 0.25f;
+
+        ShapeParams bFull;
+        bFull.typeBWeight = 1.0f;
+        bFull.buildingWidthMeters = 20.0f;
+        bFull.typeBXFraction = 0.5f;
+        bFull.typeBInternalEdgeFraction = 0.5f;
+
+        m_typologyAnchors.push_back({ bottomLeft, aFull, 1.0f, radius });
+        m_typologyAnchors.push_back({ bottomRight, bFull, 1.0f, radius });
+        m_typologyAnchors.push_back({ topLeft, bHalf, 1.0f, radius });
+        m_typologyAnchors.push_back({ topRight, aShort, 1.0f, radius });
+
+        std::cout << "[URBAN CODEX LOOP] Typology anchors: " << m_typologyAnchors.size()
+                  << " | arbitrary anchor field enabled" << std::endl;
     }
 
     void setPlanCamera()
@@ -738,13 +797,8 @@ private:
             plot plotData;
             plotData.id = static_cast<int>(m_plots.size());
             plotData.faceIndex = i;
-            plotData.buildingType = randomBuildingType(plotData.id);
             plotData.center = toVec3(face.getCenter());
-            plotData.typeABuildingWidthMeters = randomTypeABuildingWidthMeters(plotData.id);
-            plotData.typeAEdgeLengthFraction = randomTypeAEdgeLengthFraction(plotData.id);
-            plotData.typeBXFraction = randomTypeBXFraction(plotData.id);
-            plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
-            plotData.typeBInternalEdgeFraction = randomTypeBInternalEdgeFraction(plotData.id);
+            applyTypologyGene(plotData);
             plotData.vertices.reserve(positions.size());
             plotData.boundaryEdges.reserve(positions.size());
 
@@ -811,6 +865,67 @@ private:
 
         std::cout << "[URBAN CODEX LOOP] Building type assignment | Type A: " << typeA
                   << " Type B: " << typeB << std::endl;
+    }
+
+    ShapeParams computeTypologyGene(const Vec3& position) const
+    {
+        if (m_typologyAnchors.empty()) {
+            return fallbackShapeParams(0);
+        }
+
+        ShapeParams result;
+        result.typeBWeight = 0.0f;
+        result.buildingWidthMeters = 0.0f;
+        result.typeAEdgeLengthFraction = 0.0f;
+        result.typeBXFraction = 0.0f;
+        result.typeBInternalEdgeFraction = 0.0f;
+        float totalWeight = 0.0f;
+
+        for (const auto& anchor : m_typologyAnchors) {
+            float radius = std::max(anchor.radius, 1e-6f);
+            float d = (position - anchor.position).length() / radius;
+            float w = anchor.strength / (d * d + 0.015f);
+            totalWeight += w;
+
+            result.typeBWeight += anchor.params.typeBWeight * w;
+            result.buildingWidthMeters += anchor.params.buildingWidthMeters * w;
+            result.typeAEdgeLengthFraction += anchor.params.typeAEdgeLengthFraction * w;
+            result.typeBXFraction += anchor.params.typeBXFraction * w;
+            result.typeBInternalEdgeFraction += anchor.params.typeBInternalEdgeFraction * w;
+        }
+
+        if (totalWeight <= 1e-6f) {
+            return fallbackShapeParams(0);
+        }
+
+        result.typeBWeight = std::clamp(result.typeBWeight / totalWeight, 0.0f, 1.0f);
+        result.buildingWidthMeters = std::clamp(result.buildingWidthMeters / totalWeight, m_typeAMinWidthMeters, m_typeAMaxWidthMeters);
+        result.typeAEdgeLengthFraction = sanitizeTypeAEdgeLengthFraction(result.typeAEdgeLengthFraction / totalWeight);
+        result.typeBXFraction = std::clamp(result.typeBXFraction / totalWeight, 0.25f, 0.75f);
+        result.typeBInternalEdgeFraction = std::clamp(result.typeBInternalEdgeFraction / totalWeight, 0.0f, 0.5f);
+        return result;
+    }
+
+    ShapeParams fallbackShapeParams(int plotId) const
+    {
+        ShapeParams params;
+        params.typeBWeight = randomBuildingType(plotId) == BuildingType::TypeB ? 1.0f : 0.0f;
+        params.buildingWidthMeters = randomTypeABuildingWidthMeters(plotId);
+        params.typeAEdgeLengthFraction = randomTypeAEdgeLengthFraction(plotId);
+        params.typeBXFraction = randomTypeBXFraction(plotId);
+        params.typeBInternalEdgeFraction = randomTypeBInternalEdgeFraction(plotId);
+        return params;
+    }
+
+    void applyTypologyGene(plot& plotData) const
+    {
+        ShapeParams gene = computeTypologyGene(plotData.center);
+        plotData.buildingType = gene.typeBWeight >= 0.5f ? BuildingType::TypeB : BuildingType::TypeA;
+        plotData.typeABuildingWidthMeters = gene.buildingWidthMeters;
+        plotData.typeAEdgeLengthFraction = gene.typeAEdgeLengthFraction;
+        plotData.typeBXFraction = gene.typeBXFraction;
+        plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
+        plotData.typeBInternalEdgeFraction = gene.typeBInternalEdgeFraction;
     }
 
     float deterministicUnitRandom(int id, int salt) const

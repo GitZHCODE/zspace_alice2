@@ -186,6 +186,15 @@ Commit: `fec2442`
 - Type B result SDF is `A subtract B`, implemented as the buffered S graph clipped by the inset half-planes.
 - Later VLM critique can ask for more continuous, more compact, or more open S layouts, but Codex remains responsible for changing the parameters.
 
+### Typology Anchor Field
+
+- Plots now get their building type and shape parameters from a blended typology field instead of direct random assignment.
+- The field is defined by arbitrary `TypologyAnchor` samples, each with a position, strength, radius, and shape parameters.
+- Each plot computes an inverse-distance weighted `ShapeParams` gene from all anchors.
+- The dominant type is selected from the blended `typeBWeight`; blended parameters drive Type A edge length, Type B X/Y, Type B internal edge, and building width.
+- First test case uses four site-corner anchors from the sketch: bottom-left `Type A e=1.0`, top-right `Type A e=0.4`, top-left `Type B e=0.5`, and bottom-right `Type B e=1.0`.
+- Future shape types can be added by extending `ShapeParams` and adding new generators while keeping the anchor field logic unchanged.
+
 ## Method Update: Parametric Street Edge SDF
 
 Codex changed the street system from arbitrary guide-line SDFs to actual mesh-edge-based street methods.
