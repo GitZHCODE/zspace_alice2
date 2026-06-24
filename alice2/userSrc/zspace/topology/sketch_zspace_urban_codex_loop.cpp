@@ -54,8 +54,6 @@ public:
             buildTypeBCenterlineGraphs();
             buildTypeCCenterlineGraphs();
             buildEffectiveTypologyGraphs();
-            buildTypeASdfField();
-            buildTypeBSdfField();
         }
 
         m_frameCount++;
@@ -78,10 +76,7 @@ public:
         drawNeutralBaseMesh(renderer, fn);
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
-        drawTypeACenterlineGraphs(renderer);
         drawEffectiveTypologyGraphs(renderer);
-        drawTypeASdfContour(renderer);
-        drawTypeBSdfContour(renderer);
 
         if (m_ui) {
             m_ui->draw(renderer);
@@ -794,8 +789,6 @@ private:
         buildTypeBCenterlineGraphs();
         buildTypeCCenterlineGraphs();
         buildEffectiveTypologyGraphs();
-        buildTypeASdfField();
-        buildTypeBSdfField();
 
         m_loaded = true;
     }
