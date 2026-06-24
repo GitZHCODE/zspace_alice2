@@ -577,13 +577,13 @@ private:
     Color streetColor(StreetClass streetClass) const
     {
         (void)streetClass;
-        return Color(1.0f, 1.0f, 1.0f, 1.0f);
+        return Color(0.5f, 0.5f, 0.5f, 1.0f);
     }
 
     Color streetOffsetColor(StreetClass streetClass) const
     {
         (void)streetClass;
-        return Color(1.0f, 1.0f, 1.0f, 1.0f);
+        return Color(0.5f, 0.5f, 0.5f, 1.0f);
     }
 
     int streetClassRank(StreetClass streetClass) const

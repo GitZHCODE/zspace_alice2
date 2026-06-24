@@ -181,7 +181,7 @@ The street SDF now affects both visualization and building placement. Buildings 
 
 ## Method Update: Interactive Street Parameter `p`
 
-Visible streets are drawn white. The primary, secondary, and tertiary hierarchy remains internal and controls street selection, network derivation, dimensional width, and massing exclusion.
+Visible streets are drawn zGRAY. The primary, secondary, and tertiary hierarchy remains internal and controls street selection, network derivation, dimensional width, and massing exclusion.
 
 The street SDF uses `p` as the primary-street full width. The default value is `p = 0.3`, and secondary/tertiary widths are derived from it:
 
@@ -205,7 +205,7 @@ Secondary and tertiary streets are derived from the primary network:
 
 Not every mesh edge is a street. Each mesh face is treated as a plot, and the algorithm selects only some plot edges as street centerlines. Non-selected edges remain plot divisions.
 
-The road widths are drawn as offset corridor geometry around selected street centerlines, not only as screen-space line weights. This makes the visible white street widths correspond to the `0.3 / 0.2 / 0.1` hierarchy when `p = 0.3`.
+The road widths are drawn as offset corridor geometry around selected street centerlines, not only as screen-space line weights. This makes the visible zGRAY street widths correspond to the `0.3 / 0.2 / 0.1` hierarchy when `p = 0.3`.
 
 Street corridors are rendered as a connected network. The sketch now draws junction geometry at every selected street vertex using the largest incident road half-width, so offset strips merge at intersections instead of leaving broken rectangular ends.
 
