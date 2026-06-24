@@ -32,6 +32,7 @@ public:
         m_ui = std::make_unique<SimpleUI>(input());
         m_ui->setTheme(SimpleUI::UITheme::Dark);
         m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.05f, 0.50f, m_p);
+        m_ui->addToggle("Field Mesh", UIRect{14.0f, 112.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
 
         loadMesh();
         if (!m_loaded) return;
@@ -108,6 +109,7 @@ private:
     bool m_loaded = false;
     bool m_screenshotTaken = false;
     bool m_autoCapture = false;
+    bool m_drawStreetFieldMesh = false;
     int m_frameCount = 0;
 
     zSpace::zPoint m_boundsMin;
@@ -133,7 +135,7 @@ private:
     float m_civicSpineWidth = 0.055f;
     float m_civicPlazaRadius = 0.135f;
     float m_neighborhoodPlazaRadius = 0.105f;
-    int m_streetFieldResolution = 180;
+    int m_streetFieldResolution = 320;
     Vec3 m_civicSpineA;
     Vec3 m_civicSpineB;
     Vec3 m_neighborhoodPlazaA;
@@ -156,7 +158,6 @@ private:
     std::vector<StreetEdge> m_streetEdges;
     zSpace::zObjectMeshScalarField m_streetSdfField;
     zSpace::zObjectGraph m_streetIsoContour;
-    zSpace::zObjectMesh m_streetIsoMesh;
 
     static Vec3 toVec3(const zSpace::zVector& p)
     {
@@ -441,7 +442,6 @@ private:
         fn.setFieldValues(values, zSpace::zFieldColorType::zFieldSDF, primaryStreetWidth());
         fn.updateColors(zSpace::zFieldColorType::zFieldSDF, primaryStreetWidth());
         fn.getIsocontour(m_streetIsoContour, 0.0f);
-        fn.getIsolineMesh(m_streetIsoMesh, 0.0f, false);
         liftStreetIsoGeometry();
     }
 
@@ -457,15 +457,6 @@ private:
             contourFn.setVertexPositions(contourPositions);
         }
 
-        zSpace::zFnMesh meshFn(m_streetIsoMesh);
-        zSpace::zPointArray meshPositions;
-        meshFn.getVertexPositions(meshPositions);
-        for (auto& p : meshPositions) {
-            p.z = m_openSpaceZ + 0.001f;
-        }
-        if (!meshPositions.empty()) {
-            meshFn.setVertexPositions(meshPositions);
-        }
     }
 
     bool isPrimaryStreetEdge(const Vec3& a, const Vec3& b, float length, float longest) const
@@ -716,12 +707,14 @@ private:
     void drawStreetSdfGeometry(Renderer& renderer)
     {
         (void)renderer;
-        zDisplayMeshSetting isoMeshDisplay;
-        isoMeshDisplay.showFaces = true;
-        isoMeshDisplay.showEdges = false;
-        isoMeshDisplay.showVertices = false;
-        isoMeshDisplay.faceColor = streetOffsetColor(StreetClass::Primary);
-        scene().draw(m_streetIsoMesh, isoMeshDisplay);
+        if (m_drawStreetFieldMesh) {
+            zDisplayMeshSetting fieldDisplay;
+            fieldDisplay.showFaces = true;
+            fieldDisplay.showEdges = false;
+            fieldDisplay.showVertices = false;
+            fieldDisplay.useVertexColors = true;
+            scene().draw(m_streetSdfField, fieldDisplay);
+        }
 
         zDisplayGraphSetting contourDisplay;
         contourDisplay.showEdges = true;

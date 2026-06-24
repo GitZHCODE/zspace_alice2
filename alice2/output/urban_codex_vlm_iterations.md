@@ -208,9 +208,10 @@ Not every mesh edge is a street. Each mesh face is treated as a plot, and the al
 The road widths are now sampled into a zSpace mesh scalar field. The sketch uses `zObjectMeshScalarField` with `zFnMeshScalarField`, then extracts level-0 street geometry with:
 
 - `getIsocontour(..., 0.0f)` for the street boundary graph
-- `getIsolineMesh(..., 0.0f)` for the street iso mesh
 
-The visible zGRAY street geometry is therefore returned by the SDF field extraction rather than drawn as independent corridor strips or junction discs.
+The visible zGRAY street geometry is therefore returned by the SDF field extraction rather than drawn as independent corridor strips or junction discs. The field is sampled at `320 x 320` to improve contour continuity.
+
+The UI includes a `Field Mesh` toggle. It is off by default; switching it on shows the sampled zSpace field mesh as a debug layer behind the level-0 contour.
 
 The road widths scale with `p`: primary is `p`, secondary is `2/3 p`, and tertiary is `1/3 p`.
 

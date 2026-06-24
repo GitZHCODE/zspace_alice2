@@ -40,7 +40,8 @@ The local VLM interface is Ollama.
   - classify actual mesh edges as primary, secondary, or tertiary
   - draw visible streets as zGRAY while keeping hierarchy internal
   - derive a zSpace mesh scalar-field SDF from the selected classified edges
-  - extract level-0 street geometry with `zFnMeshScalarField::getIsocontour` and `getIsolineMesh`
+  - extract level-0 street geometry with `zFnMeshScalarField::getIsocontour`
+  - keep the sampled field mesh behind a `Field Mesh` UI toggle, off by default
   - use parametric offsets: primary roads `p`, secondary `2/3 p`, tertiary `1/3 p`; default `p = 0.3`
   - expose a live `p` slider for width tuning while keeping the selected street topology stable
   - derive secondary and tertiary street classes from the selected primary network
