@@ -555,7 +555,7 @@ private:
                 anchors.push_back(makeGraphDescriptor(candidate.segments));
             }
 
-            constexpr int barycenterIterations = 8;
+            constexpr int barycenterIterations = 10;
             for (int iter = 0; iter < barycenterIterations; ++iter) {
                 std::vector<Vec3> nextNodes(barycenter.nodes.size(), Vec3(0.0f, 0.0f, barycenter.nodes[0].z));
                 std::vector<float> nodeMass(barycenter.nodes.size(), 0.0f);
@@ -563,12 +563,9 @@ private:
 
                 for (int a = 0; a < static_cast<int>(anchors.size()); ++a) {
                     if (anchors[a].nodes.empty()) continue;
-                    std::vector<std::vector<float>> transport = solveFgwTransport(barycenter, anchors[a], 0.65f, 0.08f, 6, 18);
+                    std::vector<std::vector<float>> transport = solveFgwTransport(barycenter, anchors[a], 0.82f, 0.025f, 8, 28);
                     for (int i = 0; i < static_cast<int>(barycenter.nodes.size()); ++i) {
-                        Vec3 mapped(0.0f, 0.0f, barycenter.nodes[i].z);
-                        for (int j = 0; j < static_cast<int>(anchors[a].nodes.size()); ++j) {
-                            mapped += anchors[a].nodes[j] * (transport[i][j] / std::max(rowMass, 1e-6f));
-                        }
+                        Vec3 mapped = hardProjectedNode(transport[i], anchors[a].nodes, rowMass);
                         nextNodes[i] += mapped * candidates[a].weight;
                         nodeMass[i] += candidates[a].weight;
                     }
@@ -577,7 +574,7 @@ private:
                 for (int i = 0; i < static_cast<int>(barycenter.nodes.size()); ++i) {
                     if (nodeMass[i] <= 1e-6f) continue;
                     Vec3 target = nextNodes[i] * (1.0f / nodeMass[i]);
-                    barycenter.nodes[i] = lerp(barycenter.nodes[i], target, 0.85f);
+                    barycenter.nodes[i] = lerp(barycenter.nodes[i], target, 0.45f);
                 }
 
                 barycenter.structure = graphShortestPathMatrix(barycenter);
@@ -590,6 +587,38 @@ private:
             }
 
             return barycenterSegments;
+        }
+
+        static Vec3 hardProjectedNode(const std::vector<float>& row, const std::vector<Vec3>& targetNodes, float rowMass)
+        {
+            if (targetNodes.empty()) return Vec3(0.0f, 0.0f, 0.0f);
+
+            int bestIndex = 0;
+            float bestMass = row.empty() ? 0.0f : row[0];
+            float totalMass = 0.0f;
+            for (int j = 0; j < static_cast<int>(row.size()); ++j) {
+                totalMass += row[j];
+                if (row[j] > bestMass) {
+                    bestMass = row[j];
+                    bestIndex = j;
+                }
+            }
+
+            float confidence = bestMass / std::max(std::max(totalMass, rowMass), 1e-6f);
+            if (confidence > 0.55f) {
+                return targetNodes[bestIndex];
+            }
+
+            Vec3 mapped(0.0f, 0.0f, targetNodes[0].z);
+            for (int j = 0; j < static_cast<int>(targetNodes.size()) && j < static_cast<int>(row.size()); ++j) {
+                float hardened = row[j] * row[j];
+                mapped += targetNodes[j] * hardened;
+            }
+
+            float hardenedMass = 0.0f;
+            for (float value : row) hardenedMass += value * value;
+            if (hardenedMass <= 1e-9f) return targetNodes[bestIndex];
+            return mapped * (1.0f / hardenedMass);
         }
 
         static std::vector<TypeBGraphSegment> transportGraphByFgw(
