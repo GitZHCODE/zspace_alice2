@@ -1339,23 +1339,66 @@ private:
             const float edgeHalfDepth = buildingWidth * 0.5f;
             if (edgeHalfDepth <= 1e-6f) continue;
 
-            TypeBPlotSdf plotSdf;
-            addTypeBSetbackClipPlanes(plotData, plotSdf);
-
-            plotSdf.graphHalfWidth = edgeHalfDepth;
-            plotSdf.graphSegments.reserve(plotData.typeBGraphSegments.size() + plotData.typeCGraphSegments.size());
-            plotSdf.graphJointPoints.reserve((plotData.typeBGraphSegments.size() + plotData.typeCGraphSegments.size()) * 2);
-
-            if (plotData.typeBBlendWeight > 0.001f) {
-                addGraphSegmentsToSdf(plotData.typeBGraphSegments, plotSdf);
+            if (plotData.typeBBlendWeight > 0.001f && plotData.typeCBlendWeight > 0.001f) {
+                addTransportMatchedBCSdf(plotData, edgeHalfDepth);
             }
-            if (plotData.typeCBlendWeight > 0.001f) {
-                addGraphSegmentsToSdf(plotData.typeCGraphSegments, plotSdf);
+            else if (plotData.typeBBlendWeight > 0.001f) {
+                addTypeBGraphSdf(plotData, plotData.typeBGraphSegments, edgeHalfDepth);
             }
+            else if (plotData.typeCBlendWeight > 0.001f) {
+                addTypeBGraphSdf(plotData, plotData.typeCGraphSegments, edgeHalfDepth);
+            }
+        }
+    }
 
-            if (!plotSdf.graphSegments.empty()) {
-                m_typeBSdfPlots.push_back(plotSdf);
+    void addTransportMatchedBCSdf(const plot& plotData, float edgeHalfDepth)
+    {
+        const auto& dominantSegments = plotData.typeBBlendWeight >= plotData.typeCBlendWeight
+            ? plotData.typeBGraphSegments
+            : plotData.typeCGraphSegments;
+        const auto& weakSegments = plotData.typeBBlendWeight >= plotData.typeCBlendWeight
+            ? plotData.typeCGraphSegments
+            : plotData.typeBGraphSegments;
+        float dominantWeight = std::max(plotData.typeBBlendWeight, plotData.typeCBlendWeight);
+        float weakWeight = std::min(plotData.typeBBlendWeight, plotData.typeCBlendWeight);
+
+        addTypeBGraphSdf(plotData, dominantSegments, edgeHalfDepth);
+
+        std::vector<plot::TypeBGraphSegment> weakBirthDeathSegments;
+        float birthCost = averageSegmentLength(dominantSegments) * 0.42f;
+        for (const auto& weakSegment : weakSegments) {
+            float bestCost = 1e9f;
+            for (const auto& dominantSegment : dominantSegments) {
+                bestCost = std::min(bestCost, graphSegmentCost(weakSegment, dominantSegment));
             }
+            if (bestCost > birthCost) {
+                weakBirthDeathSegments.push_back(weakSegment);
+            }
+        }
+
+        if (!weakBirthDeathSegments.empty()) {
+            float fade = std::clamp(weakWeight / std::max(dominantWeight + weakWeight, 1e-6f), 0.18f, 0.65f);
+            addTypeBGraphSdf(plotData, weakBirthDeathSegments, edgeHalfDepth * fade);
+        }
+    }
+
+    void addTypeBGraphSdf(
+        const plot& plotData,
+        const std::vector<plot::TypeBGraphSegment>& sourceSegments,
+        float graphHalfWidth
+    )
+    {
+        if (sourceSegments.empty() || graphHalfWidth <= 1e-6f) return;
+
+        TypeBPlotSdf plotSdf;
+        addTypeBSetbackClipPlanes(plotData, plotSdf);
+        plotSdf.graphHalfWidth = graphHalfWidth;
+        plotSdf.graphSegments.reserve(sourceSegments.size());
+        plotSdf.graphJointPoints.reserve(sourceSegments.size() * 2);
+        addGraphSegmentsToSdf(sourceSegments, plotSdf);
+
+        if (!plotSdf.graphSegments.empty()) {
+            m_typeBSdfPlots.push_back(plotSdf);
         }
     }
 
@@ -1366,6 +1409,32 @@ private:
             plotSdf.graphJointPoints.push_back(graphSegment.start);
             plotSdf.graphJointPoints.push_back(graphSegment.end);
         }
+    }
+
+    float graphSegmentCost(const plot::TypeBGraphSegment& a, const plot::TypeBGraphSegment& b) const
+    {
+        Vec3 aMid = (a.start + a.end) * 0.5f;
+        Vec3 bMid = (b.start + b.end) * 0.5f;
+        Vec3 aVector = a.end - a.start;
+        Vec3 bVector = b.end - b.start;
+        float aLength = std::max(aVector.length(), 1e-6f);
+        float bLength = std::max(bVector.length(), 1e-6f);
+        Vec3 aDir = aVector * (1.0f / aLength);
+        Vec3 bDir = bVector * (1.0f / bLength);
+        float directionCost = 1.0f - std::abs(dot2d(aDir, bDir));
+        float meanLength = (aLength + bLength) * 0.5f;
+        return (aMid - bMid).length() + std::abs(aLength - bLength) * 0.25f + directionCost * meanLength * 0.15f;
+    }
+
+    float averageSegmentLength(const std::vector<plot::TypeBGraphSegment>& segments) const
+    {
+        if (segments.empty()) return 1.0f;
+
+        float totalLength = 0.0f;
+        for (const auto& segment : segments) {
+            totalLength += (segment.end - segment.start).length();
+        }
+        return totalLength / static_cast<float>(segments.size());
     }
 
     void addTypeBSetbackClipPlanes(const plot& plotData, TypeBPlotSdf& plotSdf) const
