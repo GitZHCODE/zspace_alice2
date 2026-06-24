@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -77,6 +78,7 @@ public:
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
         drawEffectiveTypologyGraphs(renderer);
+        drawCenterlineGraphDebug(renderer);
 
         if (m_ui) {
             m_ui->draw(renderer);
@@ -1032,6 +1034,8 @@ private:
             std::vector<zSpace::zVector> positions;
             face.getVertexPositions(positions);
             if (positions.size() < 3) continue;
+            std::vector<Vec3> orderedVertices = orderedPlotVertices(positions);
+            if (orderedVertices.size() < 3) continue;
 
             plot plotData;
             plotData.id = static_cast<int>(m_plots.size());
@@ -1044,13 +1048,13 @@ private:
             plotData.vertices.reserve(positions.size());
             plotData.boundaryEdges.reserve(positions.size());
 
-            for (const auto& position : positions) {
-                plotData.vertices.push_back(toVec3(position));
+            for (const auto& position : orderedVertices) {
+                plotData.vertices.push_back(position);
             }
 
-            for (size_t j = 0; j < positions.size(); ++j) {
-                Vec3 a = toVec3(positions[j]);
-                Vec3 b = toVec3(positions[(j + 1) % positions.size()]);
+            for (size_t j = 0; j < orderedVertices.size(); ++j) {
+                Vec3 a = orderedVertices[j];
+                Vec3 b = orderedVertices[(j + 1) % orderedVertices.size()];
                 int streetIndex = findStreetEdgeIndex(a, b);
                 plotData.boundaryEdges.push_back({
                     a,
@@ -1076,6 +1080,55 @@ private:
         std::cout << "[URBAN CODEX LOOP] Plot records: " << m_plots.size() << std::endl;
         logPlotBoundarySummary();
         logBuildingTypeSummary();
+    }
+
+    std::vector<Vec3> orderedPlotVertices(const std::vector<zSpace::zVector>& positions) const
+    {
+        std::vector<Vec3> ordered;
+        ordered.reserve(positions.size());
+        Vec3 center(0.0f, 0.0f, 0.0f);
+        for (const auto& position : positions) {
+            Vec3 p = toVec3(position);
+            ordered.push_back(p);
+            center += p;
+        }
+
+        if (ordered.empty()) return ordered;
+        center = center * (1.0f / static_cast<float>(ordered.size()));
+
+        std::sort(ordered.begin(), ordered.end(), [center](const Vec3& a, const Vec3& b) {
+            float angleA = std::atan2(a.y - center.y, a.x - center.x);
+            float angleB = std::atan2(b.y - center.y, b.x - center.x);
+            return angleA < angleB;
+        });
+
+        if (signedArea2d(ordered) < 0.0f) {
+            std::reverse(ordered.begin(), ordered.end());
+        }
+
+        int startIndex = 0;
+        float bestScore = std::numeric_limits<float>::max();
+        for (int i = 0; i < static_cast<int>(ordered.size()); ++i) {
+            float score = ordered[i].x + ordered[i].y;
+            if (score < bestScore) {
+                bestScore = score;
+                startIndex = i;
+            }
+        }
+
+        std::rotate(ordered.begin(), ordered.begin() + startIndex, ordered.end());
+        return ordered;
+    }
+
+    static float signedArea2d(const std::vector<Vec3>& polygon)
+    {
+        float area = 0.0f;
+        for (size_t i = 0; i < polygon.size(); ++i) {
+            const Vec3& a = polygon[i];
+            const Vec3& b = polygon[(i + 1) % polygon.size()];
+            area += a.x * b.y - b.x * a.y;
+        }
+        return area * 0.5f;
     }
 
     void logPlotBoundarySummary() const
@@ -2155,6 +2208,25 @@ private:
 
         for (auto& plotData : m_plots) {
             if (plotData.typeABlendWeight <= 0.001f) continue;
+            scene().draw(plotData.centerlineGraph, graphDisplay);
+        }
+    }
+
+    void drawCenterlineGraphDebug(Renderer& renderer)
+    {
+        (void)renderer;
+        zDisplayGraphSetting graphDisplay;
+        graphDisplay.showEdges = true;
+        graphDisplay.showVertices = true;
+        graphDisplay.drawVertexIds = true;
+        graphDisplay.edgeColor = Color(0.15f, 0.15f, 0.15f, 1.0f);
+        graphDisplay.vertexColor = Color(0.0f, 0.0f, 0.0f, 1.0f);
+        graphDisplay.vertexIdColor = Color(0.75f, 0.0f, 0.35f, 1.0f);
+        graphDisplay.edgeWidth = 1.0f;
+        graphDisplay.vertexSize = 5.0f;
+        graphDisplay.vertexIdSize = 0.18f;
+
+        for (auto& plotData : m_plots) {
             scene().draw(plotData.centerlineGraph, graphDisplay);
         }
     }

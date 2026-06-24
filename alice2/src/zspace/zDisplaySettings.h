@@ -18,9 +18,18 @@ namespace alice2 {
         float edgeWidth = 1.0f;
     };
 
-    struct zDisplayMeshSetting : public zDisplaySetting {};
+    struct zDisplayMeshSetting : public zDisplaySetting {
+        bool useVertexColors = false;
+    };
 
     struct zDisplayGraphSetting : public zDisplaySetting {
+        bool drawVertexIds = false;
+        bool drawEdgeIds = false;
+        Color vertexIdColor = Color(0.75f, 0.0f, 0.35f, 1.0f);
+        Color edgeIdColor = Color(0.1f, 0.1f, 0.1f, 1.0f);
+        float vertexIdSize = 0.18f;
+        float edgeIdSize = 0.14f;
+
         zDisplayGraphSetting()
         {
             showFaces = false;
