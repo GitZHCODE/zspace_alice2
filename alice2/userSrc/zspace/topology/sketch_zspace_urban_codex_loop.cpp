@@ -53,7 +53,6 @@ public:
             buildTypeACenterlineGraphs();
             buildTypeBCenterlineGraphs();
             buildTypeCCenterlineGraphs();
-            buildTransportedCenterlineGraphs();
             buildTypeASdfField();
             buildTypeBSdfField();
         }
@@ -78,7 +77,9 @@ public:
         drawNeutralBaseMesh(renderer, fn);
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
-        drawTransportedCenterlineGraphs(renderer);
+        drawTypeACenterlineGraphs(renderer);
+        drawTypeBCenterlineGraphs(renderer);
+        drawTypeCCenterlineGraphs(renderer);
         drawTypeASdfContour(renderer);
         drawTypeBSdfContour(renderer);
 
@@ -270,11 +271,9 @@ private:
         std::vector<CenterlineGraphEdge> centerlineGraphEdges;
         std::vector<TypeBGraphSegment> typeBGraphSegments;
         std::vector<TypeBGraphSegment> typeCGraphSegments;
-        std::vector<TypeBGraphSegment> transportedGraphSegments;
         zSpace::zObjectGraph centerlineGraph;
         zSpace::zObjectGraph typeBCenterlineGraph;
         zSpace::zObjectGraph typeCCenterlineGraph;
-        zSpace::zObjectGraph transportedCenterlineGraph;
 
         void buildCenterlineGraph(
             float roadSetback,
@@ -460,57 +459,6 @@ private:
             graphFn.create(graphPositions, graphEdgeConnects);
         }
 
-        void buildTransportedGraph(float graphZ)
-        {
-            transportedGraphSegments.clear();
-
-            zSpace::zFnGraph sourceFn(centerlineGraph);
-            zSpace::zPointArray sourcePositions;
-            sourceFn.getVertexPositions(sourcePositions);
-            if (sourcePositions.size() < 4) return;
-
-            std::vector<Vec3> p;
-            p.reserve(sourcePositions.size());
-            for (const auto& sourcePosition : sourcePositions) {
-                p.push_back(Vec3(sourcePosition.x, sourcePosition.y, graphZ));
-            }
-
-            auto aSegments = makeTypeASegments(p, typeAEdgeLengthFraction);
-            auto bSegments = makeTypeBSegments(p, typeBXFraction, typeBInternalEdgeFraction, typeBOrientationIndex);
-            auto cSegments = makeTypeCSegments(p, typeCEdgeFraction, typeCOrientationIndex);
-
-            const std::vector<TypeBGraphSegment>* receiver = &aSegments;
-            float receiverWeight = typeABlendWeight;
-            if (typeBBlendWeight >= receiverWeight && typeBBlendWeight >= typeCBlendWeight) {
-                receiver = &bSegments;
-                receiverWeight = typeBBlendWeight;
-            }
-            else if (typeCBlendWeight >= receiverWeight && typeCBlendWeight >= typeBBlendWeight) {
-                receiver = &cSegments;
-            }
-
-            for (const auto& baseSegment : *receiver) {
-                TypeBGraphSegment blended = baseSegment;
-                float totalWeight = receiverWeight;
-                blended.start = blended.start * receiverWeight;
-                blended.end = blended.end * receiverWeight;
-
-                addMatchedSegmentBlend(baseSegment, aSegments, typeABlendWeight, receiver == &aSegments, blended, totalWeight);
-                addMatchedSegmentBlend(baseSegment, bSegments, typeBBlendWeight, receiver == &bSegments, blended, totalWeight);
-                addMatchedSegmentBlend(baseSegment, cSegments, typeCBlendWeight, receiver == &cSegments, blended, totalWeight);
-
-                if (totalWeight > 1e-6f) {
-                    blended.start = blended.start * (1.0f / totalWeight);
-                    blended.end = blended.end * (1.0f / totalWeight);
-                    if ((blended.end - blended.start).length() > 1e-6f) {
-                        transportedGraphSegments.push_back(blended);
-                    }
-                }
-            }
-
-            createGraphFromSegments(transportedGraphSegments, transportedCenterlineGraph, graphZ);
-        }
-
     private:
         static Vec3 lerp(const Vec3& a, const Vec3& b, float t)
         {
@@ -522,141 +470,6 @@ private:
             if (size <= 0) return 0;
             int result = index % size;
             return result < 0 ? result + size : result;
-        }
-
-        static std::vector<TypeBGraphSegment> makeTypeASegments(const std::vector<Vec3>& p, float edgeLengthFraction)
-        {
-            std::vector<TypeBGraphSegment> segments;
-            if (p.size() < 2) return segments;
-
-            edgeLengthFraction = std::clamp(edgeLengthFraction, 0.25f, 1.0f);
-            if (edgeLengthFraction >= 0.999f) {
-                for (size_t i = 0; i < p.size(); ++i) {
-                    segments.push_back({ p[i], p[(i + 1) % p.size()] });
-                }
-                return segments;
-            }
-
-            std::vector<int> corners = { 0, static_cast<int>(p.size() / 2) };
-            for (int corner : corners) {
-                int previous = wrappedIndex(corner - 1, static_cast<int>(p.size()));
-                int next = wrappedIndex(corner + 1, static_cast<int>(p.size()));
-                segments.push_back({ p[corner], lerp(p[corner], p[previous], edgeLengthFraction) });
-                segments.push_back({ p[corner], lerp(p[corner], p[next], edgeLengthFraction) });
-            }
-            return segments;
-        }
-
-        static std::vector<TypeBGraphSegment> makeTypeBSegments(
-            const std::vector<Vec3>& p,
-            float xFraction,
-            float internalEdgeFraction,
-            int orientationIndex
-        )
-        {
-            std::vector<TypeBGraphSegment> segments;
-            if (p.size() < 4) return segments;
-
-            xFraction = std::clamp(xFraction, 0.0f, 1.0f);
-            internalEdgeFraction = std::clamp(internalEdgeFraction, 0.0f, 0.5f);
-            int n = static_cast<int>(p.size());
-            int a = wrappedIndex(orientationIndex, n);
-            int afterA = (a + 1) % n;
-            int b = (a + n / 2) % n;
-            int afterB = (b + 1) % n;
-
-            Vec3 midA = lerp(p[a], p[afterA], xFraction);
-            Vec3 midB = lerp(p[b], p[afterB], xFraction);
-            Vec3 partialA = lerp(midA, midB, internalEdgeFraction);
-            Vec3 partialB = lerp(midB, midA, internalEdgeFraction);
-
-            segments.push_back({ p[a], midA });
-            if ((partialA - midA).length() > 1e-6f) segments.push_back({ midA, partialA });
-            segments.push_back({ p[b], midB });
-            if ((partialB - midB).length() > 1e-6f) segments.push_back({ midB, partialB });
-            return segments;
-        }
-
-        static std::vector<TypeBGraphSegment> makeTypeCSegments(
-            const std::vector<Vec3>& p,
-            float edgeFraction,
-            int orientationIndex
-        )
-        {
-            std::vector<TypeBGraphSegment> segments;
-            if (p.size() < 4) return segments;
-
-            edgeFraction = std::clamp(edgeFraction, 0.5f, 1.0f);
-            int n = static_cast<int>(p.size());
-            int a0 = wrappedIndex(orientationIndex, n);
-            int a1 = (a0 + 1) % n;
-            int b0 = (a0 + n / 2) % n;
-            int b1 = (b0 + 1) % n;
-
-            segments.push_back({ p[a0], lerp(p[a0], p[a1], edgeFraction) });
-            segments.push_back({ p[b0], lerp(p[b0], p[b1], edgeFraction) });
-            return segments;
-        }
-
-        static float segmentCost(const TypeBGraphSegment& a, const TypeBGraphSegment& b)
-        {
-            Vec3 aMid = (a.start + a.end) * 0.5f;
-            Vec3 bMid = (b.start + b.end) * 0.5f;
-            Vec3 aVector = a.end - a.start;
-            Vec3 bVector = b.end - b.start;
-            float aLength = std::max(aVector.length(), 1e-6f);
-            float bLength = std::max(bVector.length(), 1e-6f);
-            float directionCost = 1.0f - std::abs(dot2d(aVector * (1.0f / aLength), bVector * (1.0f / bLength)));
-            return (aMid - bMid).length() + std::abs(aLength - bLength) * 0.25f + directionCost * 0.15f;
-        }
-
-        static void addMatchedSegmentBlend(
-            const TypeBGraphSegment& baseSegment,
-            const std::vector<TypeBGraphSegment>& candidates,
-            float weight,
-            bool isReceiver,
-            TypeBGraphSegment& blended,
-            float& totalWeight
-        )
-        {
-            if (isReceiver || weight <= 0.001f || candidates.empty()) return;
-
-            int bestIndex = 0;
-            float bestCost = 1e9f;
-            for (int i = 0; i < static_cast<int>(candidates.size()); ++i) {
-                float cost = segmentCost(baseSegment, candidates[i]);
-                if (cost < bestCost) {
-                    bestCost = cost;
-                    bestIndex = i;
-                }
-            }
-
-            blended.start = blended.start + candidates[bestIndex].start * weight;
-            blended.end = blended.end + candidates[bestIndex].end * weight;
-            totalWeight += weight;
-        }
-
-        static void createGraphFromSegments(
-            const std::vector<TypeBGraphSegment>& segments,
-            zSpace::zObjectGraph& graph,
-            float graphZ
-        )
-        {
-            zSpace::zPointArray graphPositions;
-            zSpace::zIntArray graphEdgeConnects;
-            graphPositions.reserve(segments.size() * 2);
-            graphEdgeConnects.reserve(segments.size() * 2);
-
-            for (const auto& segment : segments) {
-                int startIndex = static_cast<int>(graphPositions.size());
-                graphPositions.push_back(zSpace::zPoint(segment.start.x, segment.start.y, graphZ));
-                graphPositions.push_back(zSpace::zPoint(segment.end.x, segment.end.y, graphZ));
-                graphEdgeConnects.push_back(startIndex);
-                graphEdgeConnects.push_back(startIndex + 1);
-            }
-
-            zSpace::zFnGraph graphFn(graph);
-            graphFn.create(graphPositions, graphEdgeConnects);
         }
 
         static float dot2d(const Vec3& a, const Vec3& b)
@@ -894,7 +707,6 @@ private:
         buildTypeACenterlineGraphs();
         buildTypeBCenterlineGraphs();
         buildTypeCCenterlineGraphs();
-        buildTransportedCenterlineGraphs();
         buildTypeASdfField();
         buildTypeBSdfField();
 
@@ -1374,23 +1186,6 @@ private:
                   << " | edge random range 0.5-1.0" << std::endl;
     }
 
-    void buildTransportedCenterlineGraphs()
-    {
-        int graphCount = 0;
-        int graphEdges = 0;
-        for (auto& plotData : m_plots) {
-            plotData.buildTransportedGraph(m_massingZ + 0.010f);
-            if (plotData.transportedGraphSegments.empty()) continue;
-
-            graphCount++;
-            graphEdges += static_cast<int>(plotData.transportedGraphSegments.size());
-        }
-
-        std::cout << "[URBAN CODEX LOOP] Transported blend graphs: " << graphCount
-                  << " | graph edges: " << graphEdges
-                  << " | greedy segment OT test" << std::endl;
-    }
-
     void buildTypeASdfField()
     {
         buildTypeASdfPrimitives();
@@ -1455,7 +1250,6 @@ private:
 
         for (auto& plotData : m_plots) {
             if (plotData.typeABlendWeight <= 0.001f) continue;
-            if (plotData.typeBBlendWeight > 0.001f || plotData.typeCBlendWeight > 0.001f) continue;
 
             const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
             const float cornerHalfSize = buildingWidth * 0.6f;
@@ -1539,7 +1333,7 @@ private:
         m_typeBSdfPlots.clear();
 
         for (auto& plotData : m_plots) {
-            if (plotData.transportedGraphSegments.empty()) continue;
+            if (plotData.typeBBlendWeight <= 0.001f && plotData.typeCBlendWeight <= 0.001f) continue;
 
             const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
             const float edgeHalfDepth = buildingWidth * 0.5f;
@@ -1549,9 +1343,15 @@ private:
             addTypeBSetbackClipPlanes(plotData, plotSdf);
 
             plotSdf.graphHalfWidth = edgeHalfDepth;
-            plotSdf.graphSegments.reserve(plotData.transportedGraphSegments.size());
-            plotSdf.graphJointPoints.reserve(plotData.transportedGraphSegments.size() * 2);
-            addGraphSegmentsToSdf(plotData.transportedGraphSegments, plotSdf);
+            plotSdf.graphSegments.reserve(plotData.typeBGraphSegments.size() + plotData.typeCGraphSegments.size());
+            plotSdf.graphJointPoints.reserve((plotData.typeBGraphSegments.size() + plotData.typeCGraphSegments.size()) * 2);
+
+            if (plotData.typeBBlendWeight > 0.001f) {
+                addGraphSegmentsToSdf(plotData.typeBGraphSegments, plotSdf);
+            }
+            if (plotData.typeCBlendWeight > 0.001f) {
+                addGraphSegmentsToSdf(plotData.typeCGraphSegments, plotSdf);
+            }
 
             if (!plotSdf.graphSegments.empty()) {
                 m_typeBSdfPlots.push_back(plotSdf);
@@ -2135,24 +1935,6 @@ private:
         for (auto& plotData : m_plots) {
             if (plotData.typeCBlendWeight <= 0.001f) continue;
             scene().draw(plotData.typeCCenterlineGraph, graphDisplay);
-        }
-    }
-
-    void drawTransportedCenterlineGraphs(Renderer& renderer)
-    {
-        (void)renderer;
-        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
-        zDisplayGraphSetting graphDisplay;
-        graphDisplay.showEdges = true;
-        graphDisplay.showVertices = true;
-        graphDisplay.edgeColor = graphColor;
-        graphDisplay.vertexColor = graphColor;
-        graphDisplay.edgeWidth = 1.0f;
-        graphDisplay.vertexSize = 5.0f;
-
-        for (auto& plotData : m_plots) {
-            if (plotData.transportedGraphSegments.empty()) continue;
-            scene().draw(plotData.transportedCenterlineGraph, graphDisplay);
         }
     }
 
