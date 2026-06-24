@@ -698,6 +698,7 @@ private:
         buildStreetSdfField();
         buildTypeACenterlineGraphs();
         buildTypeBCenterlineGraphs();
+        buildTypeCCenterlineGraphs();
         buildTypeASdfField();
         buildTypeBSdfField();
 
