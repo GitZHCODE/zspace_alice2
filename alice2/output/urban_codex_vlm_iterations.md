@@ -150,6 +150,29 @@ Key C++ snippet:
 
 Commit: `fec2442`
 
+## Parametric Building Typology Notes
+
+### Building Type A
+
+- Each plot stores its own Type A building width and edge length parameter.
+- Type A minimum building width: `15m`.
+- Type A maximum building width: `25m`.
+- Current sketch assignment: deterministic random width per plot between `15m` and `25m`.
+- Type A edge length parameter varies per plot.
+- Edge length parameter rule: values vary from `0.25` to `0.75`; if a generated or VLM-updated value is above `0.75`, Codex snaps it to `1.0`.
+- VLM only critiques the result. Codex updates these per-plot parameters and code.
+
+### Building Type B
+
+- Type B starts from the same plot offset graph used for Type A.
+- Each plot stores a Type B S-shaped graph.
+- The S graph uses two opposite corners and two parallel sides of the offset graph.
+- The graph path is: opposite corner A, point on side A, point on parallel side B, opposite corner B.
+- Type B has parameters `X` and `Y`.
+- Constraint: `X + Y = 1.0`.
+- Current sketch assignment: deterministic random `X` per plot from `0.25` to `0.75`; `Y` is computed as `1.0 - X`.
+- Later VLM critique can ask for more continuous, more compact, or more open S layouts, but Codex remains responsible for changing the parameters.
+
 ## Method Update: Parametric Street Edge SDF
 
 Codex changed the street system from arbitrary guide-line SDFs to actual mesh-edge-based street methods.

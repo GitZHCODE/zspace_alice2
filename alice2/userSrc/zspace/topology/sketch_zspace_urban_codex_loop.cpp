@@ -51,6 +51,7 @@ public:
             buildPlotRecords(fn);
             buildStreetSdfField();
             buildTypeACenterlineGraphs();
+            buildTypeBCenterlineGraphs();
             buildTypeASdfField();
         }
 
@@ -75,6 +76,7 @@ public:
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
         drawTypeACenterlineGraphs(renderer);
+        drawTypeBCenterlineGraphs(renderer);
         drawTypeASdfContour(renderer);
 
         if (m_ui) {
@@ -211,10 +213,13 @@ private:
         Vec3 center;
         float typeABuildingWidthMeters = 25.0f;
         float typeAEdgeLengthFraction = 1.0f;
+        float typeBXFraction = 0.5f;
+        float typeBYFraction = 0.5f;
         std::vector<Vec3> vertices;
         std::vector<PlotBoundaryEdge> boundaryEdges;
         std::vector<CenterlineGraphEdge> centerlineGraphEdges;
         zSpace::zObjectGraph centerlineGraph;
+        zSpace::zObjectGraph typeBCenterlineGraph;
 
         void buildCenterlineGraph(
             float roadSetback,
@@ -289,7 +294,67 @@ private:
             graphFn.create(graphPositions, graphEdgeConnects);
         }
 
+        void buildTypeBSGraph(float xFraction, float graphZ)
+        {
+            xFraction = std::clamp(xFraction, 0.0f, 1.0f);
+            typeBXFraction = xFraction;
+            typeBYFraction = 1.0f - typeBXFraction;
+
+            zSpace::zFnGraph sourceFn(centerlineGraph);
+            zSpace::zPointArray sourcePositions;
+            sourceFn.getVertexPositions(sourcePositions);
+            if (sourcePositions.size() < 4) return;
+
+            std::vector<Vec3> p;
+            p.reserve(sourcePositions.size());
+            for (const auto& sourcePosition : sourcePositions) {
+                p.push_back(Vec3(sourcePosition.x, sourcePosition.y, graphZ));
+            }
+
+            const int a = 0;
+            const int b = static_cast<int>(p.size() / 2);
+            const int afterA = 1;
+            const int beforeA = static_cast<int>(p.size() - 1);
+
+            Vec3 sideA0 = lerp(p[a], p[afterA], typeBYFraction);
+            Vec3 sideA1 = lerp(p[beforeA], p[b], typeBYFraction);
+            float connectorA = (sideA1 - sideA0).length();
+
+            Vec3 sideB0 = lerp(p[a], p[beforeA], typeBYFraction);
+            Vec3 sideB1 = lerp(p[afterA], p[b], typeBYFraction);
+            float connectorB = (sideB1 - sideB0).length();
+
+            Vec3 midA = sideA0;
+            Vec3 midB = sideA1;
+            if (connectorB > connectorA) {
+                midA = sideB0;
+                midB = sideB1;
+            }
+
+            zSpace::zPointArray graphPositions;
+            graphPositions.push_back(zSpace::zPoint(p[a].x, p[a].y, graphZ));
+            graphPositions.push_back(zSpace::zPoint(midA.x, midA.y, graphZ));
+            graphPositions.push_back(zSpace::zPoint(midB.x, midB.y, graphZ));
+            graphPositions.push_back(zSpace::zPoint(p[b].x, p[b].y, graphZ));
+
+            zSpace::zIntArray graphEdgeConnects;
+            graphEdgeConnects.push_back(0);
+            graphEdgeConnects.push_back(1);
+            graphEdgeConnects.push_back(1);
+            graphEdgeConnects.push_back(2);
+            graphEdgeConnects.push_back(2);
+            graphEdgeConnects.push_back(3);
+
+            zSpace::zFnGraph graphFn(typeBCenterlineGraph);
+            graphFn.create(graphPositions, graphEdgeConnects);
+        }
+
     private:
+        static Vec3 lerp(const Vec3& a, const Vec3& b, float t)
+        {
+            return a + (b - a) * t;
+        }
+
         static float dot2d(const Vec3& a, const Vec3& b)
         {
             return a.x * b.x + a.y * b.y;
@@ -630,6 +695,8 @@ private:
             plotData.center = toVec3(face.getCenter());
             plotData.typeABuildingWidthMeters = randomTypeABuildingWidthMeters(plotData.id);
             plotData.typeAEdgeLengthFraction = randomTypeAEdgeLengthFraction(plotData.id);
+            plotData.typeBXFraction = randomTypeBXFraction(plotData.id);
+            plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
             plotData.vertices.reserve(positions.size());
             plotData.boundaryEdges.reserve(positions.size());
 
@@ -704,6 +771,11 @@ private:
         return std::clamp(value, 0.25f, 0.75f);
     }
 
+    float randomTypeBXFraction(int plotId) const
+    {
+        return 0.25f + deterministicUnitRandom(plotId, 3) * 0.5f;
+    }
+
     void buildTypeACenterlineGraphs()
     {
         const float minWidth = metersToModelUnits(m_typeAMinWidthMeters);
@@ -729,6 +801,21 @@ private:
                   << " | width range " << m_typeAMinWidthMeters << "-" << m_typeAMaxWidthMeters << "m"
                   << " | road setback " << m_typeARoadSetbackMeters << "m"
                   << " | local setback " << m_typeALocalSetbackMeters << "m" << std::endl;
+    }
+
+    void buildTypeBCenterlineGraphs()
+    {
+        int graphEdges = 0;
+        for (auto& plotData : m_plots) {
+            plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
+            plotData.buildTypeBSGraph(plotData.typeBXFraction, m_massingZ + 0.009f);
+            graphEdges += 3;
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Type B S graphs: " << m_plots.size()
+                  << " | graph edges: " << graphEdges
+                  << " | X random range 0.25-0.75"
+                  << " | Y = 1 - X" << std::endl;
     }
 
     void buildTypeASdfField()
@@ -1277,6 +1364,23 @@ private:
 
         for (auto& plotData : m_plots) {
             scene().draw(plotData.centerlineGraph, graphDisplay);
+        }
+    }
+
+    void drawTypeBCenterlineGraphs(Renderer& renderer)
+    {
+        (void)renderer;
+        const Color graphColor(1.0f, 0.28f, 0.0f, 1.0f);
+        zDisplayGraphSetting graphDisplay;
+        graphDisplay.showEdges = true;
+        graphDisplay.showVertices = true;
+        graphDisplay.edgeColor = graphColor;
+        graphDisplay.vertexColor = graphColor;
+        graphDisplay.edgeWidth = 3.0f;
+        graphDisplay.vertexSize = 6.0f;
+
+        for (auto& plotData : m_plots) {
+            scene().draw(plotData.typeBCenterlineGraph, graphDisplay);
         }
     }
 
