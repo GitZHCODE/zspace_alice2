@@ -130,7 +130,7 @@ private:
     float m_maxBuildingAspect = 2.6f;
     float m_edgeClearanceFactor = 0.82f;
     float m_typeAMinWidthMeters = 1.2f;
-    float m_typeAMaxWidthMeters = 2.0f;
+    float m_typeAMaxWidthMeters = 20.0f;
     float m_typeARoadSetbackMeters = 0.5f;
     float m_typeALocalSetbackMeters = 0.2f;
     float m_openSpaceZ = 0.001f;

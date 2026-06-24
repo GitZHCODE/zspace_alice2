@@ -248,8 +248,8 @@ Type A rule:
 - the number of graph vertices equals the number of plot vertices
 - each graph edge corresponds to one plot boundary edge
 - offset distance = setback distance + half building width + half road width for the boundary type
-- building width range = 1.2m minimum to 2.0m maximum
-- current Type A uses the maximum width, 2.0m
+- building width range = 1.2m minimum to 20.0m maximum
+- current Type A uses the maximum width, 20.0m
 - setback = 0.5m for primary and secondary road edges
 - setback = 0.2m for tertiary road and plot split line edges
 
