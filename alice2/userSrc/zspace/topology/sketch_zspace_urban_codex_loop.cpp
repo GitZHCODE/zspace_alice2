@@ -1707,13 +1707,13 @@ private:
     void drawTypeACenterlineGraphs(Renderer& renderer)
     {
         (void)renderer;
-        const Color graphColor(1.0f, 0.0f, 1.0f, 1.0f);
+        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
         zDisplayGraphSetting graphDisplay;
         graphDisplay.showEdges = true;
         graphDisplay.showVertices = true;
         graphDisplay.edgeColor = graphColor;
         graphDisplay.vertexColor = graphColor;
-        graphDisplay.edgeWidth = 2.0f;
+        graphDisplay.edgeWidth = 3.0f;
         graphDisplay.vertexSize = 5.0f;
 
         for (auto& plotData : m_plots) {
@@ -1725,7 +1725,7 @@ private:
     void drawTypeBCenterlineGraphs(Renderer& renderer)
     {
         (void)renderer;
-        const Color graphColor(1.0f, 0.0f, 1.0f, 1.0f);
+        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
         zDisplayGraphSetting graphDisplay;
         graphDisplay.showEdges = true;
         graphDisplay.showVertices = true;
@@ -1829,7 +1829,7 @@ private:
         zDisplayGraphSetting contourDisplay;
         contourDisplay.showEdges = true;
         contourDisplay.showVertices = false;
-        contourDisplay.edgeColor = Color(0.12f, 0.12f, 0.12f, 1.0f);
+        contourDisplay.edgeColor = Color(0.5f, 0.5f, 0.5f, 1.0f);
         contourDisplay.edgeWidth = 2.0f;
         scene().draw(m_streetIsoContour, contourDisplay);
 
