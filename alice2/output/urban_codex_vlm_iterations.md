@@ -248,9 +248,9 @@ Type A rule:
 - the number of graph vertices equals the number of plot vertices
 - each graph edge corresponds to one plot boundary edge
 - offset distance = setback distance + half building width + half road width for the boundary type
-- road width parameter `p` is in meters, default `p = 30m`
+- road width parameter `p` is in meters, default `p = 12m`
 - primary road width = `p`, secondary = `2/3 p`, tertiary = `1/3 p`
-- default road widths are 30m, 20m, and 10m
+- default road widths are 12m, 8m, and 4m
 - building width range = 15m minimum to 25m maximum
 - current Type A uses the maximum width, 25m
 - setback = 5m for primary and secondary road edges

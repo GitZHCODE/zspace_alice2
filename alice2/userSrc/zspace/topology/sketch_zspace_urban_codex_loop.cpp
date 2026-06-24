@@ -134,7 +134,7 @@ private:
     float m_typeARoadSetbackMeters = 5.0f;
     float m_typeALocalSetbackMeters = 2.0f;
     float m_openSpaceZ = 0.001f;
-    float m_p = 30.0f;
+    float m_p = 12.0f;
     float m_lastBuiltP = -1.0f;
     float m_siteLongDimensionMeters = 500.0f;
     float m_modelUnitsPerMeter = 1.0f;
