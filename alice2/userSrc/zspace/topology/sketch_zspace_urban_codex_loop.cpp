@@ -53,6 +53,7 @@ public:
             buildTypeACenterlineGraphs();
             buildTypeBCenterlineGraphs();
             buildTypeASdfField();
+            buildTypeBSdfField();
         }
 
         m_frameCount++;
@@ -78,6 +79,7 @@ public:
         drawTypeACenterlineGraphs(renderer);
         drawTypeBCenterlineGraphs(renderer);
         drawTypeASdfContour(renderer);
+        drawTypeBSdfContour(renderer);
 
         if (m_ui) {
             m_ui->draw(renderer);
@@ -201,6 +203,11 @@ private:
     struct TypeAPlotSdf {
         std::vector<TypeASdfBox> sdfA;
         std::vector<TypeASdfBox> sdfB;
+        std::vector<TypeASetbackPlane> setbackPlanes;
+    };
+
+    struct TypeBPlotSdf {
+        std::vector<TypeASdfBox> sdfA;
         std::vector<TypeASetbackPlane> setbackPlanes;
     };
 
@@ -419,7 +426,10 @@ private:
     zSpace::zObjectGraph m_streetIsoContour;
     zSpace::zObjectMeshScalarField m_typeASdfField;
     zSpace::zObjectGraph m_typeAIsoContour;
+    zSpace::zObjectMeshScalarField m_typeBSdfField;
+    zSpace::zObjectGraph m_typeBIsoContour;
     std::vector<TypeAPlotSdf> m_typeASdfPlots;
+    std::vector<TypeBPlotSdf> m_typeBSdfPlots;
 
     static Vec3 toVec3(const zSpace::zVector& p)
     {
@@ -879,6 +889,35 @@ private:
         liftTypeAIsoGeometry();
     }
 
+    void buildTypeBSdfField()
+    {
+        buildTypeBSdfPrimitives();
+
+        Vec3 bMin = toVec3(m_boundsMin);
+        Vec3 bMax = toVec3(m_boundsMax);
+        Vec3 span = bMax - bMin;
+        float pad = std::max(span.x, span.y) * 0.05f;
+        zSpace::zPoint fieldMin(bMin.x - pad, bMin.y - pad, 0.0f);
+        zSpace::zPoint fieldMax(bMax.x + pad, bMax.y + pad, 0.0f);
+
+        zSpace::zFnMeshScalarField fn(m_typeBSdfField);
+        fn.create(fieldMin, fieldMax, m_streetFieldResolution, m_streetFieldResolution, 1, true, false);
+
+        zSpace::zPointArray positions;
+        fn.getPositions(positions);
+
+        zSpace::zScalarArray values;
+        values.reserve(positions.size());
+        for (const auto& p : positions) {
+            values.push_back(typeBSdf(toVec3(p)));
+        }
+
+        fn.setFieldValues(values, zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
+        fn.updateColors(zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
+        fn.getIsocontour(m_typeBIsoContour, 0.0f);
+        liftTypeBIsoGeometry();
+    }
+
     void buildTypeASdfPrimitives()
     {
         m_typeASdfPlots.clear();
@@ -963,6 +1002,68 @@ private:
         }
     }
 
+    void buildTypeBSdfPrimitives()
+    {
+        m_typeBSdfPlots.clear();
+
+        for (auto& plotData : m_plots) {
+            if (plotData.buildingType != BuildingType::TypeB) continue;
+
+            const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
+            const float edgeHalfDepth = buildingWidth * 0.5f;
+            if (edgeHalfDepth <= 1e-6f) continue;
+
+            TypeBPlotSdf plotSdf;
+            addTypeBSetbackClipPlanes(plotData, plotSdf);
+
+            zSpace::zFnGraph graphFn(plotData.typeBCenterlineGraph);
+            zSpace::zPointArray graphPositions;
+            graphFn.getVertexPositions(graphPositions);
+            if (graphPositions.size() < 2) continue;
+
+            for (int i = 0; i < static_cast<int>(graphPositions.size()) - 1; ++i) {
+                addTypeBGraphStrip(
+                    plotSdf,
+                    toVec3(graphPositions[i]),
+                    toVec3(graphPositions[i + 1]),
+                    edgeHalfDepth
+                );
+            }
+
+            if (!plotSdf.sdfA.empty()) {
+                m_typeBSdfPlots.push_back(plotSdf);
+            }
+        }
+    }
+
+    void addTypeBSetbackClipPlanes(const plot& plotData, TypeBPlotSdf& plotSdf) const
+    {
+        for (const auto& edge : plotData.boundaryEdges) {
+            Vec3 edgeVector = edge.b - edge.a;
+            float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
+            float clearance = setbackClearanceForTypeABoundary(edge.boundaryType);
+            if (edgeLength < 1e-6f || clearance <= 1e-6f) continue;
+
+            Vec3 tangent = normalized2d(edgeVector);
+            Vec3 normalA(-tangent.y, tangent.x, 0.0f);
+            Vec3 midpoint = (edge.a + edge.b) * 0.5f;
+            Vec3 inwardNormal = dot2d(plotData.center - midpoint, normalA) >= 0.0f ? normalA : normalA * -1.0f;
+            plotSdf.setbackPlanes.push_back({ edge.a + inwardNormal * clearance, inwardNormal });
+        }
+    }
+
+    void addTypeBGraphStrip(TypeBPlotSdf& plotSdf, const Vec3& start, const Vec3& end, float edgeHalfDepth)
+    {
+        Vec3 edgeVector = end - start;
+        float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
+        if (edgeLength < 1e-6f) return;
+
+        Vec3 tangent = normalized2d(edgeVector);
+        Vec3 normal(-tangent.y, tangent.x, 0.0f);
+        Vec3 center = (start + end) * 0.5f;
+        plotSdf.sdfA.push_back({ center, tangent, normal, edgeLength * 0.5f, edgeHalfDepth });
+    }
+
     std::vector<int> selectedTypeACorners(const zSpace::zPointArray& graphPositions) const
     {
         std::vector<int> result;
@@ -1031,6 +1132,19 @@ private:
         contourFn.getVertexPositions(contourPositions);
         for (auto& p : contourPositions) {
             p.z = m_massingZ + 0.006f;
+        }
+        if (!contourPositions.empty()) {
+            contourFn.setVertexPositions(contourPositions);
+        }
+    }
+
+    void liftTypeBIsoGeometry()
+    {
+        zSpace::zFnGraph contourFn(m_typeBIsoContour);
+        zSpace::zPointArray contourPositions;
+        contourFn.getVertexPositions(contourPositions);
+        for (auto& p : contourPositions) {
+            p.z = m_massingZ + 0.007f;
         }
         if (!contourPositions.empty()) {
             contourFn.setVertexPositions(contourPositions);
@@ -1329,6 +1443,34 @@ private:
         return clip;
     }
 
+    float typeBSdf(const Vec3& p) const
+    {
+        float d = 1e9f;
+
+        for (const auto& plotSdf : m_typeBSdfPlots) {
+            float a = 1e9f;
+            for (const auto& box : plotSdf.sdfA) {
+                a = std::min(a, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+            }
+
+            float clip = typeBSetbackClipSdf(p, plotSdf);
+            d = std::min(d, std::max(a, clip));
+        }
+
+        return d;
+    }
+
+    float typeBSetbackClipSdf(const Vec3& p, const TypeBPlotSdf& plotSdf) const
+    {
+        float clip = -1e9f;
+        for (const auto& plane : plotSdf.setbackPlanes) {
+            float outsideOffsetBoundary = -dot2d(p - plane.point, plane.inwardNormal);
+            clip = std::max(clip, outsideOffsetBoundary);
+        }
+
+        return clip;
+    }
+
     float orientedBoxSdf(const Vec3& p, const Vec3& center, const Vec3& axisX, const Vec3& axisY, float halfX, float halfY) const
     {
         Vec3 rel = p - center;
@@ -1405,7 +1547,7 @@ private:
     void drawTypeBCenterlineGraphs(Renderer& renderer)
     {
         (void)renderer;
-        const Color graphColor(1.0f, 0.28f, 0.0f, 1.0f);
+        const Color graphColor(1.0f, 0.0f, 1.0f, 1.0f);
         zDisplayGraphSetting graphDisplay;
         graphDisplay.showEdges = true;
         graphDisplay.showVertices = true;
@@ -1429,6 +1571,17 @@ private:
         contourDisplay.edgeColor = Color(0.0f, 0.0f, 0.0f, 1.0f);
         contourDisplay.edgeWidth = 2.0f;
         scene().draw(m_typeAIsoContour, contourDisplay);
+    }
+
+    void drawTypeBSdfContour(Renderer& renderer)
+    {
+        (void)renderer;
+        zDisplayGraphSetting contourDisplay;
+        contourDisplay.showEdges = true;
+        contourDisplay.showVertices = false;
+        contourDisplay.edgeColor = Color(0.0f, 0.0f, 0.0f, 1.0f);
+        contourDisplay.edgeWidth = 2.0f;
+        scene().draw(m_typeBIsoContour, contourDisplay);
     }
 
     void drawSimpleMassing(Renderer& renderer, zSpace::zFnMesh& fn)

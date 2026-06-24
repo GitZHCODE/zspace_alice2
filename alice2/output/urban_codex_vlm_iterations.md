@@ -175,6 +175,10 @@ Commit: `fec2442`
 - Type B has parameters `X` and `Y`.
 - Constraint: `X + Y = 1.0`.
 - Current sketch assignment: deterministic random `X` per plot from `0.25` to `0.75`; `Y` is computed as `1.0 - X`.
+- Type B displays its S graph in `zMagenta` for inspection.
+- Type B SDF A offsets the S graph by half the assigned building width.
+- Type B SDF B is the same continuous inset boundary half-plane clip used for Type A.
+- Type B result SDF is `A subtract B`, implemented as the buffered S graph clipped by the inset half-planes.
 - Later VLM critique can ask for more continuous, more compact, or more open S layouts, but Codex remains responsible for changing the parameters.
 
 ## Method Update: Parametric Street Edge SDF
