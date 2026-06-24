@@ -461,6 +461,54 @@ private:
             graphFn.create(graphPositions, graphEdgeConnects);
         }
 
+        void buildEffectiveGraph(float graphZ)
+        {
+            effectiveGraphSegments.clear();
+
+            zSpace::zFnGraph sourceFn(centerlineGraph);
+            zSpace::zPointArray sourcePositions;
+            sourceFn.getVertexPositions(sourcePositions);
+            if (sourcePositions.size() < 4) return;
+
+            std::vector<Vec3> p;
+            p.reserve(sourcePositions.size());
+            for (const auto& sourcePosition : sourcePositions) {
+                p.push_back(Vec3(sourcePosition.x, sourcePosition.y, graphZ));
+            }
+
+            float totalWeight = typeBBlendWeight + typeCBlendWeight;
+            if (totalWeight <= 0.001f) return;
+
+            float bWeight = typeBBlendWeight / totalWeight;
+            float cWeight = typeCBlendWeight / totalWeight;
+            int orientationIndex = static_cast<int>(std::round(
+                static_cast<float>(typeBOrientationIndex) * bWeight +
+                static_cast<float>(typeCOrientationIndex) * cWeight
+            ));
+            float sideFraction = std::clamp(typeBXFraction * bWeight + typeCEdgeFraction * cWeight, 0.05f, 1.0f);
+            float internalFraction = std::clamp(typeBInternalEdgeFraction * bWeight, 0.0f, 0.5f);
+
+            int n = static_cast<int>(p.size());
+            int a = wrappedIndex(orientationIndex, n);
+            int afterA = (a + 1) % n;
+            int b = (a + n / 2) % n;
+            int afterB = (b + 1) % n;
+
+            Vec3 sideA = lerp(p[a], p[afterA], sideFraction);
+            Vec3 sideB = lerp(p[b], p[afterB], sideFraction);
+            effectiveGraphSegments.push_back({ p[a], sideA });
+            effectiveGraphSegments.push_back({ p[b], sideB });
+
+            if (internalFraction > 0.01f) {
+                Vec3 internalA = lerp(sideA, sideB, internalFraction);
+                Vec3 internalB = lerp(sideB, sideA, internalFraction);
+                effectiveGraphSegments.push_back({ sideA, internalA });
+                effectiveGraphSegments.push_back({ sideB, internalB });
+            }
+
+            createGraphFromSegments(effectiveGraphSegments, effectiveCenterlineGraph, graphZ);
+        }
+
     private:
         static Vec3 lerp(const Vec3& a, const Vec3& b, float t)
         {
@@ -472,6 +520,42 @@ private:
             if (size <= 0) return 0;
             int result = index % size;
             return result < 0 ? result + size : result;
+        }
+
+        static void createGraphFromSegments(
+            const std::vector<TypeBGraphSegment>& segments,
+            zSpace::zObjectGraph& graph,
+            float graphZ
+        )
+        {
+            zSpace::zPointArray graphPositions;
+            zSpace::zIntArray graphEdgeConnects;
+            graphPositions.reserve(segments.size() * 2);
+            graphEdgeConnects.reserve(segments.size() * 2);
+
+            for (const auto& segment : segments) {
+                int startIndex = findOrAddGraphPosition(graphPositions, segment.start, graphZ);
+                int endIndex = findOrAddGraphPosition(graphPositions, segment.end, graphZ);
+                if (startIndex == endIndex) continue;
+                graphEdgeConnects.push_back(startIndex);
+                graphEdgeConnects.push_back(endIndex);
+            }
+
+            zSpace::zFnGraph graphFn(graph);
+            graphFn.create(graphPositions, graphEdgeConnects);
+        }
+
+        static int findOrAddGraphPosition(zSpace::zPointArray& graphPositions, const Vec3& position, float graphZ)
+        {
+            for (int i = 0; i < static_cast<int>(graphPositions.size()); ++i) {
+                Vec3 existing(graphPositions[i].x, graphPositions[i].y, graphZ);
+                if ((existing - Vec3(position.x, position.y, graphZ)).length() < 1e-6f) {
+                    return i;
+                }
+            }
+
+            graphPositions.push_back(zSpace::zPoint(position.x, position.y, graphZ));
+            return static_cast<int>(graphPositions.size() - 1);
         }
 
         static float dot2d(const Vec3& a, const Vec3& b)
@@ -1194,19 +1278,7 @@ private:
         int graphCount = 0;
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
-            plotData.effectiveGraphSegments.clear();
-
-            std::vector<std::pair<const std::vector<plot::TypeBGraphSegment>*, float>> candidates;
-            if (plotData.typeBBlendWeight > 0.001f) {
-                candidates.push_back({ &plotData.typeBGraphSegments, plotData.typeBBlendWeight });
-            }
-            if (plotData.typeCBlendWeight > 0.001f) {
-                candidates.push_back({ &plotData.typeCGraphSegments, plotData.typeCBlendWeight });
-            }
-            if (candidates.empty()) continue;
-
-            buildTransportMatchedSegments(plotData.effectiveGraphSegments, candidates);
-            createGraphFromSegments(plotData.effectiveGraphSegments, plotData.effectiveCenterlineGraph, m_massingZ + 0.011f);
+            plotData.buildEffectiveGraph(m_massingZ + 0.011f);
             if (plotData.effectiveGraphSegments.empty()) continue;
 
             graphCount++;
@@ -1215,68 +1287,7 @@ private:
 
         std::cout << "[URBAN CODEX LOOP] Effective typology transport graphs: " << graphCount
                   << " | graph edges: " << graphEdges
-                  << " | generic matched dominant plus birth/death" << std::endl;
-    }
-
-    void buildTransportMatchedSegments(
-        std::vector<plot::TypeBGraphSegment>& result,
-        const std::vector<std::pair<const std::vector<plot::TypeBGraphSegment>*, float>>& candidates
-    )
-    {
-        result.clear();
-        if (candidates.empty()) return;
-
-        int dominantIndex = -1;
-        float dominantWeight = -1.0f;
-        for (int i = 0; i < static_cast<int>(candidates.size()); ++i) {
-            if (!candidates[i].first || candidates[i].first->empty()) continue;
-            if (candidates[i].second > dominantWeight) {
-                dominantWeight = candidates[i].second;
-                dominantIndex = i;
-            }
-        }
-        if (dominantIndex < 0) return;
-
-        const auto& dominantSegments = *candidates[dominantIndex].first;
-        result = dominantSegments;
-        float birthCost = averageSegmentLength(dominantSegments) * 0.42f;
-
-        for (int i = 0; i < static_cast<int>(candidates.size()); ++i) {
-            if (i == dominantIndex || !candidates[i].first || candidates[i].second <= 0.001f) continue;
-
-            for (const auto& weakSegment : *candidates[i].first) {
-                float bestCost = 1e9f;
-                for (const auto& dominantSegment : dominantSegments) {
-                    bestCost = std::min(bestCost, graphSegmentCost(weakSegment, dominantSegment));
-                }
-                if (bestCost > birthCost) {
-                    result.push_back(weakSegment);
-                }
-            }
-        }
-    }
-
-    void createGraphFromSegments(
-        const std::vector<plot::TypeBGraphSegment>& segments,
-        zSpace::zObjectGraph& graph,
-        float graphZ
-    )
-    {
-        zSpace::zPointArray graphPositions;
-        zSpace::zIntArray graphEdgeConnects;
-        graphPositions.reserve(segments.size() * 2);
-        graphEdgeConnects.reserve(segments.size() * 2);
-
-        for (const auto& segment : segments) {
-            int startIndex = static_cast<int>(graphPositions.size());
-            graphPositions.push_back(zSpace::zPoint(segment.start.x, segment.start.y, graphZ));
-            graphPositions.push_back(zSpace::zPoint(segment.end.x, segment.end.y, graphZ));
-            graphEdgeConnects.push_back(startIndex);
-            graphEdgeConnects.push_back(startIndex + 1);
-        }
-
-        zSpace::zFnGraph graphFn(graph);
-        graphFn.create(graphPositions, graphEdgeConnects);
+                  << " | shared parametric topology" << std::endl;
     }
 
     void buildTypeASdfField()
@@ -1310,8 +1321,6 @@ private:
 
     void buildTypeBSdfField()
     {
-        buildTypeBSdfPrimitives();
-
         Vec3 bMin = toVec3(m_boundsMin);
         Vec3 bMax = toVec3(m_boundsMax);
         Vec3 span = bMax - bMin;
@@ -1325,10 +1334,32 @@ private:
         zSpace::zPointArray positions;
         fn.getPositions(positions);
 
-        zSpace::zScalarArray values;
-        values.reserve(positions.size());
-        for (const auto& p : positions) {
-            values.push_back(typeBSdf(toVec3(p)));
+        zSpace::zScalarArray values(positions.size(), 1e9f);
+        for (const auto& plotData : m_plots) {
+            if (plotData.effectiveGraphSegments.empty()) continue;
+
+            const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
+            const float edgeHalfDepth = buildingWidth * 0.5f;
+            if (edgeHalfDepth <= 1e-6f) continue;
+
+            zSpace::zScalarArray edgeValues;
+            fn.getScalarsAsEdgeDistance(edgeValues, const_cast<zSpace::zObjectGraph&>(plotData.effectiveCenterlineGraph), edgeHalfDepth, false);
+            if (edgeValues.size() != positions.size()) continue;
+
+            TypeBPlotSdf plotSdf;
+            addTypeBSetbackClipPlanes(plotData, plotSdf);
+
+            zSpace::zFnGraph graphFn(const_cast<zSpace::zObjectGraph&>(plotData.effectiveCenterlineGraph));
+            zSpace::zPointArray graphPositions;
+            graphFn.getVertexPositions(graphPositions);
+
+            for (size_t i = 0; i < positions.size(); ++i) {
+                Vec3 sample = toVec3(positions[i]);
+                float vertexSdf = graphVertexSquareSdf(sample, graphPositions, edgeHalfDepth);
+                float graphSdf = std::min(static_cast<float>(edgeValues[i]), vertexSdf);
+                float clipSdf = typeBSetbackClipSdf(sample, plotSdf);
+                values[i] = std::min(values[i], std::max(graphSdf, clipSdf));
+            }
         }
 
         fn.setFieldValues(values, zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
@@ -1463,6 +1494,17 @@ private:
             plotSdf.graphJointPoints.push_back(graphSegment.start);
             plotSdf.graphJointPoints.push_back(graphSegment.end);
         }
+    }
+
+    float graphVertexSquareSdf(const Vec3& p, const zSpace::zPointArray& graphPositions, float halfSize) const
+    {
+        float d = 1e9f;
+        Vec3 axisX(1.0f, 0.0f, 0.0f);
+        Vec3 axisY(0.0f, 1.0f, 0.0f);
+        for (const auto& graphPosition : graphPositions) {
+            d = std::min(d, orientedBoxSdf(p, toVec3(graphPosition), axisX, axisY, halfSize, halfSize));
+        }
+        return d;
     }
 
     float graphSegmentCost(const plot::TypeBGraphSegment& a, const plot::TypeBGraphSegment& b) const
