@@ -197,7 +197,14 @@ private:
         std::vector<CenterlineGraphVertex> centerlineGraphVertices;
         std::vector<CenterlineGraphEdge> centerlineGraphEdges;
 
-        void buildCenterlineGraph(float roadSetback, float localSetback, float buildingWidth)
+        void buildCenterlineGraph(
+            float roadSetback,
+            float localSetback,
+            float buildingWidth,
+            float primaryRoadHalfWidth,
+            float secondaryRoadHalfWidth,
+            float tertiaryRoadHalfWidth
+        )
         {
             centerlineGraphVertices.clear();
             centerlineGraphEdges.clear();
@@ -220,7 +227,13 @@ private:
                 Vec3 inwardNormal = dot2d(center - midpoint, normalA) >= 0.0f ? normalA : normalA * -1.0f;
 
                 float setback = isPrimaryOrSecondary(edge.boundaryType) ? roadSetback : localSetback;
-                float offsetDistance = setback + buildingWidth * 0.5f;
+                float roadHalfWidth = roadHalfWidthForBoundary(
+                    edge.boundaryType,
+                    primaryRoadHalfWidth,
+                    secondaryRoadHalfWidth,
+                    tertiaryRoadHalfWidth
+                );
+                float offsetDistance = setback + buildingWidth * 0.5f + roadHalfWidth;
                 Vec3 offset = inwardNormal * offsetDistance;
                 offsetLines.push_back({ edge.a + offset, edge.b + offset, offsetDistance });
             }
@@ -267,6 +280,22 @@ private:
         static bool isPrimaryOrSecondary(PlotBoundaryType boundaryType)
         {
             return boundaryType == PlotBoundaryType::PrimaryRoad || boundaryType == PlotBoundaryType::SecondaryRoad;
+        }
+
+        static float roadHalfWidthForBoundary(
+            PlotBoundaryType boundaryType,
+            float primaryRoadHalfWidth,
+            float secondaryRoadHalfWidth,
+            float tertiaryRoadHalfWidth
+        )
+        {
+            switch (boundaryType) {
+                case PlotBoundaryType::PrimaryRoad: return primaryRoadHalfWidth;
+                case PlotBoundaryType::SecondaryRoad: return secondaryRoadHalfWidth;
+                case PlotBoundaryType::TertiaryRoad: return tertiaryRoadHalfWidth;
+                case PlotBoundaryType::PlotSplitLine: return 0.0f;
+            }
+            return 0.0f;
         }
 
         static bool intersectLines2d(const Vec3& a0, const Vec3& a1, const Vec3& b0, const Vec3& b1, Vec3& result)
@@ -626,7 +655,10 @@ private:
             plotData.buildCenterlineGraph(
                 metersToModelUnits(m_typeARoadSetbackMeters),
                 metersToModelUnits(m_typeALocalSetbackMeters),
-                width
+                width,
+                primaryStreetWidth() * 0.5f,
+                secondaryStreetWidth() * 0.5f,
+                tertiaryStreetWidth() * 0.5f
             );
             graphEdges += static_cast<int>(plotData.centerlineGraphEdges.size());
         }
@@ -914,7 +946,7 @@ private:
 
     void drawTypeACenterlineGraphs(Renderer& renderer)
     {
-        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
+        const Color graphColor(1.0f, 0.0f, 1.0f, 1.0f);
 
         for (const auto& plotData : m_plots) {
             for (const auto& edge : plotData.centerlineGraphEdges) {

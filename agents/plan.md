@@ -52,6 +52,7 @@ The local VLM interface is Ollama.
   - each plot owns a connected Type A centerline graph
   - graph vertex count equals plot vertex count
   - each graph edge stores its offset distance from the matching boundary edge
+  - graph offset = setback distance + half building width + half road width for primary/secondary/tertiary frontages
   - future building typologies should choose frontage/setback/open-side rules from these edge tags and graph edges
 - Make the sketch deterministic:
   - fixed top-down orthographic camera
