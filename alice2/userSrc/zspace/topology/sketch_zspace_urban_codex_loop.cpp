@@ -248,6 +248,14 @@ private:
             Vec3 end;
         };
 
+        struct GraphSlotAccumulator {
+            int slotId = -1;
+            float weight = 0.0f;
+            Vec3 start = Vec3(0.0f, 0.0f, 0.0f);
+            Vec3 end = Vec3(0.0f, 0.0f, 0.0f);
+            float activation = 0.0f;
+        };
+
         int id;
         int faceIndex;
         BuildingType buildingType = BuildingType::TypeA;
@@ -480,70 +488,160 @@ private:
             float bWeight = typeBBlendWeight / totalWeight;
             float cWeight = typeCBlendWeight / totalWeight;
 
-            if (aWeight > 0.001f) {
-                appendSegments(effectiveGraphSegments, makeTypeAEffectiveSegments(p, typeAEdgeLengthFraction));
-            }
+            std::vector<GraphSlotAccumulator> slots;
+            seedRestSlots(slots, p);
+            addTypeASlots(slots, p, typeAEdgeLengthFraction, aWeight);
+            addTypeBSlots(slots, p, typeBXFraction, typeBInternalEdgeFraction, typeBOrientationIndex, bWeight);
+            addTypeCSlots(slots, p, typeCEdgeFraction, typeCOrientationIndex, cWeight);
 
-            if (bWeight > 0.001f) {
-                appendSegments(
-                    effectiveGraphSegments,
-                    makeTypeBEffectiveSegments(p, typeBXFraction, typeBInternalEdgeFraction, typeBOrientationIndex)
-                );
-            }
-
-            if (cWeight > 0.001f) {
-                appendSegments(
-                    effectiveGraphSegments,
-                    makeTypeCEffectiveSegments(p, typeCEdgeFraction, typeCOrientationIndex)
-                );
+            const float slotActivationThreshold = 0.08f;
+            for (const auto& slot : slots) {
+                if (slot.activation < slotActivationThreshold || slot.weight <= 1e-6f) continue;
+                Vec3 start = slot.start * (1.0f / slot.weight);
+                Vec3 end = slot.end * (1.0f / slot.weight);
+                start.z = graphZ;
+                end.z = graphZ;
+                if ((end - start).length() <= 1e-6f) continue;
+                effectiveGraphSegments.push_back({ start, end });
             }
 
             createGraphFromSegments(effectiveGraphSegments, effectiveCenterlineGraph, graphZ);
         }
 
     private:
-        static void appendSegments(std::vector<TypeBGraphSegment>& target, const std::vector<TypeBGraphSegment>& source)
+        static void addWeightedSlot(
+            std::vector<GraphSlotAccumulator>& slots,
+            int slotId,
+            const Vec3& start,
+            const Vec3& end,
+            float weight,
+            float activation = 1.0f
+        )
         {
-            target.insert(target.end(), source.begin(), source.end());
+            if (weight <= 0.0f) return;
+
+            for (auto& slot : slots) {
+                if (slot.slotId != slotId) continue;
+                slot.start += start * weight;
+                slot.end += end * weight;
+                slot.weight += weight;
+                slot.activation += activation * weight;
+                return;
+            }
+
+            GraphSlotAccumulator slot;
+            slot.slotId = slotId;
+            slot.weight = weight;
+            slot.start = start * weight;
+            slot.end = end * weight;
+            slot.activation = activation * weight;
+            slots.push_back(slot);
         }
 
-        static std::vector<TypeBGraphSegment> makeTypeAEffectiveSegments(const std::vector<Vec3>& p, float edgeLengthFraction)
+        static void addMorphedSlot(
+            std::vector<GraphSlotAccumulator>& slots,
+            int slotId,
+            const Vec3& restStart,
+            const Vec3& restEnd,
+            const Vec3& activeStart,
+            const Vec3& activeEnd,
+            float weight
+        )
         {
-            std::vector<TypeBGraphSegment> segments;
+            if (weight <= 0.0f) return;
+
+            for (auto& slot : slots) {
+                if (slot.slotId != slotId) continue;
+                slot.start += (activeStart - restStart) * weight;
+                slot.end += (activeEnd - restEnd) * weight;
+                slot.activation += weight;
+                return;
+            }
+
+            GraphSlotAccumulator slot;
+            slot.slotId = slotId;
+            slot.weight = 1.0f;
+            slot.start = restStart + (activeStart - restStart) * weight;
+            slot.end = restEnd + (activeEnd - restEnd) * weight;
+            slot.activation = weight;
+            slots.push_back(slot);
+        }
+
+        static void seedRestSlots(std::vector<GraphSlotAccumulator>& slots, const std::vector<Vec3>& p)
+        {
             const int n = static_cast<int>(p.size());
-            if (n < 4) return segments;
+            if (n < 4) return;
+
+            for (int i = 0; i < n; ++i) {
+                addWeightedSlot(slots, boundarySlotId(i), p[i], p[i], 1.0f, 0.0f);
+            }
+
+            for (int i = 0; i < n; ++i) {
+                int a = wrappedIndex(i, n);
+                int afterA = (a + 1) % n;
+                int b = (a + n / 2) % n;
+                int afterB = (b + 1) % n;
+                Vec3 midA = lerp(p[a], p[afterA], 0.5f);
+                Vec3 midB = lerp(p[b], p[afterB], 0.5f);
+                addWeightedSlot(slots, internalSlotId(i, 0), midA, midA, 1.0f, 0.0f);
+                addWeightedSlot(slots, internalSlotId(i, 1), midB, midB, 1.0f, 0.0f);
+            }
+        }
+
+        static void addTypeASlots(
+            std::vector<GraphSlotAccumulator>& slots,
+            const std::vector<Vec3>& p,
+            float edgeLengthFraction,
+            float weight
+        )
+        {
+            const int n = static_cast<int>(p.size());
+            if (n < 4) return;
 
             edgeLengthFraction = std::clamp(edgeLengthFraction, 0.25f, 1.0f);
             if (edgeLengthFraction >= 0.999f) {
-                segments.reserve(n);
                 for (int i = 0; i < n; ++i) {
-                    segments.push_back({ p[i], p[(i + 1) % n] });
+                    addMorphedSlot(slots, boundarySlotId(i), p[i], p[i], p[i], p[(i + 1) % n], weight);
                 }
-                return segments;
+                return;
             }
 
             int corners[2] = { 0, n / 2 };
-            segments.reserve(4);
             for (int corner : corners) {
                 int prev = wrappedIndex(corner - 1, n);
                 int next = wrappedIndex(corner + 1, n);
-                segments.push_back({ p[corner], lerp(p[corner], p[prev], edgeLengthFraction) });
-                segments.push_back({ p[corner], lerp(p[corner], p[next], edgeLengthFraction) });
+                addMorphedSlot(
+                    slots,
+                    boundarySlotId(prev),
+                    p[prev],
+                    p[prev],
+                    lerp(p[prev], p[corner], 1.0f - edgeLengthFraction),
+                    p[corner],
+                    weight
+                );
+                addMorphedSlot(
+                    slots,
+                    boundarySlotId(corner),
+                    p[corner],
+                    p[corner],
+                    p[corner],
+                    lerp(p[corner], p[next], edgeLengthFraction),
+                    weight
+                );
             }
-
-            return segments;
         }
 
-        static std::vector<TypeBGraphSegment> makeTypeBEffectiveSegments(
+        static void addTypeBSlots(
+            std::vector<GraphSlotAccumulator>& slots,
             const std::vector<Vec3>& p,
             float xFraction,
             float internalEdgeFraction,
-            int orientationIndex
+            int orientationIndex,
+            float weight
         )
         {
-            std::vector<TypeBGraphSegment> segments;
             const int n = static_cast<int>(p.size());
-            if (n < 4) return segments;
+            if (n < 4) return;
 
             xFraction = std::clamp(xFraction, 0.25f, 0.75f);
             internalEdgeFraction = std::clamp(internalEdgeFraction, 0.0f, 0.5f);
@@ -558,27 +656,23 @@ private:
             Vec3 partialA = lerp(midA, midB, internalEdgeFraction);
             Vec3 partialB = lerp(midB, midA, internalEdgeFraction);
 
-            segments.push_back({ p[a], midA });
-            if ((partialA - midA).length() > 1e-6f) {
-                segments.push_back({ midA, partialA });
-            }
-            segments.push_back({ p[b], midB });
-            if ((partialB - midB).length() > 1e-6f) {
-                segments.push_back({ midB, partialB });
-            }
-
-            return segments;
+            int pairId = wrappedIndex(orientationIndex, n);
+            addMorphedSlot(slots, boundarySlotId(a), p[a], p[a], p[a], midA, weight);
+            addMorphedSlot(slots, internalSlotId(pairId, 0), midA, midA, midA, partialA, weight);
+            addMorphedSlot(slots, boundarySlotId(b), p[b], p[b], p[b], midB, weight);
+            addMorphedSlot(slots, internalSlotId(pairId, 1), midB, midB, midB, partialB, weight);
         }
 
-        static std::vector<TypeBGraphSegment> makeTypeCEffectiveSegments(
+        static void addTypeCSlots(
+            std::vector<GraphSlotAccumulator>& slots,
             const std::vector<Vec3>& p,
             float edgeFraction,
-            int orientationIndex
+            int orientationIndex,
+            float weight
         )
         {
-            std::vector<TypeBGraphSegment> segments;
             const int n = static_cast<int>(p.size());
-            if (n < 4) return segments;
+            if (n < 4) return;
 
             edgeFraction = std::clamp(edgeFraction, 0.5f, 1.0f);
             int a0 = wrappedIndex(orientationIndex, n);
@@ -586,10 +680,18 @@ private:
             int b0 = (a0 + n / 2) % n;
             int b1 = (b0 + 1) % n;
 
-            segments.push_back({ p[a0], lerp(p[a0], p[a1], edgeFraction) });
-            segments.push_back({ p[b0], lerp(p[b0], p[b1], edgeFraction) });
+            addMorphedSlot(slots, boundarySlotId(a0), p[a0], p[a0], p[a0], lerp(p[a0], p[a1], edgeFraction), weight);
+            addMorphedSlot(slots, boundarySlotId(b0), p[b0], p[b0], p[b0], lerp(p[b0], p[b1], edgeFraction), weight);
+        }
 
-            return segments;
+        static int boundarySlotId(int edgeIndex)
+        {
+            return edgeIndex;
+        }
+
+        static int internalSlotId(int pairIndex, int side)
+        {
+            return 100 + pairIndex * 2 + std::clamp(side, 0, 1);
         }
 
         static Vec3 lerp(const Vec3& a, const Vec3& b, float t)
