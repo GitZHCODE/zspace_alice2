@@ -185,6 +185,8 @@ private:
         float typeBXFraction = 0.5f;
         float typeBInternalEdgeFraction = 0.25f;
         float typeCEdgeFraction = 0.75f;
+        float typeBOrientationIndex = 0.0f;
+        float typeCOrientationIndex = 0.0f;
     };
 
     struct TypologyAnchor {
@@ -262,6 +264,8 @@ private:
         float typeBYFraction = 0.5f;
         float typeBInternalEdgeFraction = 0.5f;
         float typeCEdgeFraction = 0.75f;
+        int typeBOrientationIndex = 0;
+        int typeCOrientationIndex = 0;
         std::vector<Vec3> vertices;
         std::vector<PlotBoundaryEdge> boundaryEdges;
         std::vector<CenterlineGraphEdge> centerlineGraphEdges;
@@ -344,13 +348,14 @@ private:
             graphFn.create(graphPositions, graphEdgeConnects);
         }
 
-        void buildTypeBSGraph(float xFraction, float internalEdgeFraction, float graphZ)
+        void buildTypeBSGraph(float xFraction, float internalEdgeFraction, int orientationIndex, float graphZ)
         {
             xFraction = std::clamp(xFraction, 0.0f, 1.0f);
             internalEdgeFraction = std::clamp(internalEdgeFraction, 0.0f, 0.5f);
             typeBXFraction = xFraction;
             typeBYFraction = 1.0f - typeBXFraction;
             typeBInternalEdgeFraction = internalEdgeFraction;
+            typeBOrientationIndex = orientationIndex;
             typeBGraphSegments.clear();
 
             zSpace::zFnGraph sourceFn(centerlineGraph);
@@ -365,9 +370,10 @@ private:
             }
 
             const int n = static_cast<int>(p.size());
-            const int a = 0;
-            const int afterA = 1;
-            const int b = n / 2;
+            const int base = wrappedIndex(orientationIndex, n);
+            const int a = base;
+            const int afterA = (a + 1) % n;
+            const int b = (a + n / 2) % n;
             const int afterB = (b + 1) % n;
 
             Vec3 midA = lerp(p[a], p[afterA], typeBXFraction);
@@ -407,10 +413,11 @@ private:
             graphFn.create(graphPositions, graphEdgeConnects);
         }
 
-        void buildTypeCParallelGraph(float edgeFraction, float graphZ)
+        void buildTypeCParallelGraph(float edgeFraction, int orientationIndex, float graphZ)
         {
             edgeFraction = std::clamp(edgeFraction, 0.5f, 1.0f);
             typeCEdgeFraction = edgeFraction;
+            typeCOrientationIndex = orientationIndex;
             typeCGraphSegments.clear();
 
             zSpace::zFnGraph sourceFn(centerlineGraph);
@@ -425,9 +432,9 @@ private:
             }
 
             const int n = static_cast<int>(p.size());
-            const int a0 = 0;
-            const int a1 = 1;
-            const int b0 = n / 2;
+            const int a0 = wrappedIndex(orientationIndex, n);
+            const int a1 = (a0 + 1) % n;
+            const int b0 = (a0 + n / 2) % n;
             const int b1 = (b0 + 1) % n;
 
             Vec3 aEnd = lerp(p[a0], p[a1], edgeFraction);
@@ -456,6 +463,13 @@ private:
         static Vec3 lerp(const Vec3& a, const Vec3& b, float t)
         {
             return a + (b - a) * t;
+        }
+
+        static int wrappedIndex(int index, int size)
+        {
+            if (size <= 0) return 0;
+            int result = index % size;
+            return result < 0 ? result + size : result;
         }
 
         static float dot2d(const Vec3& a, const Vec3& b)
@@ -716,6 +730,7 @@ private:
         bHalf.buildingWidthMeters = 20.0f;
         bHalf.typeBXFraction = 0.5f;
         bHalf.typeBInternalEdgeFraction = 0.25f;
+        bHalf.typeBOrientationIndex = 1.0f;
 
         ShapeParams aFull;
         aFull.typeBWeight = 0.0f;
@@ -728,6 +743,7 @@ private:
         cParallel.typeCWeight = 1.0f;
         cParallel.buildingWidthMeters = 18.0f;
         cParallel.typeCEdgeFraction = 1.0f;
+        cParallel.typeCOrientationIndex = 1.0f;
 
         ShapeParams aLong;
         aLong.typeBWeight = 0.0f;
@@ -978,6 +994,8 @@ private:
         result.typeBXFraction = 0.0f;
         result.typeBInternalEdgeFraction = 0.0f;
         result.typeCEdgeFraction = 0.0f;
+        result.typeBOrientationIndex = 0.0f;
+        result.typeCOrientationIndex = 0.0f;
         float totalWeight = 0.0f;
 
         for (size_t i = 0; i < m_typologyAnchors.size() && i < weights.size(); ++i) {
@@ -992,6 +1010,8 @@ private:
             result.typeBXFraction += anchor.params.typeBXFraction * w;
             result.typeBInternalEdgeFraction += anchor.params.typeBInternalEdgeFraction * w;
             result.typeCEdgeFraction += anchor.params.typeCEdgeFraction * w;
+            result.typeBOrientationIndex += anchor.params.typeBOrientationIndex * w;
+            result.typeCOrientationIndex += anchor.params.typeCOrientationIndex * w;
         }
 
         if (totalWeight <= 1e-6f) {
@@ -1005,6 +1025,8 @@ private:
         result.typeBXFraction = std::clamp(result.typeBXFraction / totalWeight, 0.25f, 0.75f);
         result.typeBInternalEdgeFraction = std::clamp(result.typeBInternalEdgeFraction / totalWeight, 0.0f, 0.5f);
         result.typeCEdgeFraction = std::clamp(result.typeCEdgeFraction / totalWeight, 0.5f, 1.0f);
+        result.typeBOrientationIndex = std::clamp(result.typeBOrientationIndex / totalWeight, 0.0f, 1.0f);
+        result.typeCOrientationIndex = std::clamp(result.typeCOrientationIndex / totalWeight, 0.0f, 1.0f);
         return result;
     }
 
@@ -1018,6 +1040,8 @@ private:
         params.typeBXFraction = randomTypeBXFraction(plotId);
         params.typeBInternalEdgeFraction = randomTypeBInternalEdgeFraction(plotId);
         params.typeCEdgeFraction = randomTypeCEdgeFraction(plotId);
+        params.typeBOrientationIndex = 0.0f;
+        params.typeCOrientationIndex = 0.0f;
         return params;
     }
 
@@ -1041,6 +1065,8 @@ private:
         plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
         plotData.typeBInternalEdgeFraction = gene.typeBInternalEdgeFraction;
         plotData.typeCEdgeFraction = gene.typeCEdgeFraction;
+        plotData.typeBOrientationIndex = static_cast<int>(std::round(gene.typeBOrientationIndex));
+        plotData.typeCOrientationIndex = static_cast<int>(std::round(gene.typeCOrientationIndex));
     }
 
     float deterministicUnitRandom(int id, int salt) const
@@ -1122,7 +1148,12 @@ private:
             if (plotData.typeBBlendWeight <= 0.001f) continue;
 
             plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
-            plotData.buildTypeBSGraph(plotData.typeBXFraction, plotData.typeBInternalEdgeFraction, m_massingZ + 0.009f);
+            plotData.buildTypeBSGraph(
+                plotData.typeBXFraction,
+                plotData.typeBInternalEdgeFraction,
+                plotData.typeBOrientationIndex,
+                m_massingZ + 0.009f
+            );
             graphCount++;
             graphEdges += static_cast<int>(plotData.typeBGraphSegments.size());
         }
@@ -1141,7 +1172,11 @@ private:
         for (auto& plotData : m_plots) {
             if (plotData.typeCBlendWeight <= 0.001f) continue;
 
-            plotData.buildTypeCParallelGraph(plotData.typeCEdgeFraction, m_massingZ + 0.009f);
+            plotData.buildTypeCParallelGraph(
+                plotData.typeCEdgeFraction,
+                plotData.typeCOrientationIndex,
+                m_massingZ + 0.009f
+            );
             graphCount++;
             graphEdges += static_cast<int>(plotData.typeCGraphSegments.size());
         }
