@@ -143,7 +143,7 @@ private:
     float m_typeAEdgeLengthFraction = 0.65f;
     float m_lastBuiltTypeAEdgeLengthFraction = -1.0f;
     float m_openSpaceZ = 0.001f;
-    float m_p = 50.0f;
+    float m_p = 12.0f;
     float m_lastBuiltP = -1.0f;
     float m_siteLongDimensionMeters = 500.0f;
     float m_modelUnitsPerMeter = 1.0f;
@@ -344,6 +344,7 @@ private:
     zSpace::zObjectGraph m_typeAIsoContour;
     std::vector<TypeASdfBox> m_typeASdfA;
     std::vector<TypeASdfBox> m_typeASdfB;
+    std::vector<TypeASdfBox> m_typeASdfC;
 
     static Vec3 toVec3(const zSpace::zVector& p)
     {
@@ -734,6 +735,7 @@ private:
     {
         m_typeASdfA.clear();
         m_typeASdfB.clear();
+        m_typeASdfC.clear();
 
         const float buildingWidth = metersToModelUnits(m_typeAMaxWidthMeters);
         const float cornerHalfSize = buildingWidth * 0.6f;
@@ -742,6 +744,8 @@ private:
         const bool fullGraph = edgeLengthFraction >= 0.999f;
 
         for (auto& plotData : m_plots) {
+            addTypeASetbackSubtractBoxes(plotData);
+
             zSpace::zFnGraph graphFn(plotData.centerlineGraph);
             zSpace::zPointArray graphPositions;
             graphFn.getVertexPositions(graphPositions);
@@ -785,6 +789,30 @@ private:
             for (int cornerIndex : cornerIndices) {
                 addTypeAIncidentEdgeStrips(plotData, graphPositions, cornerIndex, edgeLengthFraction, edgeHalfDepth);
             }
+        }
+    }
+
+    void addTypeASetbackSubtractBoxes(const plot& plotData)
+    {
+        for (const auto& edge : plotData.boundaryEdges) {
+            Vec3 edgeVector = edge.b - edge.a;
+            float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
+            float setback = setbackForTypeABoundary(edge.boundaryType);
+            if (edgeLength < 1e-6f || setback <= 1e-6f) continue;
+
+            Vec3 tangent = normalized2d(edgeVector);
+            Vec3 normalA(-tangent.y, tangent.x, 0.0f);
+            Vec3 midpoint = (edge.a + edge.b) * 0.5f;
+            Vec3 inwardNormal = dot2d(plotData.center - midpoint, normalA) >= 0.0f ? normalA : normalA * -1.0f;
+            Vec3 center = midpoint + inwardNormal * (setback * 0.5f);
+
+            m_typeASdfC.push_back({
+                center,
+                tangent,
+                inwardNormal,
+                edgeLength * 0.5f,
+                setback * 0.5f
+            });
         }
     }
 
@@ -1092,17 +1120,35 @@ private:
         return primaryStreetWidth() * (1.0f / 3.0f);
     }
 
+    float setbackForTypeABoundary(PlotBoundaryType boundaryType) const
+    {
+        switch (boundaryType) {
+            case PlotBoundaryType::PrimaryRoad:
+            case PlotBoundaryType::SecondaryRoad:
+                return metersToModelUnits(m_typeARoadSetbackMeters);
+            case PlotBoundaryType::TertiaryRoad:
+            case PlotBoundaryType::PlotSplitLine:
+                return metersToModelUnits(m_typeALocalSetbackMeters);
+        }
+        return metersToModelUnits(m_typeALocalSetbackMeters);
+    }
+
     float typeASdf(const Vec3& p) const
     {
-        float d = 1e9f;
+        float ab = 1e9f;
         for (const auto& box : m_typeASdfA) {
-            d = std::min(d, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+            ab = std::min(ab, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
         }
         for (const auto& box : m_typeASdfB) {
-            d = std::min(d, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+            ab = std::min(ab, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
         }
 
-        return d;
+        float c = 1e9f;
+        for (const auto& box : m_typeASdfC) {
+            c = std::min(c, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+        }
+
+        return std::max(ab, -c);
     }
 
     float orientedBoxSdf(const Vec3& p, const Vec3& center, const Vec3& axisX, const Vec3& axisY, float halfX, float halfY) const
