@@ -498,17 +498,20 @@ private:
             candidates.push_back({ bWeight, makeTypeBEffectiveSegments(p, typeBXFraction, typeBInternalEdgeFraction, typeBOrientationIndex) });
             candidates.push_back({ cWeight, makeTypeCEffectiveSegments(p, typeCEdgeFraction, typeCOrientationIndex) });
 
-            std::sort(candidates.begin(), candidates.end(), [](const GraphCandidate& a, const GraphCandidate& b) {
-                return a.weight > b.weight;
-            });
+            candidates.erase(
+                std::remove_if(candidates.begin(), candidates.end(), [](const GraphCandidate& candidate) {
+                    return candidate.weight <= 0.001f || candidate.segments.empty();
+                }),
+                candidates.end()
+            );
 
-            if (candidates.empty() || candidates[0].segments.empty()) return;
-            if (candidates.size() == 1 || candidates[1].weight <= 0.001f || candidates[1].segments.empty()) {
+            normalizeCandidateWeights(candidates);
+            if (candidates.empty()) return;
+            if (candidates.size() == 1) {
                 effectiveGraphSegments = candidates[0].segments;
             }
             else {
-                float blend = candidates[1].weight / std::max(candidates[0].weight + candidates[1].weight, 1e-6f);
-                effectiveGraphSegments = transportGraphByFgw(candidates[0].segments, candidates[1].segments, blend);
+                effectiveGraphSegments = fgwBarycenterGraph(candidates);
             }
 
             createGraphFromSegments(effectiveGraphSegments, effectiveCenterlineGraph, graphZ);
@@ -518,6 +521,75 @@ private:
         static void appendSegments(std::vector<TypeBGraphSegment>& target, const std::vector<TypeBGraphSegment>& source)
         {
             target.insert(target.end(), source.begin(), source.end());
+        }
+
+        static void normalizeCandidateWeights(std::vector<GraphCandidate>& candidates)
+        {
+            float total = 0.0f;
+            for (const auto& candidate : candidates) total += std::max(candidate.weight, 0.0f);
+            if (total <= 1e-6f) return;
+            for (auto& candidate : candidates) candidate.weight = std::max(candidate.weight, 0.0f) / total;
+        }
+
+        static std::vector<TypeBGraphSegment> fgwBarycenterGraph(const std::vector<GraphCandidate>& candidates)
+        {
+            int seedIndex = 0;
+            int seedNodeCount = -1;
+            float seedWeight = -1.0f;
+            for (int i = 0; i < static_cast<int>(candidates.size()); ++i) {
+                GraphDescriptor descriptor = makeGraphDescriptor(candidates[i].segments);
+                int nodeCount = static_cast<int>(descriptor.nodes.size());
+                if (nodeCount > seedNodeCount || (nodeCount == seedNodeCount && candidates[i].weight > seedWeight)) {
+                    seedIndex = i;
+                    seedNodeCount = nodeCount;
+                    seedWeight = candidates[i].weight;
+                }
+            }
+
+            GraphDescriptor barycenter = makeGraphDescriptor(candidates[seedIndex].segments);
+            if (barycenter.nodes.empty() || barycenter.edges.empty()) return candidates[seedIndex].segments;
+
+            std::vector<GraphDescriptor> anchors;
+            anchors.reserve(candidates.size());
+            for (const auto& candidate : candidates) {
+                anchors.push_back(makeGraphDescriptor(candidate.segments));
+            }
+
+            constexpr int barycenterIterations = 8;
+            for (int iter = 0; iter < barycenterIterations; ++iter) {
+                std::vector<Vec3> nextNodes(barycenter.nodes.size(), Vec3(0.0f, 0.0f, barycenter.nodes[0].z));
+                std::vector<float> nodeMass(barycenter.nodes.size(), 0.0f);
+                float rowMass = 1.0f / static_cast<float>(barycenter.nodes.size());
+
+                for (int a = 0; a < static_cast<int>(anchors.size()); ++a) {
+                    if (anchors[a].nodes.empty()) continue;
+                    std::vector<std::vector<float>> transport = solveFgwTransport(barycenter, anchors[a], 0.65f, 0.08f, 6, 18);
+                    for (int i = 0; i < static_cast<int>(barycenter.nodes.size()); ++i) {
+                        Vec3 mapped(0.0f, 0.0f, barycenter.nodes[i].z);
+                        for (int j = 0; j < static_cast<int>(anchors[a].nodes.size()); ++j) {
+                            mapped += anchors[a].nodes[j] * (transport[i][j] / std::max(rowMass, 1e-6f));
+                        }
+                        nextNodes[i] += mapped * candidates[a].weight;
+                        nodeMass[i] += candidates[a].weight;
+                    }
+                }
+
+                for (int i = 0; i < static_cast<int>(barycenter.nodes.size()); ++i) {
+                    if (nodeMass[i] <= 1e-6f) continue;
+                    Vec3 target = nextNodes[i] * (1.0f / nodeMass[i]);
+                    barycenter.nodes[i] = lerp(barycenter.nodes[i], target, 0.85f);
+                }
+
+                barycenter.structure = graphShortestPathMatrix(barycenter);
+            }
+
+            std::vector<TypeBGraphSegment> barycenterSegments;
+            barycenterSegments.reserve(barycenter.edges.size());
+            for (const auto& edge : barycenter.edges) {
+                barycenterSegments.push_back({ barycenter.nodes[edge.first], barycenter.nodes[edge.second] });
+            }
+
+            return barycenterSegments;
         }
 
         static std::vector<TypeBGraphSegment> transportGraphByFgw(
