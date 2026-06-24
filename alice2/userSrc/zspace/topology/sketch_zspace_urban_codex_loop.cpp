@@ -733,7 +733,7 @@ private:
         cParallel.typeBWeight = 0.0f;
         cParallel.typeCWeight = 1.0f;
         cParallel.buildingWidthMeters = 18.0f;
-        cParallel.typeCEdgeFraction = 0.75f;
+        cParallel.typeCEdgeFraction = 1.0f;
 
         ShapeParams aLong;
         aLong.typeBWeight = 0.0f;
@@ -935,6 +935,34 @@ private:
             return fallbackShapeParams(0);
         }
 
+        if (m_typologyAnchors.size() == 4) {
+            Vec3 bMin = toVec3(m_boundsMin);
+            Vec3 bMax = toVec3(m_boundsMax);
+            float u = saturate((position.x - bMin.x) / std::max(bMax.x - bMin.x, 1e-6f));
+            float v = saturate((position.y - bMin.y) / std::max(bMax.y - bMin.y, 1e-6f));
+
+            std::vector<float> weights = {
+                (1.0f - u) * (1.0f - v),
+                u * (1.0f - v),
+                (1.0f - u) * v,
+                u * v
+            };
+            return blendedShapeParams(weights);
+        }
+
+        std::vector<float> weights;
+        weights.reserve(m_typologyAnchors.size());
+        for (const auto& anchor : m_typologyAnchors) {
+            float radius = std::max(anchor.radius, 1e-6f);
+            float d = (position - anchor.position).length() / radius;
+            weights.push_back(anchor.strength / (d * d + 0.015f));
+        }
+
+        return blendedShapeParams(weights);
+    }
+
+    ShapeParams blendedShapeParams(const std::vector<float>& weights) const
+    {
         ShapeParams result;
         result.typeBWeight = 0.0f;
         result.typeCWeight = 0.0f;
@@ -945,10 +973,9 @@ private:
         result.typeCEdgeFraction = 0.0f;
         float totalWeight = 0.0f;
 
-        for (const auto& anchor : m_typologyAnchors) {
-            float radius = std::max(anchor.radius, 1e-6f);
-            float d = (position - anchor.position).length() / radius;
-            float w = anchor.strength / (d * d + 0.015f);
+        for (size_t i = 0; i < m_typologyAnchors.size() && i < weights.size(); ++i) {
+            float w = std::max(weights[i], 0.0f);
+            const auto& anchor = m_typologyAnchors[i];
             totalWeight += w;
 
             result.typeBWeight += anchor.params.typeBWeight * w;
