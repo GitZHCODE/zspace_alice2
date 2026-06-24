@@ -165,6 +165,11 @@ private:
         PlotSplitLine
     };
 
+    enum class BuildingType {
+        TypeA,
+        TypeB
+    };
+
     struct StreetEdge {
         Vec3 a;
         Vec3 b;
@@ -210,6 +215,7 @@ private:
 
         int id;
         int faceIndex;
+        BuildingType buildingType = BuildingType::TypeA;
         Vec3 center;
         float typeABuildingWidthMeters = 25.0f;
         float typeAEdgeLengthFraction = 1.0f;
@@ -692,6 +698,7 @@ private:
             plot plotData;
             plotData.id = static_cast<int>(m_plots.size());
             plotData.faceIndex = i;
+            plotData.buildingType = randomBuildingType(plotData.id);
             plotData.center = toVec3(face.getCenter());
             plotData.typeABuildingWidthMeters = randomTypeABuildingWidthMeters(plotData.id);
             plotData.typeAEdgeLengthFraction = randomTypeAEdgeLengthFraction(plotData.id);
@@ -721,6 +728,7 @@ private:
 
         std::cout << "[URBAN CODEX LOOP] Plot records: " << m_plots.size() << std::endl;
         logPlotBoundarySummary();
+        logBuildingTypeSummary();
     }
 
     void logPlotBoundarySummary() const
@@ -747,10 +755,32 @@ private:
                   << " split: " << split << std::endl;
     }
 
+    void logBuildingTypeSummary() const
+    {
+        int typeA = 0;
+        int typeB = 0;
+        for (const auto& plotData : m_plots) {
+            if (plotData.buildingType == BuildingType::TypeA) {
+                typeA++;
+            }
+            else if (plotData.buildingType == BuildingType::TypeB) {
+                typeB++;
+            }
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Building type assignment | Type A: " << typeA
+                  << " Type B: " << typeB << std::endl;
+    }
+
     float deterministicUnitRandom(int id, int salt) const
     {
         float value = std::sin(static_cast<float>((id + 1) * 73 + salt * 193) * 12.9898f) * 43758.5453f;
         return value - std::floor(value);
+    }
+
+    BuildingType randomBuildingType(int plotId) const
+    {
+        return deterministicUnitRandom(plotId, 4) < 0.5f ? BuildingType::TypeA : BuildingType::TypeB;
     }
 
     float randomTypeABuildingWidthMeters(int plotId) const
@@ -807,12 +837,14 @@ private:
     {
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
+            if (plotData.buildingType != BuildingType::TypeB) continue;
+
             plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
             plotData.buildTypeBSGraph(plotData.typeBXFraction, m_massingZ + 0.009f);
             graphEdges += 3;
         }
 
-        std::cout << "[URBAN CODEX LOOP] Type B S graphs: " << m_plots.size()
+        std::cout << "[URBAN CODEX LOOP] Type B S graphs: " << graphEdges / 3
                   << " | graph edges: " << graphEdges
                   << " | X random range 0.25-0.75"
                   << " | Y = 1 - X" << std::endl;
@@ -852,6 +884,8 @@ private:
         m_typeASdfPlots.clear();
 
         for (auto& plotData : m_plots) {
+            if (plotData.buildingType != BuildingType::TypeA) continue;
+
             const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
             const float cornerHalfSize = buildingWidth * 0.6f;
             const float edgeHalfDepth = buildingWidth * 0.5f;
@@ -1363,6 +1397,7 @@ private:
         graphDisplay.vertexSize = 5.0f;
 
         for (auto& plotData : m_plots) {
+            if (plotData.buildingType != BuildingType::TypeA) continue;
             scene().draw(plotData.centerlineGraph, graphDisplay);
         }
     }
@@ -1380,6 +1415,7 @@ private:
         graphDisplay.vertexSize = 6.0f;
 
         for (auto& plotData : m_plots) {
+            if (plotData.buildingType != BuildingType::TypeB) continue;
             scene().draw(plotData.typeBCenterlineGraph, graphDisplay);
         }
     }

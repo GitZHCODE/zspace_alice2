@@ -141,6 +141,7 @@ alice2\run_with_zspace.bat
 - Codex remains responsible for all C++ updates.
 - Codex preserves minimum building dimensions and acceptable footprint proportions while adding future methods.
 - Iteration logs include screenshot, critique, score, Codex decision, key code snippet, and commit hash.
+- Each plot stores a deterministic random building type assignment; only the assigned typology is drawn/generated for that plot.
 - Building Type A stores per-plot width and edge length parameters; width range is 15m to 25m, edge length varies from 0.25 to 0.75 and snaps to 1.0 above 0.75.
 - Building Type B stores per-plot S-graph parameters `X` and `Y`; `X + Y = 1.0`, with current random X from 0.25 to 0.75 and Y computed from X.
 

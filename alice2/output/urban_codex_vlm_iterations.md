@@ -152,6 +152,10 @@ Commit: `fec2442`
 
 ## Parametric Building Typology Notes
 
+- Each plot stores a building type assignment.
+- Current sketch assignment: deterministic random `Type A` or `Type B` per plot.
+- Only the assigned typology is drawn/generated for each plot.
+
 ### Building Type A
 
 - Each plot stores its own Type A building width and edge length parameter.
