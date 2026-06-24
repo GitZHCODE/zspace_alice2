@@ -173,6 +173,7 @@ private:
     };
 
     struct ShapeParams {
+        float typeAWeight = 1.0f;
         float typeBWeight = 0.0f;
         float typeCWeight = 0.0f;
         float buildingWidthMeters = 20.0f;
@@ -471,40 +472,125 @@ private:
                 p.push_back(Vec3(sourcePosition.x, sourcePosition.y, graphZ));
             }
 
-            float totalWeight = typeBBlendWeight + typeCBlendWeight;
+            float totalWeight = typeABlendWeight + typeBBlendWeight + typeCBlendWeight;
             if (totalWeight <= 0.001f) return;
 
+            float aWeight = typeABlendWeight / totalWeight;
             float bWeight = typeBBlendWeight / totalWeight;
             float cWeight = typeCBlendWeight / totalWeight;
-            int orientationIndex = static_cast<int>(std::round(
-                static_cast<float>(typeBOrientationIndex) * bWeight +
-                static_cast<float>(typeCOrientationIndex) * cWeight
-            ));
-            float sideFraction = std::clamp(typeBXFraction * bWeight + typeCEdgeFraction * cWeight, 0.05f, 1.0f);
-            float internalFraction = std::clamp(typeBInternalEdgeFraction * bWeight, 0.0f, 0.5f);
 
-            int n = static_cast<int>(p.size());
-            int a = wrappedIndex(orientationIndex, n);
-            int afterA = (a + 1) % n;
-            int b = (a + n / 2) % n;
-            int afterB = (b + 1) % n;
+            if (aWeight > 0.001f) {
+                appendSegments(effectiveGraphSegments, makeTypeAEffectiveSegments(p, typeAEdgeLengthFraction));
+            }
 
-            Vec3 sideA = lerp(p[a], p[afterA], sideFraction);
-            Vec3 sideB = lerp(p[b], p[afterB], sideFraction);
-            effectiveGraphSegments.push_back({ p[a], sideA });
-            effectiveGraphSegments.push_back({ p[b], sideB });
+            if (bWeight > 0.001f) {
+                appendSegments(
+                    effectiveGraphSegments,
+                    makeTypeBEffectiveSegments(p, typeBXFraction, typeBInternalEdgeFraction, typeBOrientationIndex)
+                );
+            }
 
-            if (internalFraction > 0.01f) {
-                Vec3 internalA = lerp(sideA, sideB, internalFraction);
-                Vec3 internalB = lerp(sideB, sideA, internalFraction);
-                effectiveGraphSegments.push_back({ sideA, internalA });
-                effectiveGraphSegments.push_back({ sideB, internalB });
+            if (cWeight > 0.001f) {
+                appendSegments(
+                    effectiveGraphSegments,
+                    makeTypeCEffectiveSegments(p, typeCEdgeFraction, typeCOrientationIndex)
+                );
             }
 
             createGraphFromSegments(effectiveGraphSegments, effectiveCenterlineGraph, graphZ);
         }
 
     private:
+        static void appendSegments(std::vector<TypeBGraphSegment>& target, const std::vector<TypeBGraphSegment>& source)
+        {
+            target.insert(target.end(), source.begin(), source.end());
+        }
+
+        static std::vector<TypeBGraphSegment> makeTypeAEffectiveSegments(const std::vector<Vec3>& p, float edgeLengthFraction)
+        {
+            std::vector<TypeBGraphSegment> segments;
+            const int n = static_cast<int>(p.size());
+            if (n < 4) return segments;
+
+            edgeLengthFraction = std::clamp(edgeLengthFraction, 0.25f, 1.0f);
+            if (edgeLengthFraction >= 0.999f) {
+                segments.reserve(n);
+                for (int i = 0; i < n; ++i) {
+                    segments.push_back({ p[i], p[(i + 1) % n] });
+                }
+                return segments;
+            }
+
+            int corners[2] = { 0, n / 2 };
+            segments.reserve(4);
+            for (int corner : corners) {
+                int prev = wrappedIndex(corner - 1, n);
+                int next = wrappedIndex(corner + 1, n);
+                segments.push_back({ p[corner], lerp(p[corner], p[prev], edgeLengthFraction) });
+                segments.push_back({ p[corner], lerp(p[corner], p[next], edgeLengthFraction) });
+            }
+
+            return segments;
+        }
+
+        static std::vector<TypeBGraphSegment> makeTypeBEffectiveSegments(
+            const std::vector<Vec3>& p,
+            float xFraction,
+            float internalEdgeFraction,
+            int orientationIndex
+        )
+        {
+            std::vector<TypeBGraphSegment> segments;
+            const int n = static_cast<int>(p.size());
+            if (n < 4) return segments;
+
+            xFraction = std::clamp(xFraction, 0.25f, 0.75f);
+            internalEdgeFraction = std::clamp(internalEdgeFraction, 0.0f, 0.5f);
+
+            int a = wrappedIndex(orientationIndex, n);
+            int afterA = (a + 1) % n;
+            int b = (a + n / 2) % n;
+            int afterB = (b + 1) % n;
+
+            Vec3 midA = lerp(p[a], p[afterA], xFraction);
+            Vec3 midB = lerp(p[b], p[afterB], xFraction);
+            Vec3 partialA = lerp(midA, midB, internalEdgeFraction);
+            Vec3 partialB = lerp(midB, midA, internalEdgeFraction);
+
+            segments.push_back({ p[a], midA });
+            if ((partialA - midA).length() > 1e-6f) {
+                segments.push_back({ midA, partialA });
+            }
+            segments.push_back({ p[b], midB });
+            if ((partialB - midB).length() > 1e-6f) {
+                segments.push_back({ midB, partialB });
+            }
+
+            return segments;
+        }
+
+        static std::vector<TypeBGraphSegment> makeTypeCEffectiveSegments(
+            const std::vector<Vec3>& p,
+            float edgeFraction,
+            int orientationIndex
+        )
+        {
+            std::vector<TypeBGraphSegment> segments;
+            const int n = static_cast<int>(p.size());
+            if (n < 4) return segments;
+
+            edgeFraction = std::clamp(edgeFraction, 0.5f, 1.0f);
+            int a0 = wrappedIndex(orientationIndex, n);
+            int a1 = (a0 + 1) % n;
+            int b0 = (a0 + n / 2) % n;
+            int b1 = (b0 + 1) % n;
+
+            segments.push_back({ p[a0], lerp(p[a0], p[a1], edgeFraction) });
+            segments.push_back({ p[b0], lerp(p[b0], p[b1], edgeFraction) });
+
+            return segments;
+        }
+
         static Vec3 lerp(const Vec3& a, const Vec3& b, float t)
         {
             return a + (b - a) * t;
@@ -805,6 +891,7 @@ private:
         Vec3 topRight(bMax.x, bMax.y, 0.0f);
 
         ShapeParams bHalf;
+        bHalf.typeAWeight = 0.0f;
         bHalf.typeBWeight = 1.0f;
         bHalf.typeCWeight = 0.0f;
         bHalf.buildingWidthMeters = 20.0f;
@@ -813,12 +900,14 @@ private:
         bHalf.typeBOrientationIndex = 1.0f;
 
         ShapeParams aFull;
+        aFull.typeAWeight = 1.0f;
         aFull.typeBWeight = 0.0f;
         aFull.typeCWeight = 0.0f;
         aFull.buildingWidthMeters = 22.0f;
         aFull.typeAEdgeLengthFraction = 1.0f;
 
         ShapeParams cParallel;
+        cParallel.typeAWeight = 0.0f;
         cParallel.typeBWeight = 0.0f;
         cParallel.typeCWeight = 1.0f;
         cParallel.buildingWidthMeters = 18.0f;
@@ -826,6 +915,7 @@ private:
         cParallel.typeCOrientationIndex = 1.0f;
 
         ShapeParams aLong;
+        aLong.typeAWeight = 1.0f;
         aLong.typeBWeight = 0.0f;
         aLong.typeCWeight = 0.0f;
         aLong.buildingWidthMeters = 20.0f;
@@ -1067,6 +1157,7 @@ private:
     ShapeParams blendedShapeParams(const std::vector<float>& weights) const
     {
         ShapeParams result;
+        result.typeAWeight = 0.0f;
         result.typeBWeight = 0.0f;
         result.typeCWeight = 0.0f;
         result.buildingWidthMeters = 0.0f;
@@ -1083,6 +1174,7 @@ private:
             const auto& anchor = m_typologyAnchors[i];
             totalWeight += w;
 
+            result.typeAWeight += anchor.params.typeAWeight * w;
             result.typeBWeight += anchor.params.typeBWeight * w;
             result.typeCWeight += anchor.params.typeCWeight * w;
             result.buildingWidthMeters += anchor.params.buildingWidthMeters * w;
@@ -1098,6 +1190,7 @@ private:
             return fallbackShapeParams(0);
         }
 
+        result.typeAWeight = std::clamp(result.typeAWeight / totalWeight, 0.0f, 1.0f);
         result.typeBWeight = std::clamp(result.typeBWeight / totalWeight, 0.0f, 1.0f);
         result.typeCWeight = std::clamp(result.typeCWeight / totalWeight, 0.0f, 1.0f);
         result.buildingWidthMeters = std::clamp(result.buildingWidthMeters / totalWeight, m_typeAMinWidthMeters, m_typeAMaxWidthMeters);
@@ -1113,7 +1206,9 @@ private:
     ShapeParams fallbackShapeParams(int plotId) const
     {
         ShapeParams params;
-        params.typeBWeight = randomBuildingType(plotId) == BuildingType::TypeB ? 1.0f : 0.0f;
+        bool isTypeB = randomBuildingType(plotId) == BuildingType::TypeB;
+        params.typeAWeight = isTypeB ? 0.0f : 1.0f;
+        params.typeBWeight = isTypeB ? 1.0f : 0.0f;
         params.typeCWeight = 0.0f;
         params.buildingWidthMeters = randomTypeABuildingWidthMeters(plotId);
         params.typeAEdgeLengthFraction = randomTypeAEdgeLengthFraction(plotId);
@@ -1128,15 +1223,19 @@ private:
     void applyTypologyGene(plot& plotData) const
     {
         ShapeParams gene = computeTypologyGene(plotData.center);
-        float typeAWeight = std::max(0.0f, 1.0f - gene.typeBWeight - gene.typeCWeight);
+        float totalWeight = gene.typeAWeight + gene.typeBWeight + gene.typeCWeight;
+        if (totalWeight <= 1e-6f) totalWeight = 1.0f;
+        float typeAWeight = std::clamp(gene.typeAWeight / totalWeight, 0.0f, 1.0f);
+        float typeBWeight = std::clamp(gene.typeBWeight / totalWeight, 0.0f, 1.0f);
+        float typeCWeight = std::clamp(gene.typeCWeight / totalWeight, 0.0f, 1.0f);
         plotData.typeABlendWeight = typeAWeight;
-        plotData.typeBBlendWeight = gene.typeBWeight;
-        plotData.typeCBlendWeight = gene.typeCWeight;
+        plotData.typeBBlendWeight = typeBWeight;
+        plotData.typeCBlendWeight = typeCWeight;
         plotData.buildingType = BuildingType::TypeA;
-        if (gene.typeBWeight >= typeAWeight && gene.typeBWeight >= gene.typeCWeight) {
+        if (typeBWeight >= typeAWeight && typeBWeight >= typeCWeight) {
             plotData.buildingType = BuildingType::TypeB;
         }
-        else if (gene.typeCWeight >= typeAWeight && gene.typeCWeight >= gene.typeBWeight) {
+        else if (typeCWeight >= typeAWeight && typeCWeight >= typeBWeight) {
             plotData.buildingType = BuildingType::TypeC;
         }
         plotData.typeABuildingWidthMeters = gene.buildingWidthMeters;
