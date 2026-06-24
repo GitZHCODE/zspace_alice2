@@ -248,6 +248,18 @@ private:
             Vec3 end;
         };
 
+        struct GraphDescriptor {
+            std::vector<Vec3> nodes;
+            std::vector<std::pair<int, int>> edges;
+            std::vector<int> degree;
+            std::vector<std::vector<float>> structure;
+        };
+
+        struct GraphCandidate {
+            float weight = 0.0f;
+            std::vector<TypeBGraphSegment> segments;
+        };
+
         int id;
         int faceIndex;
         BuildingType buildingType = BuildingType::TypeA;
@@ -479,24 +491,24 @@ private:
             float aWeight = typeABlendWeight / totalWeight;
             float bWeight = typeBBlendWeight / totalWeight;
             float cWeight = typeCBlendWeight / totalWeight;
-            keepStrongestTwoWeights(aWeight, bWeight, cWeight);
 
-            if (aWeight > 0.001f) {
-                appendSegments(effectiveGraphSegments, makeTypeAEffectiveSegments(p, typeAEdgeLengthFraction));
+            std::vector<GraphCandidate> candidates;
+            candidates.reserve(3);
+            candidates.push_back({ aWeight, makeTypeAEffectiveSegments(p, typeAEdgeLengthFraction) });
+            candidates.push_back({ bWeight, makeTypeBEffectiveSegments(p, typeBXFraction, typeBInternalEdgeFraction, typeBOrientationIndex) });
+            candidates.push_back({ cWeight, makeTypeCEffectiveSegments(p, typeCEdgeFraction, typeCOrientationIndex) });
+
+            std::sort(candidates.begin(), candidates.end(), [](const GraphCandidate& a, const GraphCandidate& b) {
+                return a.weight > b.weight;
+            });
+
+            if (candidates.empty() || candidates[0].segments.empty()) return;
+            if (candidates.size() == 1 || candidates[1].weight <= 0.001f || candidates[1].segments.empty()) {
+                effectiveGraphSegments = candidates[0].segments;
             }
-
-            if (bWeight > 0.001f) {
-                appendSegments(
-                    effectiveGraphSegments,
-                    makeTypeBEffectiveSegments(p, typeBXFraction, typeBInternalEdgeFraction, typeBOrientationIndex)
-                );
-            }
-
-            if (cWeight > 0.001f) {
-                appendSegments(
-                    effectiveGraphSegments,
-                    makeTypeCEffectiveSegments(p, typeCEdgeFraction, typeCOrientationIndex)
-                );
+            else {
+                float blend = candidates[1].weight / std::max(candidates[0].weight + candidates[1].weight, 1e-6f);
+                effectiveGraphSegments = transportGraphByFgw(candidates[0].segments, candidates[1].segments, blend);
             }
 
             createGraphFromSegments(effectiveGraphSegments, effectiveCenterlineGraph, graphZ);
@@ -508,23 +520,199 @@ private:
             target.insert(target.end(), source.begin(), source.end());
         }
 
-        static void keepStrongestTwoWeights(float& aWeight, float& bWeight, float& cWeight)
+        static std::vector<TypeBGraphSegment> transportGraphByFgw(
+            const std::vector<TypeBGraphSegment>& sourceSegments,
+            const std::vector<TypeBGraphSegment>& targetSegments,
+            float blend
+        )
         {
-            float* weights[3] = { &aWeight, &bWeight, &cWeight };
-            int weakest = 0;
-            for (int i = 1; i < 3; ++i) {
-                if (*weights[i] < *weights[weakest]) weakest = i;
+            GraphDescriptor source = makeGraphDescriptor(sourceSegments);
+            GraphDescriptor target = makeGraphDescriptor(targetSegments);
+            if (source.nodes.empty() || target.nodes.empty() || source.edges.empty()) return sourceSegments;
+
+            std::vector<std::vector<float>> transport = solveFgwTransport(source, target, 0.65f, 0.08f, 10, 24);
+            std::vector<Vec3> transportedNodes(source.nodes.size(), Vec3(0.0f, 0.0f, source.nodes[0].z));
+            float rowMass = 1.0f / static_cast<float>(source.nodes.size());
+
+            for (int i = 0; i < static_cast<int>(source.nodes.size()); ++i) {
+                Vec3 mapped(0.0f, 0.0f, source.nodes[i].z);
+                for (int j = 0; j < static_cast<int>(target.nodes.size()); ++j) {
+                    mapped += target.nodes[j] * (transport[i][j] / std::max(rowMass, 1e-6f));
+                }
+                transportedNodes[i] = lerp(source.nodes[i], mapped, blend);
             }
 
-            if (*weights[weakest] < 0.25f) {
-                *weights[weakest] = 0.0f;
+            std::vector<TypeBGraphSegment> transportedSegments;
+            transportedSegments.reserve(source.edges.size());
+            for (const auto& edge : source.edges) {
+                transportedSegments.push_back({ transportedNodes[edge.first], transportedNodes[edge.second] });
             }
 
-            float total = aWeight + bWeight + cWeight;
-            if (total <= 1e-6f) return;
-            aWeight /= total;
-            bWeight /= total;
-            cWeight /= total;
+            return transportedSegments;
+        }
+
+        static GraphDescriptor makeGraphDescriptor(const std::vector<TypeBGraphSegment>& segments)
+        {
+            GraphDescriptor descriptor;
+            for (const auto& segment : segments) {
+                int start = findOrAddNode(descriptor.nodes, segment.start);
+                int end = findOrAddNode(descriptor.nodes, segment.end);
+                if (start == end) continue;
+                descriptor.edges.push_back({ start, end });
+            }
+
+            descriptor.degree.assign(descriptor.nodes.size(), 0);
+            for (const auto& edge : descriptor.edges) {
+                descriptor.degree[edge.first]++;
+                descriptor.degree[edge.second]++;
+            }
+
+            descriptor.structure = graphShortestPathMatrix(descriptor);
+            return descriptor;
+        }
+
+        static int findOrAddNode(std::vector<Vec3>& nodes, const Vec3& position)
+        {
+            for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
+                if ((nodes[i] - position).length() < 1e-6f) return i;
+            }
+            nodes.push_back(position);
+            return static_cast<int>(nodes.size() - 1);
+        }
+
+        static std::vector<std::vector<float>> graphShortestPathMatrix(const GraphDescriptor& graph)
+        {
+            const int n = static_cast<int>(graph.nodes.size());
+            std::vector<std::vector<float>> distances(n, std::vector<float>(n, 1e3f));
+            for (int i = 0; i < n; ++i) distances[i][i] = 0.0f;
+
+            for (const auto& edge : graph.edges) {
+                distances[edge.first][edge.second] = 1.0f;
+                distances[edge.second][edge.first] = 1.0f;
+            }
+
+            for (int k = 0; k < n; ++k) {
+                for (int i = 0; i < n; ++i) {
+                    for (int j = 0; j < n; ++j) {
+                        distances[i][j] = std::min(distances[i][j], distances[i][k] + distances[k][j]);
+                    }
+                }
+            }
+
+            for (int i = 0; i < n; ++i) {
+                for (int j = 0; j < n; ++j) {
+                    if (distances[i][j] > 999.0f) distances[i][j] = static_cast<float>(n);
+                }
+            }
+
+            return distances;
+        }
+
+        static std::vector<std::vector<float>> solveFgwTransport(
+            const GraphDescriptor& source,
+            const GraphDescriptor& target,
+            float alpha,
+            float epsilon,
+            int fgwIterations,
+            int sinkhornIterations
+        )
+        {
+            const int n = static_cast<int>(source.nodes.size());
+            const int m = static_cast<int>(target.nodes.size());
+            const float sourceMass = 1.0f / static_cast<float>(n);
+            const float targetMass = 1.0f / static_cast<float>(m);
+            std::vector<std::vector<float>> transport(n, std::vector<float>(m, sourceMass * targetMass));
+            std::vector<std::vector<float>> featureCost = featureCostMatrix(source, target);
+
+            for (int iter = 0; iter < fgwIterations; ++iter) {
+                std::vector<std::vector<float>> cost(n, std::vector<float>(m, 0.0f));
+                for (int i = 0; i < n; ++i) {
+                    for (int j = 0; j < m; ++j) {
+                        float structuralCost = 0.0f;
+                        for (int k = 0; k < n; ++k) {
+                            for (int l = 0; l < m; ++l) {
+                                float delta = source.structure[i][k] - target.structure[j][l];
+                                structuralCost += delta * delta * transport[k][l];
+                            }
+                        }
+                        cost[i][j] = (1.0f - alpha) * featureCost[i][j] + alpha * structuralCost;
+                    }
+                }
+                transport = sinkhornTransport(cost, sourceMass, targetMass, epsilon, sinkhornIterations);
+            }
+
+            return transport;
+        }
+
+        static std::vector<std::vector<float>> featureCostMatrix(const GraphDescriptor& source, const GraphDescriptor& target)
+        {
+            const int n = static_cast<int>(source.nodes.size());
+            const int m = static_cast<int>(target.nodes.size());
+            std::vector<std::vector<float>> cost(n, std::vector<float>(m, 0.0f));
+            float scale = graphScale(source, target);
+
+            for (int i = 0; i < n; ++i) {
+                for (int j = 0; j < m; ++j) {
+                    float positionCost = (source.nodes[i] - target.nodes[j]).length() / std::max(scale, 1e-6f);
+                    float degreeCost = std::abs(source.degree[i] - target.degree[j]) * 0.2f;
+                    cost[i][j] = positionCost + degreeCost;
+                }
+            }
+
+            return cost;
+        }
+
+        static float graphScale(const GraphDescriptor& source, const GraphDescriptor& target)
+        {
+            Vec3 minPoint(1e6f, 1e6f, 0.0f);
+            Vec3 maxPoint(-1e6f, -1e6f, 0.0f);
+            auto addPoint = [&](const Vec3& p) {
+                minPoint.x = std::min(minPoint.x, p.x);
+                minPoint.y = std::min(minPoint.y, p.y);
+                maxPoint.x = std::max(maxPoint.x, p.x);
+                maxPoint.y = std::max(maxPoint.y, p.y);
+            };
+
+            for (const auto& p : source.nodes) addPoint(p);
+            for (const auto& p : target.nodes) addPoint(p);
+            return std::max(maxPoint.x - minPoint.x, maxPoint.y - minPoint.y);
+        }
+
+        static std::vector<std::vector<float>> sinkhornTransport(
+            const std::vector<std::vector<float>>& cost,
+            float sourceMass,
+            float targetMass,
+            float epsilon,
+            int iterations
+        )
+        {
+            const int n = static_cast<int>(cost.size());
+            const int m = n > 0 ? static_cast<int>(cost[0].size()) : 0;
+            std::vector<std::vector<float>> transport(n, std::vector<float>(m, 0.0f));
+
+            for (int i = 0; i < n; ++i) {
+                for (int j = 0; j < m; ++j) {
+                    transport[i][j] = std::exp(-cost[i][j] / std::max(epsilon, 1e-6f)) + 1e-9f;
+                }
+            }
+
+            for (int iter = 0; iter < iterations; ++iter) {
+                for (int i = 0; i < n; ++i) {
+                    float rowSum = 0.0f;
+                    for (int j = 0; j < m; ++j) rowSum += transport[i][j];
+                    float scale = sourceMass / std::max(rowSum, 1e-9f);
+                    for (int j = 0; j < m; ++j) transport[i][j] *= scale;
+                }
+
+                for (int j = 0; j < m; ++j) {
+                    float colSum = 0.0f;
+                    for (int i = 0; i < n; ++i) colSum += transport[i][j];
+                    float scale = targetMass / std::max(colSum, 1e-9f);
+                    for (int i = 0; i < n; ++i) transport[i][j] *= scale;
+                }
+            }
+
+            return transport;
         }
 
         static std::vector<TypeBGraphSegment> makeTypeAEffectiveSegments(const std::vector<Vec3>& p, float edgeLengthFraction)
