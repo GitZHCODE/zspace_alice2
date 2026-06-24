@@ -53,6 +53,7 @@ public:
             buildTypeACenterlineGraphs();
             buildTypeBCenterlineGraphs();
             buildTypeCCenterlineGraphs();
+            buildEffectiveTypologyGraphs();
             buildTypeASdfField();
             buildTypeBSdfField();
         }
@@ -78,8 +79,7 @@ public:
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
         drawTypeACenterlineGraphs(renderer);
-        drawTypeBCenterlineGraphs(renderer);
-        drawTypeCCenterlineGraphs(renderer);
+        drawEffectiveTypologyGraphs(renderer);
         drawTypeASdfContour(renderer);
         drawTypeBSdfContour(renderer);
 
@@ -271,9 +271,11 @@ private:
         std::vector<CenterlineGraphEdge> centerlineGraphEdges;
         std::vector<TypeBGraphSegment> typeBGraphSegments;
         std::vector<TypeBGraphSegment> typeCGraphSegments;
+        std::vector<TypeBGraphSegment> effectiveGraphSegments;
         zSpace::zObjectGraph centerlineGraph;
         zSpace::zObjectGraph typeBCenterlineGraph;
         zSpace::zObjectGraph typeCCenterlineGraph;
+        zSpace::zObjectGraph effectiveCenterlineGraph;
 
         void buildCenterlineGraph(
             float roadSetback,
@@ -707,6 +709,7 @@ private:
         buildTypeACenterlineGraphs();
         buildTypeBCenterlineGraphs();
         buildTypeCCenterlineGraphs();
+        buildEffectiveTypologyGraphs();
         buildTypeASdfField();
         buildTypeBSdfField();
 
@@ -1186,6 +1189,96 @@ private:
                   << " | edge random range 0.5-1.0" << std::endl;
     }
 
+    void buildEffectiveTypologyGraphs()
+    {
+        int graphCount = 0;
+        int graphEdges = 0;
+        for (auto& plotData : m_plots) {
+            plotData.effectiveGraphSegments.clear();
+
+            std::vector<std::pair<const std::vector<plot::TypeBGraphSegment>*, float>> candidates;
+            if (plotData.typeBBlendWeight > 0.001f) {
+                candidates.push_back({ &plotData.typeBGraphSegments, plotData.typeBBlendWeight });
+            }
+            if (plotData.typeCBlendWeight > 0.001f) {
+                candidates.push_back({ &plotData.typeCGraphSegments, plotData.typeCBlendWeight });
+            }
+            if (candidates.empty()) continue;
+
+            buildTransportMatchedSegments(plotData.effectiveGraphSegments, candidates);
+            createGraphFromSegments(plotData.effectiveGraphSegments, plotData.effectiveCenterlineGraph, m_massingZ + 0.011f);
+            if (plotData.effectiveGraphSegments.empty()) continue;
+
+            graphCount++;
+            graphEdges += static_cast<int>(plotData.effectiveGraphSegments.size());
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Effective typology transport graphs: " << graphCount
+                  << " | graph edges: " << graphEdges
+                  << " | generic matched dominant plus birth/death" << std::endl;
+    }
+
+    void buildTransportMatchedSegments(
+        std::vector<plot::TypeBGraphSegment>& result,
+        const std::vector<std::pair<const std::vector<plot::TypeBGraphSegment>*, float>>& candidates
+    )
+    {
+        result.clear();
+        if (candidates.empty()) return;
+
+        int dominantIndex = -1;
+        float dominantWeight = -1.0f;
+        for (int i = 0; i < static_cast<int>(candidates.size()); ++i) {
+            if (!candidates[i].first || candidates[i].first->empty()) continue;
+            if (candidates[i].second > dominantWeight) {
+                dominantWeight = candidates[i].second;
+                dominantIndex = i;
+            }
+        }
+        if (dominantIndex < 0) return;
+
+        const auto& dominantSegments = *candidates[dominantIndex].first;
+        result = dominantSegments;
+        float birthCost = averageSegmentLength(dominantSegments) * 0.42f;
+
+        for (int i = 0; i < static_cast<int>(candidates.size()); ++i) {
+            if (i == dominantIndex || !candidates[i].first || candidates[i].second <= 0.001f) continue;
+
+            for (const auto& weakSegment : *candidates[i].first) {
+                float bestCost = 1e9f;
+                for (const auto& dominantSegment : dominantSegments) {
+                    bestCost = std::min(bestCost, graphSegmentCost(weakSegment, dominantSegment));
+                }
+                if (bestCost > birthCost) {
+                    result.push_back(weakSegment);
+                }
+            }
+        }
+    }
+
+    void createGraphFromSegments(
+        const std::vector<plot::TypeBGraphSegment>& segments,
+        zSpace::zObjectGraph& graph,
+        float graphZ
+    )
+    {
+        zSpace::zPointArray graphPositions;
+        zSpace::zIntArray graphEdgeConnects;
+        graphPositions.reserve(segments.size() * 2);
+        graphEdgeConnects.reserve(segments.size() * 2);
+
+        for (const auto& segment : segments) {
+            int startIndex = static_cast<int>(graphPositions.size());
+            graphPositions.push_back(zSpace::zPoint(segment.start.x, segment.start.y, graphZ));
+            graphPositions.push_back(zSpace::zPoint(segment.end.x, segment.end.y, graphZ));
+            graphEdgeConnects.push_back(startIndex);
+            graphEdgeConnects.push_back(startIndex + 1);
+        }
+
+        zSpace::zFnGraph graphFn(graph);
+        graphFn.create(graphPositions, graphEdgeConnects);
+    }
+
     void buildTypeASdfField()
     {
         buildTypeASdfPrimitives();
@@ -1333,52 +1426,13 @@ private:
         m_typeBSdfPlots.clear();
 
         for (auto& plotData : m_plots) {
-            if (plotData.typeBBlendWeight <= 0.001f && plotData.typeCBlendWeight <= 0.001f) continue;
+            if (plotData.effectiveGraphSegments.empty()) continue;
 
             const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
             const float edgeHalfDepth = buildingWidth * 0.5f;
             if (edgeHalfDepth <= 1e-6f) continue;
 
-            if (plotData.typeBBlendWeight > 0.001f && plotData.typeCBlendWeight > 0.001f) {
-                addTransportMatchedBCSdf(plotData, edgeHalfDepth);
-            }
-            else if (plotData.typeBBlendWeight > 0.001f) {
-                addTypeBGraphSdf(plotData, plotData.typeBGraphSegments, edgeHalfDepth);
-            }
-            else if (plotData.typeCBlendWeight > 0.001f) {
-                addTypeBGraphSdf(plotData, plotData.typeCGraphSegments, edgeHalfDepth);
-            }
-        }
-    }
-
-    void addTransportMatchedBCSdf(const plot& plotData, float edgeHalfDepth)
-    {
-        const auto& dominantSegments = plotData.typeBBlendWeight >= plotData.typeCBlendWeight
-            ? plotData.typeBGraphSegments
-            : plotData.typeCGraphSegments;
-        const auto& weakSegments = plotData.typeBBlendWeight >= plotData.typeCBlendWeight
-            ? plotData.typeCGraphSegments
-            : plotData.typeBGraphSegments;
-        float dominantWeight = std::max(plotData.typeBBlendWeight, plotData.typeCBlendWeight);
-        float weakWeight = std::min(plotData.typeBBlendWeight, plotData.typeCBlendWeight);
-
-        addTypeBGraphSdf(plotData, dominantSegments, edgeHalfDepth);
-
-        std::vector<plot::TypeBGraphSegment> weakBirthDeathSegments;
-        float birthCost = averageSegmentLength(dominantSegments) * 0.42f;
-        for (const auto& weakSegment : weakSegments) {
-            float bestCost = 1e9f;
-            for (const auto& dominantSegment : dominantSegments) {
-                bestCost = std::min(bestCost, graphSegmentCost(weakSegment, dominantSegment));
-            }
-            if (bestCost > birthCost) {
-                weakBirthDeathSegments.push_back(weakSegment);
-            }
-        }
-
-        if (!weakBirthDeathSegments.empty()) {
-            float fade = std::clamp(weakWeight / std::max(dominantWeight + weakWeight, 1e-6f), 0.18f, 0.65f);
-            addTypeBGraphSdf(plotData, weakBirthDeathSegments, edgeHalfDepth * fade);
+            addTypeBGraphSdf(plotData, plotData.effectiveGraphSegments, edgeHalfDepth);
         }
     }
 
@@ -2004,6 +2058,24 @@ private:
         for (auto& plotData : m_plots) {
             if (plotData.typeCBlendWeight <= 0.001f) continue;
             scene().draw(plotData.typeCCenterlineGraph, graphDisplay);
+        }
+    }
+
+    void drawEffectiveTypologyGraphs(Renderer& renderer)
+    {
+        (void)renderer;
+        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
+        zDisplayGraphSetting graphDisplay;
+        graphDisplay.showEdges = true;
+        graphDisplay.showVertices = true;
+        graphDisplay.edgeColor = graphColor;
+        graphDisplay.vertexColor = graphColor;
+        graphDisplay.edgeWidth = 1.0f;
+        graphDisplay.vertexSize = 6.0f;
+
+        for (auto& plotData : m_plots) {
+            if (plotData.effectiveGraphSegments.empty()) continue;
+            scene().draw(plotData.effectiveCenterlineGraph, graphDisplay);
         }
     }
 
