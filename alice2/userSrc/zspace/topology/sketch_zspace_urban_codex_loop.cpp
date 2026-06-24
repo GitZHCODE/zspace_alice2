@@ -32,7 +32,8 @@ public:
         m_ui = std::make_unique<SimpleUI>(input());
         m_ui->setTheme(SimpleUI::UITheme::Dark);
         m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.0f, 100.0f, m_p);
-        m_ui->addToggle("Field Mesh", UIRect{14.0f, 112.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
+        m_ui->addSlider("edge", Vec2{14.0f, 112.0f}, 240.0f, 0.0f, 1.0f, m_typeAEdgeLengthFraction);
+        m_ui->addToggle("Field Mesh", UIRect{14.0f, 142.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
 
         loadMesh();
         if (!m_loaded) return;
@@ -51,6 +52,11 @@ public:
             buildPlotRecords(fn);
             buildStreetSdfField();
             buildTypeACenterlineGraphs();
+            buildTypeASdfField();
+        }
+
+        if (std::abs(m_typeAEdgeLengthFraction - m_lastBuiltTypeAEdgeLengthFraction) > 0.001f) {
+            buildTypeASdfField();
         }
 
         m_frameCount++;
@@ -74,6 +80,7 @@ public:
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
         drawTypeACenterlineGraphs(renderer);
+        drawTypeASdfContour(renderer);
 
         if (m_ui) {
             m_ui->draw(renderer);
@@ -133,8 +140,10 @@ private:
     float m_typeAMaxWidthMeters = 25.0f;
     float m_typeARoadSetbackMeters = 5.0f;
     float m_typeALocalSetbackMeters = 2.0f;
+    float m_typeAEdgeLengthFraction = 0.65f;
+    float m_lastBuiltTypeAEdgeLengthFraction = -1.0f;
     float m_openSpaceZ = 0.001f;
-    float m_p = 12.0f;
+    float m_p = 50.0f;
     float m_lastBuiltP = -1.0f;
     float m_siteLongDimensionMeters = 500.0f;
     float m_modelUnitsPerMeter = 1.0f;
@@ -174,6 +183,14 @@ private:
         Vec3 b;
         PlotBoundaryType boundaryType;
         int streetEdgeIndex;
+    };
+
+    struct TypeASdfBox {
+        Vec3 center;
+        Vec3 axisX;
+        Vec3 axisY;
+        float halfX;
+        float halfY;
     };
 
     class plot {
@@ -323,6 +340,10 @@ private:
     std::vector<plot> m_plots;
     zSpace::zObjectMeshScalarField m_streetSdfField;
     zSpace::zObjectGraph m_streetIsoContour;
+    zSpace::zObjectMeshScalarField m_typeASdfField;
+    zSpace::zObjectGraph m_typeAIsoContour;
+    std::vector<TypeASdfBox> m_typeASdfA;
+    std::vector<TypeASdfBox> m_typeASdfB;
 
     static Vec3 toVec3(const zSpace::zVector& p)
     {
@@ -492,6 +513,7 @@ private:
         buildPlotRecords(fn);
         buildStreetSdfField();
         buildTypeACenterlineGraphs();
+        buildTypeASdfField();
 
         m_loaded = true;
     }
@@ -675,6 +697,97 @@ private:
                   << " | width " << m_typeAMaxWidthMeters << "m"
                   << " | road setback " << m_typeARoadSetbackMeters << "m"
                   << " | local setback " << m_typeALocalSetbackMeters << "m" << std::endl;
+    }
+
+    void buildTypeASdfField()
+    {
+        buildTypeASdfPrimitives();
+
+        Vec3 bMin = toVec3(m_boundsMin);
+        Vec3 bMax = toVec3(m_boundsMax);
+        Vec3 span = bMax - bMin;
+        float pad = std::max(span.x, span.y) * 0.05f;
+        zSpace::zPoint fieldMin(bMin.x - pad, bMin.y - pad, 0.0f);
+        zSpace::zPoint fieldMax(bMax.x + pad, bMax.y + pad, 0.0f);
+
+        zSpace::zFnMeshScalarField fn(m_typeASdfField);
+        fn.create(fieldMin, fieldMax, m_streetFieldResolution, m_streetFieldResolution, 1, true, false);
+
+        zSpace::zPointArray positions;
+        fn.getPositions(positions);
+
+        zSpace::zScalarArray values;
+        values.reserve(positions.size());
+        for (const auto& p : positions) {
+            values.push_back(typeASdf(toVec3(p)));
+        }
+
+        fn.setFieldValues(values, zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
+        fn.updateColors(zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
+        fn.getIsocontour(m_typeAIsoContour, 0.0f);
+        liftTypeAIsoGeometry();
+
+        m_lastBuiltTypeAEdgeLengthFraction = m_typeAEdgeLengthFraction;
+    }
+
+    void buildTypeASdfPrimitives()
+    {
+        m_typeASdfA.clear();
+        m_typeASdfB.clear();
+
+        const float buildingWidth = metersToModelUnits(m_typeAMaxWidthMeters);
+        const float cornerHalfSize = buildingWidth * 0.6f;
+        const float edgeHalfDepth = buildingWidth * 0.5f;
+        const float edgeLengthFraction = saturate(m_typeAEdgeLengthFraction);
+
+        for (auto& plotData : m_plots) {
+            zSpace::zFnGraph graphFn(plotData.centerlineGraph);
+            zSpace::zPointArray graphPositions;
+            graphFn.getVertexPositions(graphPositions);
+            if (graphPositions.empty()) continue;
+
+            for (const auto& position : graphPositions) {
+                m_typeASdfA.push_back({
+                    toVec3(position),
+                    Vec3(1.0f, 0.0f, 0.0f),
+                    Vec3(0.0f, 1.0f, 0.0f),
+                    cornerHalfSize,
+                    cornerHalfSize
+                });
+            }
+
+            for (const auto& edge : plotData.centerlineGraphEdges) {
+                if (edge.startVertexIndex < 0 || edge.endVertexIndex < 0) continue;
+                if (edge.startVertexIndex >= static_cast<int>(graphPositions.size())) continue;
+                if (edge.endVertexIndex >= static_cast<int>(graphPositions.size())) continue;
+
+                Vec3 a = toVec3(graphPositions[edge.startVertexIndex]);
+                Vec3 b = toVec3(graphPositions[edge.endVertexIndex]);
+                Vec3 edgeVector = b - a;
+                float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
+                if (edgeLength < 1e-6f || edgeLengthFraction <= 0.0f) continue;
+
+                Vec3 tangent = normalized2d(edgeVector);
+                Vec3 normal(-tangent.y, tangent.x, 0.0f);
+                Vec3 center = (a + b) * 0.5f;
+                float halfLength = edgeLength * edgeLengthFraction * 0.5f;
+
+                m_typeASdfB.push_back({ center, tangent, normal, halfLength, edgeHalfDepth });
+            }
+        }
+    }
+
+    void liftTypeAIsoGeometry()
+    {
+        zSpace::zFnGraph contourFn(m_typeAIsoContour);
+        zSpace::zPointArray contourPositions;
+        contourFn.getVertexPositions(contourPositions);
+        for (auto& p : contourPositions) {
+            p.z = m_massingZ + 0.006f;
+        }
+        if (!contourPositions.empty()) {
+            contourFn.setVertexPositions(contourPositions);
+        }
     }
 
     void buildStreetSdfField()
@@ -909,6 +1022,31 @@ private:
         return primaryStreetWidth() * (1.0f / 3.0f);
     }
 
+    float typeASdf(const Vec3& p) const
+    {
+        float d = 1e9f;
+        for (const auto& box : m_typeASdfA) {
+            d = std::min(d, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+        }
+        for (const auto& box : m_typeASdfB) {
+            d = std::min(d, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+        }
+
+        return d;
+    }
+
+    float orientedBoxSdf(const Vec3& p, const Vec3& center, const Vec3& axisX, const Vec3& axisY, float halfX, float halfY) const
+    {
+        Vec3 rel = p - center;
+        float qx = std::abs(dot2d(rel, axisX)) - halfX;
+        float qy = std::abs(dot2d(rel, axisY)) - halfY;
+        float ox = std::max(qx, 0.0f);
+        float oy = std::max(qy, 0.0f);
+        float outside = std::sqrt(ox * ox + oy * oy);
+        float inside = std::min(std::max(qx, qy), 0.0f);
+        return outside + inside;
+    }
+
     Color streetColor(StreetClass streetClass) const
     {
         switch (streetClass) {
@@ -967,6 +1105,17 @@ private:
         for (auto& plotData : m_plots) {
             scene().draw(plotData.centerlineGraph, graphDisplay);
         }
+    }
+
+    void drawTypeASdfContour(Renderer& renderer)
+    {
+        (void)renderer;
+        zDisplayGraphSetting contourDisplay;
+        contourDisplay.showEdges = true;
+        contourDisplay.showVertices = false;
+        contourDisplay.edgeColor = Color(0.0f, 0.0f, 0.0f, 1.0f);
+        contourDisplay.edgeWidth = 2.0f;
+        scene().draw(m_typeAIsoContour, contourDisplay);
     }
 
     void drawSimpleMassing(Renderer& renderer, zSpace::zFnMesh& fn)
