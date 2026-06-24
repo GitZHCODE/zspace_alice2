@@ -32,8 +32,7 @@ public:
         m_ui = std::make_unique<SimpleUI>(input());
         m_ui->setTheme(SimpleUI::UITheme::Dark);
         m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.0f, 100.0f, m_p);
-        m_ui->addSlider("edge", Vec2{14.0f, 112.0f}, 240.0f, 0.0f, 1.0f, m_typeAEdgeLengthFraction);
-        m_ui->addToggle("Field Mesh", UIRect{14.0f, 142.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
+        m_ui->addToggle("Field Mesh", UIRect{14.0f, 112.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
 
         loadMesh();
         if (!m_loaded) return;
@@ -52,10 +51,6 @@ public:
             buildPlotRecords(fn);
             buildStreetSdfField();
             buildTypeACenterlineGraphs();
-            buildTypeASdfField();
-        }
-
-        if (std::abs(m_typeAEdgeLengthFraction - m_lastBuiltTypeAEdgeLengthFraction) > 0.001f) {
             buildTypeASdfField();
         }
 
@@ -140,8 +135,6 @@ private:
     float m_typeAMaxWidthMeters = 25.0f;
     float m_typeARoadSetbackMeters = 5.0f;
     float m_typeALocalSetbackMeters = 2.0f;
-    float m_typeAEdgeLengthFraction = 0.65f;
-    float m_lastBuiltTypeAEdgeLengthFraction = -1.0f;
     float m_openSpaceZ = 0.001f;
     float m_p = 12.0f;
     float m_lastBuiltP = -1.0f;
@@ -216,6 +209,8 @@ private:
         int id;
         int faceIndex;
         Vec3 center;
+        float typeABuildingWidthMeters = 25.0f;
+        float typeAEdgeLengthFraction = 1.0f;
         std::vector<Vec3> vertices;
         std::vector<PlotBoundaryEdge> boundaryEdges;
         std::vector<CenterlineGraphEdge> centerlineGraphEdges;
@@ -633,6 +628,8 @@ private:
             plotData.id = static_cast<int>(m_plots.size());
             plotData.faceIndex = i;
             plotData.center = toVec3(face.getCenter());
+            plotData.typeABuildingWidthMeters = randomTypeABuildingWidthMeters(plotData.id);
+            plotData.typeAEdgeLengthFraction = randomTypeAEdgeLengthFraction(plotData.id);
             plotData.vertices.reserve(positions.size());
             plotData.boundaryEdges.reserve(positions.size());
 
@@ -683,14 +680,39 @@ private:
                   << " split: " << split << std::endl;
     }
 
+    float deterministicUnitRandom(int id, int salt) const
+    {
+        float value = std::sin(static_cast<float>((id + 1) * 73 + salt * 193) * 12.9898f) * 43758.5453f;
+        return value - std::floor(value);
+    }
+
+    float randomTypeABuildingWidthMeters(int plotId) const
+    {
+        float t = deterministicUnitRandom(plotId, 1);
+        return m_typeAMinWidthMeters + (m_typeAMaxWidthMeters - m_typeAMinWidthMeters) * t;
+    }
+
+    float randomTypeAEdgeLengthFraction(int plotId) const
+    {
+        float candidate = 0.25f + deterministicUnitRandom(plotId, 2) * 0.75f;
+        return sanitizeTypeAEdgeLengthFraction(candidate);
+    }
+
+    float sanitizeTypeAEdgeLengthFraction(float value) const
+    {
+        if (value > 0.75f) return 1.0f;
+        return std::clamp(value, 0.25f, 0.75f);
+    }
+
     void buildTypeACenterlineGraphs()
     {
-        const float width = metersToModelUnits(m_typeAMaxWidthMeters);
         const float minWidth = metersToModelUnits(m_typeAMinWidthMeters);
-        if (width < minWidth || width <= 1e-6f) return;
 
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
+            float width = metersToModelUnits(plotData.typeABuildingWidthMeters);
+            if (width < minWidth || width <= 1e-6f) continue;
+
             plotData.buildCenterlineGraph(
                 metersToModelUnits(m_typeARoadSetbackMeters),
                 metersToModelUnits(m_typeALocalSetbackMeters),
@@ -704,7 +726,7 @@ private:
         }
 
         std::cout << "[URBAN CODEX LOOP] Type A plot centerline graph edges: " << graphEdges
-                  << " | width " << m_typeAMaxWidthMeters << "m"
+                  << " | width range " << m_typeAMinWidthMeters << "-" << m_typeAMaxWidthMeters << "m"
                   << " | road setback " << m_typeARoadSetbackMeters << "m"
                   << " | local setback " << m_typeALocalSetbackMeters << "m" << std::endl;
     }
@@ -736,21 +758,19 @@ private:
         fn.updateColors(zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
         fn.getIsocontour(m_typeAIsoContour, 0.0f);
         liftTypeAIsoGeometry();
-
-        m_lastBuiltTypeAEdgeLengthFraction = m_typeAEdgeLengthFraction;
     }
 
     void buildTypeASdfPrimitives()
     {
         m_typeASdfPlots.clear();
 
-        const float buildingWidth = metersToModelUnits(m_typeAMaxWidthMeters);
-        const float cornerHalfSize = buildingWidth * 0.6f;
-        const float edgeHalfDepth = buildingWidth * 0.5f;
-        const float edgeLengthFraction = saturate(m_typeAEdgeLengthFraction);
-        const bool fullGraph = edgeLengthFraction >= 0.999f;
-
         for (auto& plotData : m_plots) {
+            const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
+            const float cornerHalfSize = buildingWidth * 0.6f;
+            const float edgeHalfDepth = buildingWidth * 0.5f;
+            const float edgeLengthFraction = sanitizeTypeAEdgeLengthFraction(plotData.typeAEdgeLengthFraction);
+            const bool fullGraph = edgeLengthFraction >= 0.999f;
+
             TypeAPlotSdf plotSdf;
             addTypeASetbackClipPlanes(plotData, plotSdf);
 

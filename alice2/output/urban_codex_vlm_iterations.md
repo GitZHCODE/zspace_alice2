@@ -252,13 +252,15 @@ Type A rule:
 - primary road width = `p`, secondary = `2/3 p`, tertiary = `1/3 p`
 - default road widths are 12m, 8m, and 4m
 - global parameter scale = 1.0 before conversion to model units
-- building width range = 15m minimum to 25m maximum
-- current Type A uses the maximum width, 25m
+- Type A building width range = 15m minimum to 25m maximum
+- current Type A assigns building width randomly per plot within the 15m-25m range
+- Type A edge length is assigned per plot and can later be updated from VLM critique
+- Type A edge length rule: values are constrained to 0.25-0.75; if a proposed/random value is above 0.75, it becomes 1.0
 - setback = 5m for primary and secondary road edges
 - setback = 2m for tertiary road and plot split line edges
 - SDF A places a square at two opposite centerline-graph corners, with side length `1.2 * building width`
 - SDF B places building-width strips that start from those same two corners and follow their incident graph edges
-- SDF B edge length is controlled by the `edge` slider from 0 to 1
+- SDF B edge length uses the per-plot Type A edge-length parameter
 - for `edge < 1.0`, SDF C produces two L-shaped forms per plot
 - for `edge = 1.0`, SDF C uses the full offset centerline graph
 - SDF C is a per-plot subtractive setback zone generated from continuous inset boundary half-planes

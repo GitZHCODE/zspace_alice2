@@ -54,11 +54,13 @@ The local VLM interface is Ollama.
   - graph vertex count equals plot vertex count
   - each graph edge stores its offset distance from the matching boundary edge
   - graph offset = setback distance + half building width + half road width for primary/secondary/tertiary frontages
-  - Type A building width range is 15m to 25m; current graph uses 25m
+  - Type A building width range is 15m to 25m; width is a per-plot parameter
+  - Type A edge length is a per-plot parameter constrained to 0.25-0.75; if above 0.75, set it to 1.0
+  - current sketch assigns Type A width and edge length randomly per plot until VLM critique drives explicit values
   - Type A setback is 5m on primary/secondary roads and 2m on tertiary/plot-line edges
   - centerline graph geometry is stored as a zSpace `zObjectGraph` on each `plot`
   - Type A SDF A: square at two opposite centerline graph corners, side length `1.2 * building width`
-  - Type A SDF B: building-width strips starting from those same corners along incident graph edges, length controlled by a 0-1 `edge` slider
+  - Type A SDF B: building-width strips starting from those same corners along incident graph edges, length controlled by the per-plot edge parameter
   - Type A SDF C: per-plot subtractive setback zone from continuous inset boundary half-planes, using variable setback plus road half-width where applicable
   - Type A result SDF = `(A union B) subtract C`, extracted as a level-0 iso-contour; two L-shapes when `edge < 1.0`, full offset center graph when `edge = 1.0`
   - future building typologies should choose frontage/setback/open-side rules from these edge tags and graph edges
