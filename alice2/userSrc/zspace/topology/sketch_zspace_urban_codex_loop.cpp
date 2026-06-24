@@ -599,7 +599,9 @@ private:
         buildPlotRecords(fn);
         buildStreetSdfField();
         buildTypeACenterlineGraphs();
+        buildTypeBCenterlineGraphs();
         buildTypeASdfField();
+        buildTypeBSdfField();
 
         m_loaded = true;
     }
