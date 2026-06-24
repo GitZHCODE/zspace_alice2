@@ -42,8 +42,8 @@ The local VLM interface is Ollama.
   - derive a zSpace mesh scalar-field SDF from the selected classified edges
   - extract level-0 street geometry with `zFnMeshScalarField::getIsocontour`
   - keep the sampled field mesh behind a `Field Mesh` UI toggle, off by default
-  - use parametric offsets: primary roads `p`, secondary `2/3 p`, tertiary `1/3 p`; default `p = 0.3`
-  - expose a live `p` slider for width tuning while keeping the selected street topology stable
+  - use parametric road widths in meters: primary roads `p`, secondary `2/3 p`, tertiary `1/3 p`; default `p = 30m`
+  - expose a live `p` slider from 0m to 100m for width tuning while keeping the selected street topology stable
   - derive secondary and tertiary street classes from the selected primary network
 - Building typology SDF methods should use the `plot` class:
   - one `plot` is one mesh face / plot
@@ -53,6 +53,8 @@ The local VLM interface is Ollama.
   - graph vertex count equals plot vertex count
   - each graph edge stores its offset distance from the matching boundary edge
   - graph offset = setback distance + half building width + half road width for primary/secondary/tertiary frontages
+  - Type A building width range is 15m to 25m; current graph uses 25m
+  - Type A setback is 5m on primary/secondary roads and 2m on tertiary/plot-line edges
   - centerline graph geometry is stored as a zSpace `zObjectGraph` on each `plot`
   - future building typologies should choose frontage/setback/open-side rules from these edge tags and graph edges
 - Make the sketch deterministic:

@@ -31,7 +31,7 @@ public:
 
         m_ui = std::make_unique<SimpleUI>(input());
         m_ui->setTheme(SimpleUI::UITheme::Dark);
-        m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.05f, 0.50f, m_p);
+        m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.0f, 100.0f, m_p);
         m_ui->addToggle("Field Mesh", UIRect{14.0f, 112.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
 
         loadMesh();
@@ -129,12 +129,12 @@ private:
     float m_minBuildingDepth = 0.060f;
     float m_maxBuildingAspect = 2.6f;
     float m_edgeClearanceFactor = 0.82f;
-    float m_typeAMinWidthMeters = 1.2f;
-    float m_typeAMaxWidthMeters = 20.0f;
-    float m_typeARoadSetbackMeters = 0.5f;
-    float m_typeALocalSetbackMeters = 0.2f;
+    float m_typeAMinWidthMeters = 15.0f;
+    float m_typeAMaxWidthMeters = 25.0f;
+    float m_typeARoadSetbackMeters = 5.0f;
+    float m_typeALocalSetbackMeters = 2.0f;
     float m_openSpaceZ = 0.001f;
-    float m_p = 0.30f;
+    float m_p = 30.0f;
     float m_lastBuiltP = -1.0f;
     float m_siteLongDimensionMeters = 500.0f;
     float m_modelUnitsPerMeter = 1.0f;
@@ -895,7 +895,7 @@ private:
 
     float primaryStreetWidth() const
     {
-        return std::max(0.01f, m_p);
+        return metersToModelUnits(std::max(0.0f, m_p));
     }
 
     float secondaryStreetWidth() const
