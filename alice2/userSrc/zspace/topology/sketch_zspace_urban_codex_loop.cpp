@@ -193,6 +193,17 @@ private:
         float halfY;
     };
 
+    struct TypeASetbackPlane {
+        Vec3 point;
+        Vec3 inwardNormal;
+    };
+
+    struct TypeAPlotSdf {
+        std::vector<TypeASdfBox> sdfA;
+        std::vector<TypeASdfBox> sdfB;
+        std::vector<TypeASetbackPlane> setbackPlanes;
+    };
+
     class plot {
     public:
         struct CenterlineGraphEdge {
@@ -342,9 +353,7 @@ private:
     zSpace::zObjectGraph m_streetIsoContour;
     zSpace::zObjectMeshScalarField m_typeASdfField;
     zSpace::zObjectGraph m_typeAIsoContour;
-    std::vector<TypeASdfBox> m_typeASdfA;
-    std::vector<TypeASdfBox> m_typeASdfB;
-    std::vector<TypeASdfBox> m_typeASdfC;
+    std::vector<TypeAPlotSdf> m_typeASdfPlots;
 
     static Vec3 toVec3(const zSpace::zVector& p)
     {
@@ -733,9 +742,7 @@ private:
 
     void buildTypeASdfPrimitives()
     {
-        m_typeASdfA.clear();
-        m_typeASdfB.clear();
-        m_typeASdfC.clear();
+        m_typeASdfPlots.clear();
 
         const float buildingWidth = metersToModelUnits(m_typeAMaxWidthMeters);
         const float cornerHalfSize = buildingWidth * 0.6f;
@@ -744,7 +751,8 @@ private:
         const bool fullGraph = edgeLengthFraction >= 0.999f;
 
         for (auto& plotData : m_plots) {
-            addTypeASetbackSubtractBoxes(plotData);
+            TypeAPlotSdf plotSdf;
+            addTypeASetbackClipPlanes(plotData, plotSdf);
 
             zSpace::zFnGraph graphFn(plotData.centerlineGraph);
             zSpace::zPointArray graphPositions;
@@ -761,7 +769,7 @@ private:
 
             for (int cornerIndex : cornerIndices) {
                 if (cornerIndex < 0 || cornerIndex >= static_cast<int>(graphPositions.size())) continue;
-                m_typeASdfA.push_back({
+                plotSdf.sdfA.push_back({
                     toVec3(graphPositions[cornerIndex]),
                     Vec3(1.0f, 0.0f, 0.0f),
                     Vec3(0.0f, 1.0f, 0.0f),
@@ -777,42 +785,40 @@ private:
                     if (edge.endVertexIndex >= static_cast<int>(graphPositions.size())) continue;
 
                     addTypeAEdgeStrip(
+                        plotSdf,
                         toVec3(graphPositions[edge.startVertexIndex]),
                         toVec3(graphPositions[edge.endVertexIndex]),
                         1.0f,
                         edgeHalfDepth
                     );
                 }
+                m_typeASdfPlots.push_back(plotSdf);
                 continue;
             }
 
             for (int cornerIndex : cornerIndices) {
-                addTypeAIncidentEdgeStrips(plotData, graphPositions, cornerIndex, edgeLengthFraction, edgeHalfDepth);
+                addTypeAIncidentEdgeStrips(plotData, plotSdf, graphPositions, cornerIndex, edgeLengthFraction, edgeHalfDepth);
+            }
+
+            if (!plotSdf.sdfA.empty() || !plotSdf.sdfB.empty()) {
+                m_typeASdfPlots.push_back(plotSdf);
             }
         }
     }
 
-    void addTypeASetbackSubtractBoxes(const plot& plotData)
+    void addTypeASetbackClipPlanes(const plot& plotData, TypeAPlotSdf& plotSdf) const
     {
         for (const auto& edge : plotData.boundaryEdges) {
             Vec3 edgeVector = edge.b - edge.a;
             float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
-            float setback = setbackForTypeABoundary(edge.boundaryType);
-            if (edgeLength < 1e-6f || setback <= 1e-6f) continue;
+            float clearance = setbackClearanceForTypeABoundary(edge.boundaryType);
+            if (edgeLength < 1e-6f || clearance <= 1e-6f) continue;
 
             Vec3 tangent = normalized2d(edgeVector);
             Vec3 normalA(-tangent.y, tangent.x, 0.0f);
             Vec3 midpoint = (edge.a + edge.b) * 0.5f;
             Vec3 inwardNormal = dot2d(plotData.center - midpoint, normalA) >= 0.0f ? normalA : normalA * -1.0f;
-            Vec3 center = midpoint + inwardNormal * (setback * 0.5f);
-
-            m_typeASdfC.push_back({
-                center,
-                tangent,
-                inwardNormal,
-                edgeLength * 0.5f,
-                setback * 0.5f
-            });
+            plotSdf.setbackPlanes.push_back({ edge.a + inwardNormal * clearance, inwardNormal });
         }
     }
 
@@ -832,6 +838,7 @@ private:
 
     void addTypeAIncidentEdgeStrips(
         const plot& plotData,
+        TypeAPlotSdf& plotSdf,
         const zSpace::zPointArray& graphPositions,
         int cornerIndex,
         float edgeLengthFraction,
@@ -854,6 +861,7 @@ private:
 
             if (otherIndex < 0 || otherIndex >= static_cast<int>(graphPositions.size())) continue;
             addTypeAEdgeStrip(
+                plotSdf,
                 toVec3(graphPositions[cornerIndex]),
                 toVec3(graphPositions[otherIndex]),
                 edgeLengthFraction,
@@ -862,7 +870,7 @@ private:
         }
     }
 
-    void addTypeAEdgeStrip(const Vec3& start, const Vec3& end, float lengthFraction, float edgeHalfDepth)
+    void addTypeAEdgeStrip(TypeAPlotSdf& plotSdf, const Vec3& start, const Vec3& end, float lengthFraction, float edgeHalfDepth)
     {
         Vec3 edgeVector = end - start;
         float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
@@ -872,7 +880,7 @@ private:
         Vec3 normal(-tangent.y, tangent.x, 0.0f);
         float segmentLength = edgeLength * saturate(lengthFraction);
         Vec3 center = start + tangent * (segmentLength * 0.5f);
-        m_typeASdfB.push_back({ center, tangent, normal, segmentLength * 0.5f, edgeHalfDepth });
+        plotSdf.sdfB.push_back({ center, tangent, normal, segmentLength * 0.5f, edgeHalfDepth });
     }
 
     void liftTypeAIsoGeometry()
@@ -1133,22 +1141,51 @@ private:
         return metersToModelUnits(m_typeALocalSetbackMeters);
     }
 
+    float roadHalfWidthForTypeABoundary(PlotBoundaryType boundaryType) const
+    {
+        switch (boundaryType) {
+            case PlotBoundaryType::PrimaryRoad: return primaryStreetWidth() * 0.5f;
+            case PlotBoundaryType::SecondaryRoad: return secondaryStreetWidth() * 0.5f;
+            case PlotBoundaryType::TertiaryRoad: return tertiaryStreetWidth() * 0.5f;
+            case PlotBoundaryType::PlotSplitLine: return 0.0f;
+        }
+        return 0.0f;
+    }
+
+    float setbackClearanceForTypeABoundary(PlotBoundaryType boundaryType) const
+    {
+        return setbackForTypeABoundary(boundaryType) + roadHalfWidthForTypeABoundary(boundaryType);
+    }
+
     float typeASdf(const Vec3& p) const
     {
-        float ab = 1e9f;
-        for (const auto& box : m_typeASdfA) {
-            ab = std::min(ab, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
-        }
-        for (const auto& box : m_typeASdfB) {
-            ab = std::min(ab, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+        float d = 1e9f;
+
+        for (const auto& plotSdf : m_typeASdfPlots) {
+            float ab = 1e9f;
+            for (const auto& box : plotSdf.sdfA) {
+                ab = std::min(ab, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+            }
+            for (const auto& box : plotSdf.sdfB) {
+                ab = std::min(ab, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+            }
+
+            float clip = typeASetbackClipSdf(p, plotSdf);
+            d = std::min(d, std::max(ab, clip));
         }
 
-        float c = 1e9f;
-        for (const auto& box : m_typeASdfC) {
-            c = std::min(c, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
+        return d;
+    }
+
+    float typeASetbackClipSdf(const Vec3& p, const TypeAPlotSdf& plotSdf) const
+    {
+        float clip = -1e9f;
+        for (const auto& plane : plotSdf.setbackPlanes) {
+            float outsideOffsetBoundary = -dot2d(p - plane.point, plane.inwardNormal);
+            clip = std::max(clip, outsideOffsetBoundary);
         }
 
-        return std::max(ab, -c);
+        return clip;
     }
 
     float orientedBoxSdf(const Vec3& p, const Vec3& center, const Vec3& axisX, const Vec3& axisY, float halfX, float halfY) const

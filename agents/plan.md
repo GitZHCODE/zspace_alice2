@@ -59,7 +59,7 @@ The local VLM interface is Ollama.
   - centerline graph geometry is stored as a zSpace `zObjectGraph` on each `plot`
   - Type A SDF A: square at two opposite centerline graph corners, side length `1.2 * building width`
   - Type A SDF B: building-width strips starting from those same corners along incident graph edges, length controlled by a 0-1 `edge` slider
-  - Type A SDF C: subtractive setback zone from plot edges using variable setbacks
+  - Type A SDF C: per-plot subtractive setback zone from continuous inset boundary half-planes, using variable setback plus road half-width where applicable
   - Type A result SDF = `(A union B) subtract C`, extracted as a level-0 iso-contour; two L-shapes when `edge < 1.0`, full offset center graph when `edge = 1.0`
   - future building typologies should choose frontage/setback/open-side rules from these edge tags and graph edges
 - Make the sketch deterministic:
