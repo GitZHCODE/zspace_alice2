@@ -207,7 +207,8 @@ private:
     };
 
     struct TypeBPlotSdf {
-        std::vector<TypeASdfBox> sdfA;
+        std::vector<Vec3> graphPoints;
+        float graphHalfWidth = 0.0f;
         std::vector<TypeASetbackPlane> setbackPlanes;
     };
 
@@ -1023,16 +1024,13 @@ private:
             graphFn.getVertexPositions(graphPositions);
             if (graphPositions.size() < 2) continue;
 
-            for (int i = 0; i < static_cast<int>(graphPositions.size()) - 1; ++i) {
-                addTypeBGraphStrip(
-                    plotSdf,
-                    toVec3(graphPositions[i]),
-                    toVec3(graphPositions[i + 1]),
-                    edgeHalfDepth
-                );
+            plotSdf.graphHalfWidth = edgeHalfDepth;
+            plotSdf.graphPoints.reserve(graphPositions.size());
+            for (const auto& graphPosition : graphPositions) {
+                plotSdf.graphPoints.push_back(toVec3(graphPosition));
             }
 
-            if (!plotSdf.sdfA.empty()) {
+            if (plotSdf.graphPoints.size() > 1) {
                 m_typeBSdfPlots.push_back(plotSdf);
             }
         }
@@ -1052,18 +1050,6 @@ private:
             Vec3 inwardNormal = dot2d(plotData.center - midpoint, normalA) >= 0.0f ? normalA : normalA * -1.0f;
             plotSdf.setbackPlanes.push_back({ edge.a + inwardNormal * clearance, inwardNormal });
         }
-    }
-
-    void addTypeBGraphStrip(TypeBPlotSdf& plotSdf, const Vec3& start, const Vec3& end, float edgeHalfDepth)
-    {
-        Vec3 edgeVector = end - start;
-        float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
-        if (edgeLength < 1e-6f) return;
-
-        Vec3 tangent = normalized2d(edgeVector);
-        Vec3 normal(-tangent.y, tangent.x, 0.0f);
-        Vec3 center = (start + end) * 0.5f;
-        plotSdf.sdfA.push_back({ center, tangent, normal, edgeLength * 0.5f, edgeHalfDepth });
     }
 
     std::vector<int> selectedTypeACorners(const zSpace::zPointArray& graphPositions) const
@@ -1450,10 +1436,7 @@ private:
         float d = 1e9f;
 
         for (const auto& plotSdf : m_typeBSdfPlots) {
-            float a = 1e9f;
-            for (const auto& box : plotSdf.sdfA) {
-                a = std::min(a, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
-            }
+            float a = wholeGraphOffsetSdf(p, plotSdf.graphPoints, plotSdf.graphHalfWidth);
 
             float clip = typeBSetbackClipSdf(p, plotSdf);
             d = std::min(d, std::max(a, clip));
@@ -1471,6 +1454,18 @@ private:
         }
 
         return clip;
+    }
+
+    float wholeGraphOffsetSdf(const Vec3& p, const std::vector<Vec3>& graphPoints, float halfWidth) const
+    {
+        if (graphPoints.size() < 2) return 1e9f;
+
+        float d = 1e9f;
+        for (size_t i = 0; i + 1 < graphPoints.size(); ++i) {
+            d = std::min(d, distanceToSegment2d(p, graphPoints[i], graphPoints[i + 1]));
+        }
+
+        return d - halfWidth;
     }
 
     float orientedBoxSdf(const Vec3& p, const Vec3& center, const Vec3& axisX, const Vec3& axisY, float halfX, float halfY) const

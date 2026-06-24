@@ -144,7 +144,7 @@ alice2\run_with_zspace.bat
 - Each plot stores a deterministic random building type assignment; only the assigned typology is drawn/generated for that plot.
 - Building Type A stores per-plot width and edge length parameters; width range is 15m to 25m, edge length varies from 0.25 to 0.75 and snaps to 1.0 above 0.75.
 - Building Type B stores per-plot S-graph parameters `X` and `Y`; `X + Y = 1.0`, with current random X from 0.25 to 0.75 and Y computed from X.
-- Building Type B displays its S graph in zMagenta and generates an SDF by offsetting that graph by building width, then clipping it with the same continuous inset boundary half-planes as Type A.
+- Building Type B displays its S graph in zMagenta and generates an SDF by offsetting the whole graph as one graph-distance field, then clipping it with the same continuous inset boundary half-planes as Type A.
 
 ## Implementation Status
 
