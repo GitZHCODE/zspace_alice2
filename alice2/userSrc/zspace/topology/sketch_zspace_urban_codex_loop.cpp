@@ -138,6 +138,7 @@ private:
     float m_lastBuiltP = -1.0f;
     float m_siteLongDimensionMeters = 500.0f;
     float m_modelUnitsPerMeter = 1.0f;
+    float m_globalParameterScale = 0.1f;
     float m_civicSpineWidth = 0.055f;
     float m_civicPlazaRadius = 0.135f;
     float m_neighborhoodPlazaRadius = 0.105f;
@@ -358,7 +359,7 @@ private:
 
     float metersToModelUnits(float meters) const
     {
-        return meters * m_modelUnitsPerMeter;
+        return meters * m_modelUnitsPerMeter * m_globalParameterScale;
     }
 
     float distanceToSegment2d(const Vec3& p, const Vec3& a, const Vec3& b) const
