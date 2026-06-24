@@ -225,7 +225,7 @@ For interactive tuning, automatic screenshot-and-exit is disabled. Press `S` in 
 
 ## Method Update: Plot Boundary Records
 
-Codex added a plot-side data structure for the upcoming building-typology SDF work. Each mesh face is represented as a `PlotRecord` with ordered vertices and boundary edges.
+Codex added a plot-side data structure for the upcoming building-typology SDF work. Each mesh face is retained as one `PlotRecord`.
 
 Each `PlotBoundaryEdge` is classified as one of:
 
@@ -234,7 +234,9 @@ Each `PlotBoundaryEdge` is classified as one of:
 - `TertiaryRoad`
 - `PlotSplitLine`
 
-The classification is derived by matching each face edge against the selected street-edge network. If the edge is not part of the street network, it remains a plot split line. This prepares each plot to choose building typology rules based on road frontage.
+The classification is derived by matching each face edge against the selected street-edge network. If the edge is not part of the street network, it remains a plot split line.
+
+Each `PlotRecord` stores the face index, center, vertices, and boundary edges. Every boundary edge is classified as primary road, secondary road, tertiary road, or plot split line, so future building typology SDF methods can choose rules from the exact frontage condition of each face.
 
 ## Iteration 002
 

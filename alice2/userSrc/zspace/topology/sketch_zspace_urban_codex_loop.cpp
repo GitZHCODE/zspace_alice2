@@ -171,6 +171,7 @@ private:
     };
 
     struct PlotRecord {
+        int id;
         int faceIndex;
         Vec3 center;
         std::vector<Vec3> vertices;
@@ -455,6 +456,7 @@ private:
             if (positions.size() < 3) continue;
 
             PlotRecord plot;
+            plot.id = static_cast<int>(m_plots.size());
             plot.faceIndex = i;
             plot.center = toVec3(face.getCenter());
             plot.vertices.reserve(positions.size());
