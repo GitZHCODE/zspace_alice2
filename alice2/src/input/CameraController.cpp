@@ -87,7 +87,7 @@ namespace alice2 {
     }
 
     void CameraController::zoom(float delta) {
-        if (m_mode == CameraMode::Orbit) {
+        if (m_mode == CameraMode::Orbit && m_camera.getProjectionType() == ProjectionType::Perspective) {
             dolly(delta * m_zoomSpeed);
         } else {
             m_camera.zoom(delta * m_zoomSpeed);
@@ -143,13 +143,13 @@ namespace alice2 {
         // Handle right mouse for horizontal zooming only.
         if (m_inputManager.isMouseButtonDown(MouseButton::Right)) {
             Vec3 delta = mouse.delta;
-            dolly(-delta.x * m_zoomSpeed * 0.05f);
+            zoom(-delta.x * 0.05f);
         }
 
         // Handle mouse wheel for zooming
         float wheelDelta = mouse.wheelDelta;
         if (wheelDelta != 0.0f) {
-            dolly(-wheelDelta * m_zoomSpeed);
+            zoom(-wheelDelta);
         }
     }
 
