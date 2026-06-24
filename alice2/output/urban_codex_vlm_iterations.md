@@ -238,6 +238,22 @@ The classification is derived by matching each face edge against the selected st
 
 Each `PlotRecord` stores the face index, center, vertices, and boundary edges. Every boundary edge is classified as primary road, secondary road, tertiary road, or plot split line, so future building typology SDF methods can choose rules from the exact frontage condition of each face.
 
+## Method Update: Building Type A Centerline Graph
+
+Codex added a first building typology method and populated every face/plot with Type A edge-parallel building segments.
+
+Type A rule:
+
+- create a centerline from each plot boundary edge
+- offset the centerline inward from the plot edge
+- offset distance = setback distance + half building width
+- building width range = 1.2m minimum to 2.0m maximum
+- current Type A uses the maximum width, 2.0m
+- setback = 0.5m for primary and secondary road edges
+- setback = 0.2m for tertiary road and plot split line edges
+
+The sketch stores each Type A segment as data: plot id, frontage type, centerline endpoints, inward normal, and width. The current display draws the resulting building strips in black and overlays a thin light centerline so the generated centerline graph can be inspected.
+
 ## Iteration 002
 
 Screenshot: `alice2/output/iterations/iter_002_open_space_sdf.png`

@@ -50,6 +50,7 @@ public:
             buildStreetEdges(fn);
             buildPlotRecords(fn);
             buildStreetSdfField();
+            buildTypeABuildings();
         }
 
         m_frameCount++;
@@ -72,7 +73,7 @@ public:
         drawNeutralBaseMesh(renderer, fn);
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
-        drawSimpleMassing(renderer, fn);
+        drawTypeABuildings(renderer);
 
         if (m_ui) {
             m_ui->draw(renderer);
@@ -128,6 +129,11 @@ private:
     float m_minBuildingDepth = 0.060f;
     float m_maxBuildingAspect = 2.6f;
     float m_edgeClearanceFactor = 0.82f;
+    float m_typeAMinWidthMeters = 1.2f;
+    float m_typeAMaxWidthMeters = 2.0f;
+    float m_typeARoadSetbackMeters = 0.5f;
+    float m_typeALocalSetbackMeters = 0.2f;
+    float m_typeAEndTrimFactor = 0.24f;
     float m_openSpaceZ = 0.001f;
     float m_p = 0.30f;
     float m_lastBuiltP = -1.0f;
@@ -178,8 +184,18 @@ private:
         std::vector<PlotBoundaryEdge> boundaryEdges;
     };
 
+    struct BuildingTypeASegment {
+        int plotId;
+        PlotBoundaryType frontageType;
+        Vec3 centerlineA;
+        Vec3 centerlineB;
+        Vec3 inwardNormal;
+        float width;
+    };
+
     std::vector<StreetEdge> m_streetEdges;
     std::vector<PlotRecord> m_plots;
+    std::vector<BuildingTypeASegment> m_typeABuildings;
     zSpace::zObjectMeshScalarField m_streetSdfField;
     zSpace::zObjectGraph m_streetIsoContour;
 
@@ -350,6 +366,7 @@ private:
         buildStreetEdges(fn);
         buildPlotRecords(fn);
         buildStreetSdfField();
+        buildTypeABuildings();
 
         m_loaded = true;
     }
@@ -507,6 +524,50 @@ private:
                   << " secondary: " << secondary
                   << " tertiary: " << tertiary
                   << " split: " << split << std::endl;
+    }
+
+    void buildTypeABuildings()
+    {
+        m_typeABuildings.clear();
+
+        const float width = metersToModelUnits(m_typeAMaxWidthMeters);
+        const float minWidth = metersToModelUnits(m_typeAMinWidthMeters);
+        if (width < minWidth || width <= 1e-6f) return;
+
+        for (const auto& plot : m_plots) {
+            for (const auto& edge : plot.boundaryEdges) {
+                Vec3 edgeVector = edge.b - edge.a;
+                float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
+                if (edgeLength < minWidth) continue;
+
+                Vec3 tangent = normalized2d(edgeVector);
+                Vec3 normalA(-tangent.y, tangent.x, 0.0f);
+                Vec3 midpoint = (edge.a + edge.b) * 0.5f;
+                Vec3 inwardNormal = dot2d(plot.center - midpoint, normalA) >= 0.0f ? normalA : normalA * -1.0f;
+
+                float setback = setbackForBoundary(edge.boundaryType);
+                float offsetDistance = setback + width * 0.5f;
+                float trim = std::min(edgeLength * m_typeAEndTrimFactor, offsetDistance);
+                if (edgeLength - trim * 2.0f < minWidth) {
+                    trim = std::max(0.0f, (edgeLength - minWidth) * 0.5f);
+                }
+
+                Vec3 offset = inwardNormal * offsetDistance;
+                BuildingTypeASegment segment;
+                segment.plotId = plot.id;
+                segment.frontageType = edge.boundaryType;
+                segment.centerlineA = edge.a + tangent * trim + offset;
+                segment.centerlineB = edge.b - tangent * trim + offset;
+                segment.inwardNormal = inwardNormal;
+                segment.width = width;
+                m_typeABuildings.push_back(segment);
+            }
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Type A building centerlines: " << m_typeABuildings.size()
+                  << " | width " << m_typeAMaxWidthMeters << "m"
+                  << " | road setback " << m_typeARoadSetbackMeters << "m"
+                  << " | local setback " << m_typeALocalSetbackMeters << "m" << std::endl;
     }
 
     void buildStreetSdfField()
@@ -741,6 +802,19 @@ private:
         return primaryStreetWidth() * (1.0f / 3.0f);
     }
 
+    float setbackForBoundary(PlotBoundaryType boundaryType) const
+    {
+        switch (boundaryType) {
+            case PlotBoundaryType::PrimaryRoad:
+            case PlotBoundaryType::SecondaryRoad:
+                return metersToModelUnits(m_typeARoadSetbackMeters);
+            case PlotBoundaryType::TertiaryRoad:
+            case PlotBoundaryType::PlotSplitLine:
+                return metersToModelUnits(m_typeALocalSetbackMeters);
+        }
+        return metersToModelUnits(m_typeALocalSetbackMeters);
+    }
+
     Color streetColor(StreetClass streetClass) const
     {
         switch (streetClass) {
@@ -781,6 +855,32 @@ private:
                 Vec3 p2 = withZ(toVec3(positions[(j + 1) % positions.size()]), m_baseZ + 0.001f);
                 renderer.drawLine(p1, p2, Color(0.78f, 0.78f, 0.74f, 1.0f), 1.0f);
             }
+        }
+    }
+
+    void drawTypeABuildings(Renderer& renderer)
+    {
+        const Color buildingColor(0.0f, 0.0f, 0.0f, 1.0f);
+        const Color centerlineColor(0.92f, 0.92f, 0.88f, 1.0f);
+
+        for (const auto& segment : m_typeABuildings) {
+            Vec3 halfWidth = segment.inwardNormal * (segment.width * 0.5f);
+            Vec3 a0 = withZ(segment.centerlineA - halfWidth, m_massingZ);
+            Vec3 a1 = withZ(segment.centerlineB - halfWidth, m_massingZ);
+            Vec3 b1 = withZ(segment.centerlineB + halfWidth, m_massingZ);
+            Vec3 b0 = withZ(segment.centerlineA + halfWidth, m_massingZ);
+
+            renderer.drawTriangle(a0, a1, b1, buildingColor);
+            renderer.drawTriangle(a0, b1, b0, buildingColor);
+        }
+
+        for (const auto& segment : m_typeABuildings) {
+            renderer.drawLine(
+                withZ(segment.centerlineA, m_massingZ + 0.002f),
+                withZ(segment.centerlineB, m_massingZ + 0.002f),
+                centerlineColor,
+                1.0f
+            );
         }
     }
 
