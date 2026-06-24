@@ -205,6 +205,10 @@ Secondary and tertiary streets are derived from the primary network:
 - secondary streets are long cross streets or feeders related to the primary streets.
 - tertiary streets are the remaining local connector edges.
 
+Not every mesh edge is a street. Each mesh face is treated as a plot, and the algorithm selects only some plot edges as street centerlines. Non-selected edges remain plot divisions.
+
+The road widths are drawn as offset corridor geometry around selected street centerlines, not only as screen-space line weights. This makes the visible red/cyan/green street widths correspond to the `30m / 20m / 10m` dimensional rules.
+
 The road widths do not scale with `p`; they remain fixed at `30m / 20m / 10m` so the SDF remains dimensionally accurate.
 
 For interactive tuning, automatic screenshot-and-exit is disabled. Press `S` in the sketch window to capture the current view and exit when the chosen `p` value looks right.

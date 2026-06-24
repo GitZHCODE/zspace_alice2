@@ -384,11 +384,23 @@ private:
             }
         }
 
+        std::vector<std::pair<Vec3, Vec3>> secondaryEdges;
+        for (const auto& edge : uniqueEdges) {
+            float length = (edge.second - edge.first).length();
+            if (!isEdgeInList(primaryEdges, edge.first, edge.second) &&
+                isSecondaryStreetEdge(edge.first, edge.second, length, longest, primaryEdges)) {
+                secondaryEdges.push_back(edge);
+            }
+        }
+
         for (const auto& edge : uniqueEdges) {
             Vec3 a = edge.first;
             Vec3 b = edge.second;
             float length = (b - a).length();
-            StreetClass streetClass = classifyStreetEdge(a, b, length, longest, primaryEdges);
+            StreetClass streetClass = StreetClass::Tertiary;
+            if (!tryClassifyStreetEdge(a, b, length, longest, primaryEdges, secondaryEdges, streetClass)) {
+                continue;
+            }
 
             m_streetEdges.push_back({
                 a,
@@ -422,7 +434,7 @@ private:
         return (nearLeftBoundary || nearRightBoundary) && majorVertical;
     }
 
-    StreetClass classifyStreetEdge(
+    bool isSecondaryStreetEdge(
         const Vec3& a,
         const Vec3& b,
         float length,
@@ -430,10 +442,6 @@ private:
         const std::vector<std::pair<Vec3, Vec3>>& primaryEdges
     ) const
     {
-        if (isPrimaryStreetEdge(a, b, length, longest)) {
-            return StreetClass::Primary;
-        }
-
         Vec3 dir = normalized2d(b - a);
         Vec3 mid = (a + b) * 0.5f;
         float horizontalScore = std::abs(dir.x);
@@ -441,23 +449,88 @@ private:
         float primaryInfluenceDistance = metersToModelUnits(m_primaryRoadWidthMeters * 3.0f);
         float nearestPrimary = nearestPrimaryStreetDistance(mid, primaryEdges);
 
-        bool feederFromPrimary = nearestPrimary < primaryInfluenceDistance && horizontalScore > 0.32f;
-        bool longCrossStreet = horizontalScore > 0.45f || normalizedLength > 0.42f;
+        bool feederFromPrimary = nearestPrimary < primaryInfluenceDistance && horizontalScore > 0.45f && normalizedLength > 0.18f;
+        bool longCrossStreet = horizontalScore > 0.62f && normalizedLength > 0.26f;
+        return feederFromPrimary || longCrossStreet;
+    }
 
-        if (feederFromPrimary || longCrossStreet) {
-            return StreetClass::Secondary;
+    bool isTertiaryStreetEdge(
+        const Vec3& a,
+        const Vec3& b,
+        float length,
+        float longest,
+        const std::vector<std::pair<Vec3, Vec3>>& secondaryEdges
+    ) const
+    {
+        Vec3 bMin = toVec3(m_boundsMin);
+        Vec3 bMax = toVec3(m_boundsMax);
+        Vec3 span = bMax - bMin;
+        Vec3 dir = normalized2d(b - a);
+        Vec3 mid = (a + b) * 0.5f;
+        float verticalScore = std::abs(dir.y);
+        float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
+        float nearestSecondary = nearestEdgeDistance(mid, secondaryEdges);
+        float secondaryInfluenceDistance = metersToModelUnits(m_secondaryRoadWidthMeters * 2.5f);
+
+        float nx = span.x > 1e-6f ? (mid.x - bMin.x) / span.x : 0.0f;
+        float ny = span.y > 1e-6f ? (mid.y - bMin.y) / span.y : 0.0f;
+        float spacingGate = std::fmod(nx * 9.0f + ny * 5.0f, 2.0f);
+
+        return verticalScore > 0.45f &&
+               normalizedLength > 0.18f &&
+               nearestSecondary < secondaryInfluenceDistance &&
+               spacingGate < 1.0f;
+    }
+
+    bool tryClassifyStreetEdge(
+        const Vec3& a,
+        const Vec3& b,
+        float length,
+        float longest,
+        const std::vector<std::pair<Vec3, Vec3>>& primaryEdges,
+        const std::vector<std::pair<Vec3, Vec3>>& secondaryEdges,
+        StreetClass& streetClass
+    ) const
+    {
+        if (isPrimaryStreetEdge(a, b, length, longest)) {
+            streetClass = StreetClass::Primary;
+            return true;
+        }
+        if (isEdgeInList(secondaryEdges, a, b)) {
+            streetClass = StreetClass::Secondary;
+            return true;
+        }
+        if (isTertiaryStreetEdge(a, b, length, longest, secondaryEdges)) {
+            streetClass = StreetClass::Tertiary;
+            return true;
         }
 
-        return StreetClass::Tertiary;
+        return false;
     }
 
     float nearestPrimaryStreetDistance(const Vec3& p, const std::vector<std::pair<Vec3, Vec3>>& primaryEdges) const
     {
+        return nearestEdgeDistance(p, primaryEdges);
+    }
+
+    float nearestEdgeDistance(const Vec3& p, const std::vector<std::pair<Vec3, Vec3>>& edges) const
+    {
         float nearest = 1e9f;
-        for (const auto& edge : primaryEdges) {
+        for (const auto& edge : edges) {
             nearest = std::min(nearest, distanceToSegment2d(p, edge.first, edge.second));
         }
         return nearest;
+    }
+
+    bool isEdgeInList(const std::vector<std::pair<Vec3, Vec3>>& edges, const Vec3& a, const Vec3& b) const
+    {
+        const float eps = 1e-4f;
+        for (const auto& edge : edges) {
+            bool same = (edge.first - a).length() < eps && (edge.second - b).length() < eps;
+            bool reverse = (edge.first - b).length() < eps && (edge.second - a).length() < eps;
+            if (same || reverse) return true;
+        }
+        return false;
     }
 
     bool edgeAlreadyAdded(const std::vector<std::pair<Vec3, Vec3>>& edges, const Vec3& a, const Vec3& b) const
@@ -581,27 +654,19 @@ private:
         }
     }
 
-    void drawStreetOffsets(Renderer& renderer, zSpace::zFnMesh& fn)
+    void drawStreetOffsets(Renderer& renderer, zSpace::zFnMesh&)
     {
-        for (int i = 0; i < fn.numPolygons(); ++i) {
-            zSpace::zItMeshFace face(m_mesh, i);
-            if (!face.isActive()) continue;
+        for (const auto& edge : m_streetEdges) {
+            Vec3 dir = normalized2d(edge.b - edge.a);
+            Vec3 normal(-dir.y, dir.x, 0.0f);
+            Vec3 a0 = withZ(edge.a + normal * edge.offsetWidth, m_openSpaceZ + 0.001f);
+            Vec3 a1 = withZ(edge.a - normal * edge.offsetWidth, m_openSpaceZ + 0.001f);
+            Vec3 b0 = withZ(edge.b + normal * edge.offsetWidth, m_openSpaceZ + 0.001f);
+            Vec3 b1 = withZ(edge.b - normal * edge.offsetWidth, m_openSpaceZ + 0.001f);
+            Color streetFaceColor = streetOffsetColor(edge.streetClass);
 
-            Vec3 center = toVec3(face.getCenter());
-            if (!isStreetSpace(center)) continue;
-
-            std::vector<zSpace::zVector> positions;
-            face.getVertexPositions(positions);
-            if (positions.size() < 3) continue;
-
-            Vec3 c = withZ(center, m_openSpaceZ + 0.001f);
-            const StreetEdge* edge = nearestStreetEdge(center);
-            Color streetFaceColor = edge ? streetOffsetColor(edge->streetClass) : Color(0.98f, 0.98f, 0.95f, 1.0f);
-            for (size_t j = 0; j < positions.size(); ++j) {
-                Vec3 p1 = withZ(toVec3(positions[j]), m_openSpaceZ + 0.001f);
-                Vec3 p2 = withZ(toVec3(positions[(j + 1) % positions.size()]), m_openSpaceZ + 0.001f);
-                renderer.drawTriangle(c, p1, p2, streetFaceColor);
-            }
+            renderer.drawTriangle(a0, b0, b1, streetFaceColor);
+            renderer.drawTriangle(a0, b1, a1, streetFaceColor);
         }
     }
 
