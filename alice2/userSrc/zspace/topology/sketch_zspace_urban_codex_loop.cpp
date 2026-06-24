@@ -125,6 +125,8 @@ private:
     zSpace::zPoint m_boundsMin;
     zSpace::zPoint m_boundsMax;
     zSpace::zPoint m_meshCenter;
+    Vec3 m_plotCenterMin;
+    Vec3 m_plotCenterMax;
     float m_maxDistance = 1.0f;
 
     // First-pass parameters. No gradient, greenery, open-space hierarchy, or SDF field yet.
@@ -251,6 +253,9 @@ private:
         int faceIndex;
         BuildingType buildingType = BuildingType::TypeA;
         Vec3 center;
+        float typeABlendWeight = 1.0f;
+        float typeBBlendWeight = 0.0f;
+        float typeCBlendWeight = 0.0f;
         float typeABuildingWidthMeters = 25.0f;
         float typeAEdgeLengthFraction = 1.0f;
         float typeBXFraction = 0.5f;
@@ -359,25 +364,14 @@ private:
                 p.push_back(Vec3(sourcePosition.x, sourcePosition.y, graphZ));
             }
 
+            const int n = static_cast<int>(p.size());
             const int a = 0;
-            const int b = static_cast<int>(p.size() / 2);
             const int afterA = 1;
-            const int beforeA = static_cast<int>(p.size() - 1);
+            const int b = n / 2;
+            const int afterB = (b + 1) % n;
 
-            Vec3 sideA0 = lerp(p[a], p[afterA], typeBYFraction);
-            Vec3 sideA1 = lerp(p[beforeA], p[b], typeBYFraction);
-            float connectorA = (sideA1 - sideA0).length();
-
-            Vec3 sideB0 = lerp(p[a], p[beforeA], typeBYFraction);
-            Vec3 sideB1 = lerp(p[afterA], p[b], typeBYFraction);
-            float connectorB = (sideB1 - sideB0).length();
-
-            Vec3 midA = sideA0;
-            Vec3 midB = sideA1;
-            if (connectorB > connectorA) {
-                midA = sideB0;
-                midB = sideB1;
-            }
+            Vec3 midA = lerp(p[a], p[afterA], typeBXFraction);
+            Vec3 midB = lerp(p[b], p[afterB], typeBXFraction);
 
             Vec3 partialA = lerp(midA, midB, typeBInternalEdgeFraction);
             Vec3 partialB = lerp(midB, midA, typeBInternalEdgeFraction);
@@ -842,6 +836,8 @@ private:
     void buildPlotRecords(zSpace::zFnMesh& fn)
     {
         m_plots.clear();
+        m_plotCenterMin = Vec3(1e9f, 1e9f, 0.0f);
+        m_plotCenterMax = Vec3(-1e9f, -1e9f, 0.0f);
 
         for (int i = 0; i < fn.numPolygons(); ++i) {
             zSpace::zItMeshFace face(m_mesh, i);
@@ -855,7 +851,10 @@ private:
             plotData.id = static_cast<int>(m_plots.size());
             plotData.faceIndex = i;
             plotData.center = toVec3(face.getCenter());
-            applyTypologyGene(plotData);
+            m_plotCenterMin.x = std::min(m_plotCenterMin.x, plotData.center.x);
+            m_plotCenterMin.y = std::min(m_plotCenterMin.y, plotData.center.y);
+            m_plotCenterMax.x = std::max(m_plotCenterMax.x, plotData.center.x);
+            m_plotCenterMax.y = std::max(m_plotCenterMax.y, plotData.center.y);
             plotData.vertices.reserve(positions.size());
             plotData.boundaryEdges.reserve(positions.size());
 
@@ -876,6 +875,16 @@ private:
             }
 
             m_plots.push_back(plotData);
+        }
+
+        if (m_plots.empty()) {
+            m_plotCenterMin = Vec3(0.0f, 0.0f, 0.0f);
+            m_plotCenterMax = Vec3(1.0f, 1.0f, 0.0f);
+        }
+        else {
+            for (auto& plotData : m_plots) {
+                applyTypologyGene(plotData);
+            }
         }
 
         std::cout << "[URBAN CODEX LOOP] Plot records: " << m_plots.size() << std::endl;
@@ -936,10 +945,8 @@ private:
         }
 
         if (m_typologyAnchors.size() == 4) {
-            Vec3 bMin = toVec3(m_boundsMin);
-            Vec3 bMax = toVec3(m_boundsMax);
-            float u = saturate((position.x - bMin.x) / std::max(bMax.x - bMin.x, 1e-6f));
-            float v = saturate((position.y - bMin.y) / std::max(bMax.y - bMin.y, 1e-6f));
+            float u = saturate((position.x - m_plotCenterMin.x) / std::max(m_plotCenterMax.x - m_plotCenterMin.x, 1e-6f));
+            float v = saturate((position.y - m_plotCenterMin.y) / std::max(m_plotCenterMax.y - m_plotCenterMin.y, 1e-6f));
 
             std::vector<float> weights = {
                 (1.0f - u) * (1.0f - v),
@@ -1018,6 +1025,9 @@ private:
     {
         ShapeParams gene = computeTypologyGene(plotData.center);
         float typeAWeight = std::max(0.0f, 1.0f - gene.typeBWeight - gene.typeCWeight);
+        plotData.typeABlendWeight = typeAWeight;
+        plotData.typeBBlendWeight = gene.typeBWeight;
+        plotData.typeCBlendWeight = gene.typeCWeight;
         plotData.buildingType = BuildingType::TypeA;
         if (gene.typeBWeight >= typeAWeight && gene.typeBWeight >= gene.typeCWeight) {
             plotData.buildingType = BuildingType::TypeB;
@@ -1059,8 +1069,7 @@ private:
 
     float sanitizeTypeAEdgeLengthFraction(float value) const
     {
-        if (value > 0.75f) return 1.0f;
-        return std::clamp(value, 0.25f, 0.75f);
+        return std::clamp(value, 0.25f, 1.0f);
     }
 
     float randomTypeBXFraction(int plotId) const
@@ -1110,7 +1119,7 @@ private:
         int graphCount = 0;
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
-            if (plotData.buildingType != BuildingType::TypeB) continue;
+            if (plotData.typeBBlendWeight <= 0.001f) continue;
 
             plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
             plotData.buildTypeBSGraph(plotData.typeBXFraction, plotData.typeBInternalEdgeFraction, m_massingZ + 0.009f);
@@ -1130,7 +1139,7 @@ private:
         int graphCount = 0;
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
-            if (plotData.buildingType != BuildingType::TypeC) continue;
+            if (plotData.typeCBlendWeight <= 0.001f) continue;
 
             plotData.buildTypeCParallelGraph(plotData.typeCEdgeFraction, m_massingZ + 0.009f);
             graphCount++;
@@ -1205,7 +1214,7 @@ private:
         m_typeASdfPlots.clear();
 
         for (auto& plotData : m_plots) {
-            if (plotData.buildingType != BuildingType::TypeA) continue;
+            if (plotData.typeABlendWeight <= 0.001f) continue;
 
             const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
             const float cornerHalfSize = buildingWidth * 0.6f;
@@ -1289,7 +1298,7 @@ private:
         m_typeBSdfPlots.clear();
 
         for (auto& plotData : m_plots) {
-            if (plotData.buildingType != BuildingType::TypeB && plotData.buildingType != BuildingType::TypeC) continue;
+            if (plotData.typeBBlendWeight <= 0.001f && plotData.typeCBlendWeight <= 0.001f) continue;
 
             const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
             const float edgeHalfDepth = buildingWidth * 0.5f;
@@ -1298,23 +1307,29 @@ private:
             TypeBPlotSdf plotSdf;
             addTypeBSetbackClipPlanes(plotData, plotSdf);
 
-            const auto& sourceSegments = plotData.buildingType == BuildingType::TypeC
-                ? plotData.typeCGraphSegments
-                : plotData.typeBGraphSegments;
-            if (sourceSegments.empty()) continue;
-
             plotSdf.graphHalfWidth = edgeHalfDepth;
-            plotSdf.graphSegments.reserve(sourceSegments.size());
-            plotSdf.graphJointPoints.reserve(sourceSegments.size() * 2);
-            for (const auto& graphSegment : sourceSegments) {
-                plotSdf.graphSegments.push_back({ graphSegment.start, graphSegment.end });
-                plotSdf.graphJointPoints.push_back(graphSegment.start);
-                plotSdf.graphJointPoints.push_back(graphSegment.end);
+            plotSdf.graphSegments.reserve(plotData.typeBGraphSegments.size() + plotData.typeCGraphSegments.size());
+            plotSdf.graphJointPoints.reserve((plotData.typeBGraphSegments.size() + plotData.typeCGraphSegments.size()) * 2);
+
+            if (plotData.typeBBlendWeight > 0.001f) {
+                addGraphSegmentsToSdf(plotData.typeBGraphSegments, plotSdf);
+            }
+            if (plotData.typeCBlendWeight > 0.001f) {
+                addGraphSegmentsToSdf(plotData.typeCGraphSegments, plotSdf);
             }
 
             if (!plotSdf.graphSegments.empty()) {
                 m_typeBSdfPlots.push_back(plotSdf);
             }
+        }
+    }
+
+    void addGraphSegmentsToSdf(const std::vector<plot::TypeBGraphSegment>& sourceSegments, TypeBPlotSdf& plotSdf) const
+    {
+        for (const auto& graphSegment : sourceSegments) {
+            plotSdf.graphSegments.push_back({ graphSegment.start, graphSegment.end });
+            plotSdf.graphJointPoints.push_back(graphSegment.start);
+            plotSdf.graphJointPoints.push_back(graphSegment.end);
         }
     }
 
@@ -1847,7 +1862,7 @@ private:
         graphDisplay.vertexSize = 5.0f;
 
         for (auto& plotData : m_plots) {
-            if (plotData.buildingType != BuildingType::TypeA) continue;
+            if (plotData.typeABlendWeight <= 0.001f) continue;
             scene().draw(plotData.centerlineGraph, graphDisplay);
         }
     }
@@ -1865,7 +1880,7 @@ private:
         graphDisplay.vertexSize = 6.0f;
 
         for (auto& plotData : m_plots) {
-            if (plotData.buildingType != BuildingType::TypeB) continue;
+            if (plotData.typeBBlendWeight <= 0.001f) continue;
             scene().draw(plotData.typeBCenterlineGraph, graphDisplay);
         }
     }
@@ -1883,7 +1898,7 @@ private:
         graphDisplay.vertexSize = 6.0f;
 
         for (auto& plotData : m_plots) {
-            if (plotData.buildingType != BuildingType::TypeC) continue;
+            if (plotData.typeCBlendWeight <= 0.001f) continue;
             scene().draw(plotData.typeCCenterlineGraph, graphDisplay);
         }
     }
