@@ -181,13 +181,25 @@ The street SDF now affects both visualization and building placement. Buildings 
 
 ## Method Update: Interactive Street Parameter `p`
 
-Visible street colors are now white. The street hierarchy still exists internally, but it controls offset width and classification rather than display color.
+Visible street colors now follow the user's hierarchy sketch:
+
+- primary = red
+- secondary = cyan
+- tertiary = green
+
+The street SDF is dimensionally calibrated against the base mesh. The sketch treats the long site dimension as `500m` and converts requested road widths into model units:
+
+- primary roads = `30m` full width, stored as a `15m` SDF half-width from the centerline
+- secondary roads = `20m` full width, stored as a `10m` SDF half-width from the centerline
+- tertiary roads = `10m` full width, stored as a `5m` SDF half-width from the centerline
 
 The sketch exposes a slider named `p`:
 
-- `p = 0.0` keeps classification stricter and street offsets narrower.
-- `p = 1.0` classifies more edges into higher street classes and scales offsets wider.
+- `p = 0.0` keeps hierarchy classification stricter.
+- `p = 1.0` classifies more boundary-adjacent and long edges into higher street classes.
 - moving the slider rebuilds the mesh-edge street classification live.
+
+The road widths do not scale with `p`; they remain fixed at `30m / 20m / 10m` so the SDF remains dimensionally accurate.
 
 For interactive tuning, automatic screenshot-and-exit is disabled. Press `S` in the sketch window to capture the current view and exit when the chosen `p` value looks right.
 

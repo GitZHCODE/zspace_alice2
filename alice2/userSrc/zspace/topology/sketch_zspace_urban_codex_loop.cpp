@@ -128,11 +128,13 @@ private:
     float m_openSpaceZ = 0.001f;
     float m_p = 0.50f;
     float m_lastBuiltP = -1.0f;
+    float m_siteLongDimensionMeters = 500.0f;
+    float m_modelUnitsPerMeter = 1.0f;
     float m_civicSpineWidth = 0.055f;
     float m_civicPlazaRadius = 0.135f;
-    float m_primaryStreetOffset = 0.040f;
-    float m_secondaryStreetOffset = 0.028f;
-    float m_tertiaryStreetOffset = 0.018f;
+    float m_primaryRoadWidthMeters = 30.0f;
+    float m_secondaryRoadWidthMeters = 20.0f;
+    float m_tertiaryRoadWidthMeters = 10.0f;
     float m_neighborhoodPlazaRadius = 0.105f;
     Vec3 m_civicSpineA;
     Vec3 m_civicSpineB;
@@ -186,6 +188,11 @@ private:
     {
         float t = saturate((x - edge0) / (edge1 - edge0));
         return t * t * (3.0f - 2.0f * t);
+    }
+
+    float metersToModelUnits(float meters) const
+    {
+        return meters * m_modelUnitsPerMeter;
     }
 
     float distanceToSegment2d(const Vec3& p, const Vec3& a, const Vec3& b) const
@@ -298,6 +305,10 @@ private:
         Vec3 bMin = toVec3(m_boundsMin);
         Vec3 bMax = toVec3(m_boundsMax);
         Vec3 span = bMax - bMin;
+        float siteLongDimensionModelUnits = std::max(span.x, span.y);
+        if (siteLongDimensionModelUnits > 1e-6f) {
+            m_modelUnitsPerMeter = siteLongDimensionModelUnits / m_siteLongDimensionMeters;
+        }
         m_civicSpineA = Vec3(bMin.x + span.x * 0.18f, bMin.y + span.y * 0.45f, 0.0f);
         m_civicSpineB = Vec3(bMax.x - span.x * 0.18f, bMin.y + span.y * 0.58f, 0.0f);
         m_neighborhoodPlazaA = Vec3(bMin.x + span.x * 0.32f, bMin.y + span.y * 0.47f, 0.0f);
@@ -368,23 +379,8 @@ private:
         for (const auto& edge : uniqueEdges) {
             Vec3 a = edge.first;
             Vec3 b = edge.second;
-            Vec3 mid = (a + b) * 0.5f;
             float length = (b - a).length();
-            float civicDistance = distanceToSegment2d(mid, m_civicSpineA, m_civicSpineB);
-            float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
-
-            float primaryLengthThreshold = 0.84f - m_p * 0.24f;
-            float secondaryLengthThreshold = 0.58f - m_p * 0.20f;
-            float primaryCivicThreshold = 0.045f + m_p * 0.090f;
-            float secondaryCivicThreshold = 0.110f + m_p * 0.130f;
-
-            StreetClass streetClass = StreetClass::Tertiary;
-            if (normalizedLength > primaryLengthThreshold || civicDistance < primaryCivicThreshold) {
-                streetClass = StreetClass::Primary;
-            }
-            else if (normalizedLength > secondaryLengthThreshold || civicDistance < secondaryCivicThreshold) {
-                streetClass = StreetClass::Secondary;
-            }
+            StreetClass streetClass = classifyStreetEdge(a, b, length, longest);
 
             m_streetEdges.push_back({
                 a,
@@ -397,6 +393,34 @@ private:
 
         m_lastBuiltP = m_p;
         std::cout << "[URBAN CODEX LOOP] Street edges: " << m_streetEdges.size() << " | p=" << m_p << std::endl;
+    }
+
+    StreetClass classifyStreetEdge(const Vec3& a, const Vec3& b, float length, float longest) const
+    {
+        Vec3 bMin = toVec3(m_boundsMin);
+        Vec3 bMax = toVec3(m_boundsMax);
+        Vec3 span = bMax - bMin;
+        Vec3 mid = (a + b) * 0.5f;
+        Vec3 dir = normalized2d(b - a);
+
+        float maxSpan = std::max(span.x, span.y);
+        float boundaryBand = maxSpan * (0.035f + m_p * 0.040f);
+        float verticalScore = std::abs(dir.y);
+        float horizontalScore = std::abs(dir.x);
+        float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
+
+        bool nearLeftBoundary = std::abs(mid.x - bMin.x) < boundaryBand;
+        bool nearRightBoundary = std::abs(mid.x - bMax.x) < boundaryBand;
+        if ((nearLeftBoundary || nearRightBoundary) && verticalScore > 0.35f) {
+            return StreetClass::Primary;
+        }
+
+        float secondaryLengthThreshold = 0.46f - m_p * 0.12f;
+        if (horizontalScore > 0.45f || normalizedLength > secondaryLengthThreshold) {
+            return StreetClass::Secondary;
+        }
+
+        return StreetClass::Tertiary;
     }
 
     bool edgeAlreadyAdded(const std::vector<std::pair<Vec3, Vec3>>& edges, const Vec3& a, const Vec3& b) const
@@ -412,25 +436,33 @@ private:
 
     float streetOffsetWidth(StreetClass streetClass) const
     {
-        float widthScale = 0.65f + m_p * 1.35f;
+        float fullWidthMeters = m_tertiaryRoadWidthMeters;
         switch (streetClass) {
-            case StreetClass::Primary: return m_primaryStreetOffset * widthScale;
-            case StreetClass::Secondary: return m_secondaryStreetOffset * widthScale;
-            case StreetClass::Tertiary: return m_tertiaryStreetOffset * widthScale;
+            case StreetClass::Primary: fullWidthMeters = m_primaryRoadWidthMeters; break;
+            case StreetClass::Secondary: fullWidthMeters = m_secondaryRoadWidthMeters; break;
+            case StreetClass::Tertiary: fullWidthMeters = m_tertiaryRoadWidthMeters; break;
         }
-        return m_tertiaryStreetOffset * widthScale;
+        return metersToModelUnits(fullWidthMeters * 0.5f);
     }
 
     Color streetColor(StreetClass streetClass) const
     {
-        (void)streetClass;
-        return Color(1.0f, 1.0f, 1.0f, 1.0f);
+        switch (streetClass) {
+            case StreetClass::Primary: return Color(1.0f, 0.0f, 0.0f, 1.0f);
+            case StreetClass::Secondary: return Color(0.0f, 0.82f, 1.0f, 1.0f);
+            case StreetClass::Tertiary: return Color(0.0f, 1.0f, 0.0f, 1.0f);
+        }
+        return Color(0.0f, 1.0f, 0.0f, 1.0f);
     }
 
     Color streetOffsetColor(StreetClass streetClass) const
     {
-        (void)streetClass;
-        return Color(1.0f, 1.0f, 1.0f, 1.0f);
+        switch (streetClass) {
+            case StreetClass::Primary: return Color(1.0f, 0.82f, 0.82f, 1.0f);
+            case StreetClass::Secondary: return Color(0.72f, 0.93f, 1.0f, 1.0f);
+            case StreetClass::Tertiary: return Color(0.78f, 1.0f, 0.78f, 1.0f);
+        }
+        return Color(0.78f, 1.0f, 0.78f, 1.0f);
     }
 
     void drawNeutralBaseMesh(Renderer& renderer, zSpace::zFnMesh& fn)
