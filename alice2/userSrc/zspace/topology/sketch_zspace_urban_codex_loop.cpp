@@ -559,13 +559,14 @@ private:
             for (int iter = 0; iter < barycenterIterations; ++iter) {
                 std::vector<Vec3> nextNodes(barycenter.nodes.size(), Vec3(0.0f, 0.0f, barycenter.nodes[0].z));
                 std::vector<float> nodeMass(barycenter.nodes.size(), 0.0f);
-                float rowMass = 1.0f / static_cast<float>(barycenter.nodes.size());
 
                 for (int a = 0; a < static_cast<int>(anchors.size()); ++a) {
                     if (anchors[a].nodes.empty()) continue;
-                    std::vector<std::vector<float>> transport = solveFgwTransport(barycenter, anchors[a], 0.82f, 0.025f, 8, 28);
+                    std::vector<int> assignment = hardFgwAssignment(barycenter, anchors[a], 0.82f);
                     for (int i = 0; i < static_cast<int>(barycenter.nodes.size()); ++i) {
-                        Vec3 mapped = hardProjectedNode(transport[i], anchors[a].nodes, rowMass);
+                        int targetIndex = assignment[i];
+                        if (targetIndex < 0 || targetIndex >= static_cast<int>(anchors[a].nodes.size())) continue;
+                        Vec3 mapped = anchors[a].nodes[targetIndex];
                         nextNodes[i] += mapped * candidates[a].weight;
                         nodeMass[i] += candidates[a].weight;
                     }
@@ -587,6 +588,53 @@ private:
             }
 
             return barycenterSegments;
+        }
+
+        static std::vector<int> hardFgwAssignment(const GraphDescriptor& source, const GraphDescriptor& target, float alpha)
+        {
+            const int n = static_cast<int>(source.nodes.size());
+            const int m = static_cast<int>(target.nodes.size());
+            std::vector<int> assignment(n, 0);
+            if (n == 0 || m == 0) return assignment;
+
+            std::vector<std::vector<float>> featureCost = featureCostMatrix(source, target);
+            for (int i = 0; i < n; ++i) {
+                float bestCost = std::numeric_limits<float>::max();
+                int bestIndex = 0;
+                for (int j = 0; j < m; ++j) {
+                    float structuralCost = localStructureCost(source, target, i, j);
+                    float cost = (1.0f - alpha) * featureCost[i][j] + alpha * structuralCost;
+                    if (cost < bestCost) {
+                        bestCost = cost;
+                        bestIndex = j;
+                    }
+                }
+                assignment[i] = bestIndex;
+            }
+
+            return assignment;
+        }
+
+        static float localStructureCost(const GraphDescriptor& source, const GraphDescriptor& target, int sourceIndex, int targetIndex)
+        {
+            float degreeCost = std::abs(source.degree[sourceIndex] - target.degree[targetIndex]) * 0.35f;
+            float sourceMean = meanFiniteDistance(source.structure[sourceIndex]);
+            float targetMean = meanFiniteDistance(target.structure[targetIndex]);
+            return degreeCost + std::abs(sourceMean - targetMean) * 0.25f;
+        }
+
+        static float meanFiniteDistance(const std::vector<float>& distances)
+        {
+            float sum = 0.0f;
+            int count = 0;
+            for (float distance : distances) {
+                if (distance <= 1e-6f || distance > 999.0f) continue;
+                sum += distance;
+                count++;
+            }
+
+            if (count == 0) return 0.0f;
+            return sum / static_cast<float>(count);
         }
 
         static Vec3 hardProjectedNode(const std::vector<float>& row, const std::vector<Vec3>& targetNodes, float rowMass)
