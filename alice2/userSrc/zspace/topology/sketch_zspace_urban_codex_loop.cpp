@@ -68,6 +68,7 @@ public:
         zSpace::zFnMesh fn(m_mesh);
         drawNeutralBaseMesh(renderer, fn);
         drawStreetOffsets(renderer, fn);
+        drawStreetJunctions(renderer);
         drawStreetEdgeHierarchy(renderer);
         drawOpenSpaceSdf(renderer, fn);
         drawSimpleMassing(renderer, fn);
@@ -153,6 +154,13 @@ private:
         StreetClass streetClass;
         float offsetWidth;
         Color color;
+    };
+
+    struct StreetJunction {
+        Vec3 position;
+        StreetClass streetClass;
+        float radius;
+        int valence;
     };
 
     std::vector<StreetEdge> m_streetEdges;
@@ -575,6 +583,33 @@ private:
         return Color(0.78f, 1.0f, 0.78f, 1.0f);
     }
 
+    int streetClassRank(StreetClass streetClass) const
+    {
+        switch (streetClass) {
+            case StreetClass::Primary: return 3;
+            case StreetClass::Secondary: return 2;
+            case StreetClass::Tertiary: return 1;
+        }
+        return 1;
+    }
+
+    void addStreetJunction(std::vector<StreetJunction>& junctions, const Vec3& position, StreetClass streetClass, float radius) const
+    {
+        const float eps = 1e-4f;
+        for (auto& junction : junctions) {
+            if ((junction.position - position).length() > eps) continue;
+
+            junction.radius = std::max(junction.radius, radius);
+            junction.valence++;
+            if (streetClassRank(streetClass) > streetClassRank(junction.streetClass)) {
+                junction.streetClass = streetClass;
+            }
+            return;
+        }
+
+        junctions.push_back({ position, streetClass, radius, 1 });
+    }
+
     void drawNeutralBaseMesh(Renderer& renderer, zSpace::zFnMesh& fn)
     {
         for (int i = 0; i < fn.numPolygons(); ++i) {
@@ -667,6 +702,36 @@ private:
 
             renderer.drawTriangle(a0, b0, b1, streetFaceColor);
             renderer.drawTriangle(a0, b1, a1, streetFaceColor);
+        }
+    }
+
+    void drawStreetJunctions(Renderer& renderer)
+    {
+        std::vector<StreetJunction> junctions;
+        for (const auto& edge : m_streetEdges) {
+            addStreetJunction(junctions, edge.a, edge.streetClass, edge.offsetWidth);
+            addStreetJunction(junctions, edge.b, edge.streetClass, edge.offsetWidth);
+        }
+
+        for (const auto& junction : junctions) {
+            drawStreetJunctionDisc(renderer, junction);
+        }
+    }
+
+    void drawStreetJunctionDisc(Renderer& renderer, const StreetJunction& junction)
+    {
+        const int segments = 18;
+        const float twoPi = 6.28318530718f;
+        Vec3 center = withZ(junction.position, m_openSpaceZ + 0.002f);
+        Color color = streetOffsetColor(junction.streetClass);
+        float radius = junction.radius * 1.05f;
+
+        for (int i = 0; i < segments; ++i) {
+            float a0 = (static_cast<float>(i) / static_cast<float>(segments)) * twoPi;
+            float a1 = (static_cast<float>(i + 1) / static_cast<float>(segments)) * twoPi;
+            Vec3 p0 = withZ(junction.position + Vec3(std::cos(a0) * radius, std::sin(a0) * radius, 0.0f), m_openSpaceZ + 0.002f);
+            Vec3 p1 = withZ(junction.position + Vec3(std::cos(a1) * radius, std::sin(a1) * radius, 0.0f), m_openSpaceZ + 0.002f);
+            renderer.drawTriangle(center, p0, p1, color);
         }
     }
 

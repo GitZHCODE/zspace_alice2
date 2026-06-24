@@ -209,6 +209,8 @@ Not every mesh edge is a street. Each mesh face is treated as a plot, and the al
 
 The road widths are drawn as offset corridor geometry around selected street centerlines, not only as screen-space line weights. This makes the visible red/cyan/green street widths correspond to the `30m / 20m / 10m` dimensional rules.
 
+Street corridors are rendered as a connected network. The sketch now draws junction geometry at every selected street vertex using the largest incident road half-width, so offset strips merge at intersections instead of leaving broken rectangular ends.
+
 The road widths do not scale with `p`; they remain fixed at `30m / 20m / 10m` so the SDF remains dimensionally accurate.
 
 For interactive tuning, automatic screenshot-and-exit is disabled. Press `S` in the sketch window to capture the current view and exit when the chosen `p` value looks right.
