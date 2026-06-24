@@ -1713,7 +1713,7 @@ private:
         graphDisplay.showVertices = true;
         graphDisplay.edgeColor = graphColor;
         graphDisplay.vertexColor = graphColor;
-        graphDisplay.edgeWidth = 3.0f;
+        graphDisplay.edgeWidth = 1.0f;
         graphDisplay.vertexSize = 5.0f;
 
         for (auto& plotData : m_plots) {
@@ -1731,7 +1731,7 @@ private:
         graphDisplay.showVertices = true;
         graphDisplay.edgeColor = graphColor;
         graphDisplay.vertexColor = graphColor;
-        graphDisplay.edgeWidth = 3.0f;
+        graphDisplay.edgeWidth = 1.0f;
         graphDisplay.vertexSize = 6.0f;
 
         for (auto& plotData : m_plots) {
@@ -1746,8 +1746,8 @@ private:
         zDisplayGraphSetting contourDisplay;
         contourDisplay.showEdges = true;
         contourDisplay.showVertices = false;
-        contourDisplay.edgeColor = Color(0.0f, 0.0f, 0.0f, 1.0f);
-        contourDisplay.edgeWidth = 2.0f;
+        contourDisplay.edgeColor = Color(1.0f, 0.0f, 1.0f, 1.0f);
+        contourDisplay.edgeWidth = 3.0f;
         scene().draw(m_typeAIsoContour, contourDisplay);
     }
 
@@ -1757,8 +1757,8 @@ private:
         zDisplayGraphSetting contourDisplay;
         contourDisplay.showEdges = true;
         contourDisplay.showVertices = false;
-        contourDisplay.edgeColor = Color(0.0f, 0.0f, 0.0f, 1.0f);
-        contourDisplay.edgeWidth = 2.0f;
+        contourDisplay.edgeColor = Color(1.0f, 0.0f, 1.0f, 1.0f);
+        contourDisplay.edgeWidth = 3.0f;
         scene().draw(m_typeBIsoContour, contourDisplay);
     }
 
