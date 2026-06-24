@@ -45,6 +45,11 @@ The local VLM interface is Ollama.
   - use parametric offsets: primary roads `p`, secondary `2/3 p`, tertiary `1/3 p`; default `p = 0.3`
   - expose a live `p` slider for width tuning while keeping the selected street topology stable
   - derive secondary and tertiary street classes from the selected primary network
+- Building typology SDF methods should use per-plot records:
+  - each mesh face is a `PlotRecord`
+  - each plot stores ordered vertices and boundary edges
+  - boundary edges are tagged as primary road, secondary road, tertiary road, or plot split line
+  - future building typologies should choose frontage/setback/open-side rules from these edge tags
 - Make the sketch deterministic:
   - fixed top-down orthographic camera
   - white background

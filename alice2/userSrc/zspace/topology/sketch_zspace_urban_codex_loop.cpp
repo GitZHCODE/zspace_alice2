@@ -48,6 +48,7 @@ public:
         if (std::abs(m_p - m_lastBuiltP) > 0.001f) {
             zSpace::zFnMesh fn(m_mesh);
             buildStreetEdges(fn);
+            buildPlotRecords(fn);
             buildStreetSdfField();
         }
 
@@ -147,6 +148,13 @@ private:
         Tertiary
     };
 
+    enum class PlotBoundaryType {
+        PrimaryRoad,
+        SecondaryRoad,
+        TertiaryRoad,
+        PlotSplitLine
+    };
+
     struct StreetEdge {
         Vec3 a;
         Vec3 b;
@@ -155,7 +163,22 @@ private:
         Color color;
     };
 
+    struct PlotBoundaryEdge {
+        Vec3 a;
+        Vec3 b;
+        PlotBoundaryType boundaryType;
+        int streetEdgeIndex;
+    };
+
+    struct PlotRecord {
+        int faceIndex;
+        Vec3 center;
+        std::vector<Vec3> vertices;
+        std::vector<PlotBoundaryEdge> boundaryEdges;
+    };
+
     std::vector<StreetEdge> m_streetEdges;
+    std::vector<PlotRecord> m_plots;
     zSpace::zObjectMeshScalarField m_streetSdfField;
     zSpace::zObjectGraph m_streetIsoContour;
 
@@ -324,6 +347,7 @@ private:
         }
         if (m_maxDistance < 1e-5f) m_maxDistance = 1.0f;
         buildStreetEdges(fn);
+        buildPlotRecords(fn);
         buildStreetSdfField();
 
         m_loaded = true;
@@ -416,6 +440,71 @@ private:
 
         m_lastBuiltP = m_p;
         std::cout << "[URBAN CODEX LOOP] Street edges: " << m_streetEdges.size() << " | p=" << m_p << std::endl;
+    }
+
+    void buildPlotRecords(zSpace::zFnMesh& fn)
+    {
+        m_plots.clear();
+
+        for (int i = 0; i < fn.numPolygons(); ++i) {
+            zSpace::zItMeshFace face(m_mesh, i);
+            if (!face.isActive()) continue;
+
+            std::vector<zSpace::zVector> positions;
+            face.getVertexPositions(positions);
+            if (positions.size() < 3) continue;
+
+            PlotRecord plot;
+            plot.faceIndex = i;
+            plot.center = toVec3(face.getCenter());
+            plot.vertices.reserve(positions.size());
+            plot.boundaryEdges.reserve(positions.size());
+
+            for (const auto& position : positions) {
+                plot.vertices.push_back(toVec3(position));
+            }
+
+            for (size_t j = 0; j < positions.size(); ++j) {
+                Vec3 a = toVec3(positions[j]);
+                Vec3 b = toVec3(positions[(j + 1) % positions.size()]);
+                int streetIndex = findStreetEdgeIndex(a, b);
+                plot.boundaryEdges.push_back({
+                    a,
+                    b,
+                    boundaryTypeForStreetEdge(streetIndex),
+                    streetIndex
+                });
+            }
+
+            m_plots.push_back(plot);
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Plot records: " << m_plots.size() << std::endl;
+        logPlotBoundarySummary();
+    }
+
+    void logPlotBoundarySummary() const
+    {
+        int primary = 0;
+        int secondary = 0;
+        int tertiary = 0;
+        int split = 0;
+
+        for (const auto& plot : m_plots) {
+            for (const auto& edge : plot.boundaryEdges) {
+                switch (edge.boundaryType) {
+                    case PlotBoundaryType::PrimaryRoad: primary++; break;
+                    case PlotBoundaryType::SecondaryRoad: secondary++; break;
+                    case PlotBoundaryType::TertiaryRoad: tertiary++; break;
+                    case PlotBoundaryType::PlotSplitLine: split++; break;
+                }
+            }
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Plot boundary edges | primary: " << primary
+                  << " secondary: " << secondary
+                  << " tertiary: " << tertiary
+                  << " split: " << split << std::endl;
     }
 
     void buildStreetSdfField()
@@ -596,6 +685,33 @@ private:
             if (same || reverse) return true;
         }
         return false;
+    }
+
+    int findStreetEdgeIndex(const Vec3& a, const Vec3& b) const
+    {
+        const float eps = 1e-4f;
+        for (int i = 0; i < static_cast<int>(m_streetEdges.size()); ++i) {
+            const auto& edge = m_streetEdges[i];
+            bool same = (edge.a - a).length() < eps && (edge.b - b).length() < eps;
+            bool reverse = (edge.a - b).length() < eps && (edge.b - a).length() < eps;
+            if (same || reverse) return i;
+        }
+        return -1;
+    }
+
+    PlotBoundaryType boundaryTypeForStreetEdge(int streetEdgeIndex) const
+    {
+        if (streetEdgeIndex < 0 || streetEdgeIndex >= static_cast<int>(m_streetEdges.size())) {
+            return PlotBoundaryType::PlotSplitLine;
+        }
+
+        switch (m_streetEdges[streetEdgeIndex].streetClass) {
+            case StreetClass::Primary: return PlotBoundaryType::PrimaryRoad;
+            case StreetClass::Secondary: return PlotBoundaryType::SecondaryRoad;
+            case StreetClass::Tertiary: return PlotBoundaryType::TertiaryRoad;
+        }
+
+        return PlotBoundaryType::PlotSplitLine;
     }
 
     float streetOffsetWidth(StreetClass streetClass) const

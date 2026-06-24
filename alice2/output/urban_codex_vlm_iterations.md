@@ -223,6 +223,19 @@ The road widths scale with `p`: primary is `p`, secondary is `2/3 p`, and tertia
 
 For interactive tuning, automatic screenshot-and-exit is disabled. Press `S` in the sketch window to capture the current view and exit when the chosen `p` value looks right.
 
+## Method Update: Plot Boundary Records
+
+Codex added a plot-side data structure for the upcoming building-typology SDF work. Each mesh face is represented as a `PlotRecord` with ordered vertices and boundary edges.
+
+Each `PlotBoundaryEdge` is classified as one of:
+
+- `PrimaryRoad`
+- `SecondaryRoad`
+- `TertiaryRoad`
+- `PlotSplitLine`
+
+The classification is derived by matching each face edge against the selected street-edge network. If the edge is not part of the street network, it remains a plot split line. This prepares each plot to choose building typology rules based on road frontage.
+
 ## Iteration 002
 
 Screenshot: `alice2/output/iterations/iter_002_open_space_sdf.png`
