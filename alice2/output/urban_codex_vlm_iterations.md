@@ -183,17 +183,19 @@ The street SDF now affects both visualization and building placement. Buildings 
 
 Visible streets are drawn white. The primary, secondary, and tertiary hierarchy remains internal and controls street selection, network derivation, dimensional width, and massing exclusion.
 
-The street SDF is dimensionally calibrated against the base mesh. The sketch treats the long site dimension as `500m` and converts requested road widths into model units:
+The street SDF uses `p` as the primary-street full width. The default value is `p = 0.3`, and secondary/tertiary widths are derived from it:
 
-- primary roads = `30m` full width, stored as a `15m` SDF half-width from the centerline
-- secondary roads = `20m` full width, stored as a `10m` SDF half-width from the centerline
-- tertiary roads = `10m` full width, stored as a `5m` SDF half-width from the centerline
+- primary roads = `p`, default `0.3`
+- secondary roads = `p * 2/3`, default `0.2`
+- tertiary roads = `p * 1/3`, default `0.1`
+
+Each value is stored as an SDF half-width from the street centerline, so the visible full corridor width matches the hierarchy values above.
 
 The sketch exposes a slider named `p`:
 
-- `p = 0.0` keeps the primary-street selection tight to the main boundary streets.
-- `p = 1.0` allows a wider primary-street search band.
-- moving the slider rebuilds the primary street network live.
+- `p = 0.3` is the default primary-street full width.
+- moving the slider updates primary, secondary, and tertiary street widths proportionally.
+- changing `p` does not change which edges are selected as streets; it changes the network width hierarchy.
 
 Secondary and tertiary streets are derived from the primary network:
 
@@ -203,11 +205,11 @@ Secondary and tertiary streets are derived from the primary network:
 
 Not every mesh edge is a street. Each mesh face is treated as a plot, and the algorithm selects only some plot edges as street centerlines. Non-selected edges remain plot divisions.
 
-The road widths are drawn as offset corridor geometry around selected street centerlines, not only as screen-space line weights. This makes the visible white street widths correspond to the `30m / 20m / 10m` dimensional rules.
+The road widths are drawn as offset corridor geometry around selected street centerlines, not only as screen-space line weights. This makes the visible white street widths correspond to the `0.3 / 0.2 / 0.1` hierarchy when `p = 0.3`.
 
 Street corridors are rendered as a connected network. The sketch now draws junction geometry at every selected street vertex using the largest incident road half-width, so offset strips merge at intersections instead of leaving broken rectangular ends.
 
-The road widths do not scale with `p`; they remain fixed at `30m / 20m / 10m` so the SDF remains dimensionally accurate.
+The road widths scale with `p`: primary is `p`, secondary is `2/3 p`, and tertiary is `1/3 p`.
 
 For interactive tuning, automatic screenshot-and-exit is disabled. Press `S` in the sketch window to capture the current view and exit when the chosen `p` value looks right.
 

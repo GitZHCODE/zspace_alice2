@@ -31,7 +31,7 @@ public:
 
         m_ui = std::make_unique<SimpleUI>(input());
         m_ui->setTheme(SimpleUI::UITheme::Dark);
-        m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.0f, 1.0f, m_p);
+        m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.05f, 0.50f, m_p);
 
         loadMesh();
         if (!m_loaded) return;
@@ -127,15 +127,12 @@ private:
     float m_maxBuildingAspect = 2.6f;
     float m_edgeClearanceFactor = 0.82f;
     float m_openSpaceZ = 0.001f;
-    float m_p = 0.50f;
+    float m_p = 0.30f;
     float m_lastBuiltP = -1.0f;
     float m_siteLongDimensionMeters = 500.0f;
     float m_modelUnitsPerMeter = 1.0f;
     float m_civicSpineWidth = 0.055f;
     float m_civicPlazaRadius = 0.135f;
-    float m_primaryRoadWidthMeters = 30.0f;
-    float m_secondaryRoadWidthMeters = 20.0f;
-    float m_tertiaryRoadWidthMeters = 10.0f;
     float m_neighborhoodPlazaRadius = 0.105f;
     Vec3 m_civicSpineA;
     Vec3 m_civicSpineB;
@@ -432,7 +429,7 @@ private:
         Vec3 dir = normalized2d(b - a);
 
         float maxSpan = std::max(span.x, span.y);
-        float primaryBand = maxSpan * (0.030f + m_p * 0.070f);
+        float primaryBand = maxSpan * 0.051f;
         float verticalScore = std::abs(dir.y);
         float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
 
@@ -454,7 +451,7 @@ private:
         Vec3 mid = (a + b) * 0.5f;
         float horizontalScore = std::abs(dir.x);
         float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
-        float primaryInfluenceDistance = metersToModelUnits(m_primaryRoadWidthMeters * 3.0f);
+        float primaryInfluenceDistance = primaryStreetWidth() * 3.0f;
         float nearestPrimary = nearestPrimaryStreetDistance(mid, primaryEdges);
 
         bool feederFromPrimary = nearestPrimary < primaryInfluenceDistance && horizontalScore > 0.45f && normalizedLength > 0.18f;
@@ -478,7 +475,7 @@ private:
         float verticalScore = std::abs(dir.y);
         float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
         float nearestSecondary = nearestEdgeDistance(mid, secondaryEdges);
-        float secondaryInfluenceDistance = metersToModelUnits(m_secondaryRoadWidthMeters * 2.5f);
+        float secondaryInfluenceDistance = secondaryStreetWidth() * 2.5f;
 
         float nx = span.x > 1e-6f ? (mid.x - bMin.x) / span.x : 0.0f;
         float ny = span.y > 1e-6f ? (mid.y - bMin.y) / span.y : 0.0f;
@@ -554,13 +551,27 @@ private:
 
     float streetOffsetWidth(StreetClass streetClass) const
     {
-        float fullWidthMeters = m_tertiaryRoadWidthMeters;
         switch (streetClass) {
-            case StreetClass::Primary: fullWidthMeters = m_primaryRoadWidthMeters; break;
-            case StreetClass::Secondary: fullWidthMeters = m_secondaryRoadWidthMeters; break;
-            case StreetClass::Tertiary: fullWidthMeters = m_tertiaryRoadWidthMeters; break;
+            case StreetClass::Primary: return primaryStreetWidth() * 0.5f;
+            case StreetClass::Secondary: return secondaryStreetWidth() * 0.5f;
+            case StreetClass::Tertiary: return tertiaryStreetWidth() * 0.5f;
         }
-        return metersToModelUnits(fullWidthMeters * 0.5f);
+        return tertiaryStreetWidth() * 0.5f;
+    }
+
+    float primaryStreetWidth() const
+    {
+        return std::max(0.01f, m_p);
+    }
+
+    float secondaryStreetWidth() const
+    {
+        return primaryStreetWidth() * (2.0f / 3.0f);
+    }
+
+    float tertiaryStreetWidth() const
+    {
+        return primaryStreetWidth() * (1.0f / 3.0f);
     }
 
     Color streetColor(StreetClass streetClass) const
