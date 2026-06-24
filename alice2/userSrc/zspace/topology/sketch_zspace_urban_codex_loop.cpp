@@ -78,7 +78,6 @@ public:
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
         drawEffectiveTypologyGraphs(renderer);
-        drawCenterlineGraphDebug(renderer);
 
         if (m_ui) {
             m_ui->draw(renderer);
