@@ -50,7 +50,7 @@ public:
             buildStreetEdges(fn);
             buildPlotRecords(fn);
             buildStreetSdfField();
-            buildTypeABuildings();
+            buildTypeACenterlineGraphs();
         }
 
         m_frameCount++;
@@ -73,7 +73,7 @@ public:
         drawNeutralBaseMesh(renderer, fn);
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
-        drawTypeABuildings(renderer);
+        drawTypeACenterlineGraphs(renderer);
 
         if (m_ui) {
             m_ui->draw(renderer);
@@ -133,7 +133,6 @@ private:
     float m_typeAMaxWidthMeters = 2.0f;
     float m_typeARoadSetbackMeters = 0.5f;
     float m_typeALocalSetbackMeters = 0.2f;
-    float m_typeAEndTrimFactor = 0.24f;
     float m_openSpaceZ = 0.001f;
     float m_p = 0.30f;
     float m_lastBuiltP = -1.0f;
@@ -176,26 +175,116 @@ private:
         int streetEdgeIndex;
     };
 
-    struct PlotRecord {
+    class plot {
+    public:
+        struct CenterlineGraphVertex {
+            Vec3 position;
+            int sourceVertexIndex;
+        };
+
+        struct CenterlineGraphEdge {
+            int startVertexIndex;
+            int endVertexIndex;
+            PlotBoundaryType boundaryType;
+            float offsetDistance;
+        };
+
         int id;
         int faceIndex;
         Vec3 center;
         std::vector<Vec3> vertices;
         std::vector<PlotBoundaryEdge> boundaryEdges;
-    };
+        std::vector<CenterlineGraphVertex> centerlineGraphVertices;
+        std::vector<CenterlineGraphEdge> centerlineGraphEdges;
 
-    struct BuildingTypeASegment {
-        int plotId;
-        PlotBoundaryType frontageType;
-        Vec3 centerlineA;
-        Vec3 centerlineB;
-        Vec3 inwardNormal;
-        float width;
+        void buildCenterlineGraph(float roadSetback, float localSetback, float buildingWidth)
+        {
+            centerlineGraphVertices.clear();
+            centerlineGraphEdges.clear();
+            if (vertices.size() < 3 || boundaryEdges.size() != vertices.size()) return;
+
+            struct OffsetLine {
+                Vec3 a;
+                Vec3 b;
+                float offsetDistance;
+            };
+
+            std::vector<OffsetLine> offsetLines;
+            offsetLines.reserve(boundaryEdges.size());
+
+            for (const auto& edge : boundaryEdges) {
+                Vec3 edgeVector = edge.b - edge.a;
+                Vec3 tangent = normalized2d(edgeVector);
+                Vec3 normalA(-tangent.y, tangent.x, 0.0f);
+                Vec3 midpoint = (edge.a + edge.b) * 0.5f;
+                Vec3 inwardNormal = dot2d(center - midpoint, normalA) >= 0.0f ? normalA : normalA * -1.0f;
+
+                float setback = isPrimaryOrSecondary(edge.boundaryType) ? roadSetback : localSetback;
+                float offsetDistance = setback + buildingWidth * 0.5f;
+                Vec3 offset = inwardNormal * offsetDistance;
+                offsetLines.push_back({ edge.a + offset, edge.b + offset, offsetDistance });
+            }
+
+            centerlineGraphVertices.reserve(vertices.size());
+            for (size_t i = 0; i < vertices.size(); ++i) {
+                size_t previous = (i + offsetLines.size() - 1) % offsetLines.size();
+                Vec3 position;
+                if (!intersectLines2d(offsetLines[previous].a, offsetLines[previous].b, offsetLines[i].a, offsetLines[i].b, position)) {
+                    position = (offsetLines[previous].b + offsetLines[i].a) * 0.5f;
+                }
+                centerlineGraphVertices.push_back({ position, static_cast<int>(i) });
+            }
+
+            centerlineGraphEdges.reserve(boundaryEdges.size());
+            for (size_t i = 0; i < boundaryEdges.size(); ++i) {
+                centerlineGraphEdges.push_back({
+                    static_cast<int>(i),
+                    static_cast<int>((i + 1) % boundaryEdges.size()),
+                    boundaryEdges[i].boundaryType,
+                    offsetLines[i].offsetDistance
+                });
+            }
+        }
+
+    private:
+        static float dot2d(const Vec3& a, const Vec3& b)
+        {
+            return a.x * b.x + a.y * b.y;
+        }
+
+        static float cross2d(const Vec3& a, const Vec3& b)
+        {
+            return a.x * b.y - a.y * b.x;
+        }
+
+        static Vec3 normalized2d(const Vec3& v)
+        {
+            float len = std::sqrt(v.x * v.x + v.y * v.y);
+            if (len < 1e-6f) return Vec3(1.0f, 0.0f, 0.0f);
+            return Vec3(v.x / len, v.y / len, 0.0f);
+        }
+
+        static bool isPrimaryOrSecondary(PlotBoundaryType boundaryType)
+        {
+            return boundaryType == PlotBoundaryType::PrimaryRoad || boundaryType == PlotBoundaryType::SecondaryRoad;
+        }
+
+        static bool intersectLines2d(const Vec3& a0, const Vec3& a1, const Vec3& b0, const Vec3& b1, Vec3& result)
+        {
+            Vec3 da = a1 - a0;
+            Vec3 db = b1 - b0;
+            float denominator = cross2d(da, db);
+            if (std::abs(denominator) < 1e-6f) return false;
+
+            float t = cross2d(b0 - a0, db) / denominator;
+            result = a0 + da * t;
+            result.z = 0.0f;
+            return true;
+        }
     };
 
     std::vector<StreetEdge> m_streetEdges;
-    std::vector<PlotRecord> m_plots;
-    std::vector<BuildingTypeASegment> m_typeABuildings;
+    std::vector<plot> m_plots;
     zSpace::zObjectMeshScalarField m_streetSdfField;
     zSpace::zObjectGraph m_streetIsoContour;
 
@@ -366,7 +455,7 @@ private:
         buildStreetEdges(fn);
         buildPlotRecords(fn);
         buildStreetSdfField();
-        buildTypeABuildings();
+        buildTypeACenterlineGraphs();
 
         m_loaded = true;
     }
@@ -472,22 +561,22 @@ private:
             face.getVertexPositions(positions);
             if (positions.size() < 3) continue;
 
-            PlotRecord plot;
-            plot.id = static_cast<int>(m_plots.size());
-            plot.faceIndex = i;
-            plot.center = toVec3(face.getCenter());
-            plot.vertices.reserve(positions.size());
-            plot.boundaryEdges.reserve(positions.size());
+            plot plotData;
+            plotData.id = static_cast<int>(m_plots.size());
+            plotData.faceIndex = i;
+            plotData.center = toVec3(face.getCenter());
+            plotData.vertices.reserve(positions.size());
+            plotData.boundaryEdges.reserve(positions.size());
 
             for (const auto& position : positions) {
-                plot.vertices.push_back(toVec3(position));
+                plotData.vertices.push_back(toVec3(position));
             }
 
             for (size_t j = 0; j < positions.size(); ++j) {
                 Vec3 a = toVec3(positions[j]);
                 Vec3 b = toVec3(positions[(j + 1) % positions.size()]);
                 int streetIndex = findStreetEdgeIndex(a, b);
-                plot.boundaryEdges.push_back({
+                plotData.boundaryEdges.push_back({
                     a,
                     b,
                     boundaryTypeForStreetEdge(streetIndex),
@@ -495,7 +584,7 @@ private:
                 });
             }
 
-            m_plots.push_back(plot);
+            m_plots.push_back(plotData);
         }
 
         std::cout << "[URBAN CODEX LOOP] Plot records: " << m_plots.size() << std::endl;
@@ -526,45 +615,23 @@ private:
                   << " split: " << split << std::endl;
     }
 
-    void buildTypeABuildings()
+    void buildTypeACenterlineGraphs()
     {
-        m_typeABuildings.clear();
-
         const float width = metersToModelUnits(m_typeAMaxWidthMeters);
         const float minWidth = metersToModelUnits(m_typeAMinWidthMeters);
         if (width < minWidth || width <= 1e-6f) return;
 
-        for (const auto& plot : m_plots) {
-            for (const auto& edge : plot.boundaryEdges) {
-                Vec3 edgeVector = edge.b - edge.a;
-                float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
-                if (edgeLength < minWidth) continue;
-
-                Vec3 tangent = normalized2d(edgeVector);
-                Vec3 normalA(-tangent.y, tangent.x, 0.0f);
-                Vec3 midpoint = (edge.a + edge.b) * 0.5f;
-                Vec3 inwardNormal = dot2d(plot.center - midpoint, normalA) >= 0.0f ? normalA : normalA * -1.0f;
-
-                float setback = setbackForBoundary(edge.boundaryType);
-                float offsetDistance = setback + width * 0.5f;
-                float trim = std::min(edgeLength * m_typeAEndTrimFactor, offsetDistance);
-                if (edgeLength - trim * 2.0f < minWidth) {
-                    trim = std::max(0.0f, (edgeLength - minWidth) * 0.5f);
-                }
-
-                Vec3 offset = inwardNormal * offsetDistance;
-                BuildingTypeASegment segment;
-                segment.plotId = plot.id;
-                segment.frontageType = edge.boundaryType;
-                segment.centerlineA = edge.a + tangent * trim + offset;
-                segment.centerlineB = edge.b - tangent * trim + offset;
-                segment.inwardNormal = inwardNormal;
-                segment.width = width;
-                m_typeABuildings.push_back(segment);
-            }
+        int graphEdges = 0;
+        for (auto& plotData : m_plots) {
+            plotData.buildCenterlineGraph(
+                metersToModelUnits(m_typeARoadSetbackMeters),
+                metersToModelUnits(m_typeALocalSetbackMeters),
+                width
+            );
+            graphEdges += static_cast<int>(plotData.centerlineGraphEdges.size());
         }
 
-        std::cout << "[URBAN CODEX LOOP] Type A building centerlines: " << m_typeABuildings.size()
+        std::cout << "[URBAN CODEX LOOP] Type A plot centerline graph edges: " << graphEdges
                   << " | width " << m_typeAMaxWidthMeters << "m"
                   << " | road setback " << m_typeARoadSetbackMeters << "m"
                   << " | local setback " << m_typeALocalSetbackMeters << "m" << std::endl;
@@ -802,19 +869,6 @@ private:
         return primaryStreetWidth() * (1.0f / 3.0f);
     }
 
-    float setbackForBoundary(PlotBoundaryType boundaryType) const
-    {
-        switch (boundaryType) {
-            case PlotBoundaryType::PrimaryRoad:
-            case PlotBoundaryType::SecondaryRoad:
-                return metersToModelUnits(m_typeARoadSetbackMeters);
-            case PlotBoundaryType::TertiaryRoad:
-            case PlotBoundaryType::PlotSplitLine:
-                return metersToModelUnits(m_typeALocalSetbackMeters);
-        }
-        return metersToModelUnits(m_typeALocalSetbackMeters);
-    }
-
     Color streetColor(StreetClass streetClass) const
     {
         switch (streetClass) {
@@ -858,29 +912,24 @@ private:
         }
     }
 
-    void drawTypeABuildings(Renderer& renderer)
+    void drawTypeACenterlineGraphs(Renderer& renderer)
     {
-        const Color buildingColor(0.0f, 0.0f, 0.0f, 1.0f);
-        const Color centerlineColor(0.92f, 0.92f, 0.88f, 1.0f);
+        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
 
-        for (const auto& segment : m_typeABuildings) {
-            Vec3 halfWidth = segment.inwardNormal * (segment.width * 0.5f);
-            Vec3 a0 = withZ(segment.centerlineA - halfWidth, m_massingZ);
-            Vec3 a1 = withZ(segment.centerlineB - halfWidth, m_massingZ);
-            Vec3 b1 = withZ(segment.centerlineB + halfWidth, m_massingZ);
-            Vec3 b0 = withZ(segment.centerlineA + halfWidth, m_massingZ);
+        for (const auto& plotData : m_plots) {
+            for (const auto& edge : plotData.centerlineGraphEdges) {
+                if (edge.startVertexIndex < 0 || edge.endVertexIndex < 0) continue;
+                if (edge.startVertexIndex >= static_cast<int>(plotData.centerlineGraphVertices.size())) continue;
+                if (edge.endVertexIndex >= static_cast<int>(plotData.centerlineGraphVertices.size())) continue;
 
-            renderer.drawTriangle(a0, a1, b1, buildingColor);
-            renderer.drawTriangle(a0, b1, b0, buildingColor);
-        }
+                Vec3 a = withZ(plotData.centerlineGraphVertices[edge.startVertexIndex].position, m_massingZ + 0.002f);
+                Vec3 b = withZ(plotData.centerlineGraphVertices[edge.endVertexIndex].position, m_massingZ + 0.002f);
+                renderer.drawLine(a, b, graphColor, 2.0f);
+            }
 
-        for (const auto& segment : m_typeABuildings) {
-            renderer.drawLine(
-                withZ(segment.centerlineA, m_massingZ + 0.002f),
-                withZ(segment.centerlineB, m_massingZ + 0.002f),
-                centerlineColor,
-                1.0f
-            );
+            for (const auto& vertex : plotData.centerlineGraphVertices) {
+                renderer.drawPoint(withZ(vertex.position, m_massingZ + 0.003f), graphColor, 5.0f);
+            }
         }
     }
 
