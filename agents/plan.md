@@ -147,6 +147,7 @@ alice2\run_with_zspace.bat
 - Building Type B stores a per-plot internal-edge parameter from 0.0 to 0.5; it controls how much of the middle S edge is used from both internal vertices, giving two L shapes at 0.0 and the full S connector at 0.5.
 - Building Type B displays its S graph in zMagenta and generates an SDF by offsetting the whole graph as exact edge rectangles plus compact vertex fills, then clipping it with the same continuous inset boundary half-planes as Type A.
 - Typology assignment now uses an extensible anchor field: arbitrary anchors blend `ShapeParams` by inverse distance, then each plot chooses the dominant type and uses the blended graph parameters. The first test uses four site-corner anchors matching the sketched A/B edge values.
+- Building Type C is a parallel-edge generator from the offset graph, with an edge parameter from 0.5 to 1.0. The current corner test uses BL Type B e=0.5, BR Type A e=1.0, TR Type A e=0.7, and TL Type C.
 
 ## Implementation Status
 

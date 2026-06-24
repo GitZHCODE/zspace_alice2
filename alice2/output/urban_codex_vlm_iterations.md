@@ -195,6 +195,16 @@ Commit: `fec2442`
 - First test case uses four site-corner anchors from the sketch: bottom-left `Type A e=1.0`, top-right `Type A e=0.4`, top-left `Type B e=0.5`, and bottom-right `Type B e=1.0`.
 - Future shape types can be added by extending `ShapeParams` and adding new generators while keeping the anchor field logic unchanged.
 
+### Type C And Updated Four-Corner Test
+
+- Type C is a parallel-edge type generated from the same plot offset graph.
+- Type C picks two opposite/parallel graph edges and uses an edge parameter from `0.5` to `1.0`.
+- The current four-corner anchor test is:
+- Bottom-left: `Type B`, edge/internal parameter `0.5`.
+- Bottom-right: `Type A`, edge parameter `1.0`.
+- Top-right: `Type A`, edge parameter `0.7`.
+- Top-left: `Type C`.
+
 ## Method Update: Parametric Street Edge SDF
 
 Codex changed the street system from arbitrary guide-line SDFs to actual mesh-edge-based street methods.

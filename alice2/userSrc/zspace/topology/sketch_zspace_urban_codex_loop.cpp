@@ -52,6 +52,7 @@ public:
             buildStreetSdfField();
             buildTypeACenterlineGraphs();
             buildTypeBCenterlineGraphs();
+            buildTypeCCenterlineGraphs();
             buildTypeASdfField();
             buildTypeBSdfField();
         }
@@ -78,6 +79,7 @@ public:
         drawOpenSpaceSdf(renderer, fn);
         drawTypeACenterlineGraphs(renderer);
         drawTypeBCenterlineGraphs(renderer);
+        drawTypeCCenterlineGraphs(renderer);
         drawTypeASdfContour(renderer);
         drawTypeBSdfContour(renderer);
 
@@ -169,15 +171,18 @@ private:
 
     enum class BuildingType {
         TypeA,
-        TypeB
+        TypeB,
+        TypeC
     };
 
     struct ShapeParams {
         float typeBWeight = 0.0f;
+        float typeCWeight = 0.0f;
         float buildingWidthMeters = 20.0f;
         float typeAEdgeLengthFraction = 0.5f;
         float typeBXFraction = 0.5f;
         float typeBInternalEdgeFraction = 0.25f;
+        float typeCEdgeFraction = 0.75f;
     };
 
     struct TypologyAnchor {
@@ -251,12 +256,15 @@ private:
         float typeBXFraction = 0.5f;
         float typeBYFraction = 0.5f;
         float typeBInternalEdgeFraction = 0.5f;
+        float typeCEdgeFraction = 0.75f;
         std::vector<Vec3> vertices;
         std::vector<PlotBoundaryEdge> boundaryEdges;
         std::vector<CenterlineGraphEdge> centerlineGraphEdges;
         std::vector<TypeBGraphSegment> typeBGraphSegments;
+        std::vector<TypeBGraphSegment> typeCGraphSegments;
         zSpace::zObjectGraph centerlineGraph;
         zSpace::zObjectGraph typeBCenterlineGraph;
+        zSpace::zObjectGraph typeCCenterlineGraph;
 
         void buildCenterlineGraph(
             float roadSetback,
@@ -402,6 +410,51 @@ private:
             }
 
             zSpace::zFnGraph graphFn(typeBCenterlineGraph);
+            graphFn.create(graphPositions, graphEdgeConnects);
+        }
+
+        void buildTypeCParallelGraph(float edgeFraction, float graphZ)
+        {
+            edgeFraction = std::clamp(edgeFraction, 0.5f, 1.0f);
+            typeCEdgeFraction = edgeFraction;
+            typeCGraphSegments.clear();
+
+            zSpace::zFnGraph sourceFn(centerlineGraph);
+            zSpace::zPointArray sourcePositions;
+            sourceFn.getVertexPositions(sourcePositions);
+            if (sourcePositions.size() < 4) return;
+
+            std::vector<Vec3> p;
+            p.reserve(sourcePositions.size());
+            for (const auto& sourcePosition : sourcePositions) {
+                p.push_back(Vec3(sourcePosition.x, sourcePosition.y, graphZ));
+            }
+
+            const int n = static_cast<int>(p.size());
+            const int a0 = 0;
+            const int a1 = 1;
+            const int b0 = n / 2;
+            const int b1 = (b0 + 1) % n;
+
+            Vec3 aEnd = lerp(p[a0], p[a1], edgeFraction);
+            Vec3 bEnd = lerp(p[b0], p[b1], edgeFraction);
+
+            zSpace::zPointArray graphPositions;
+            graphPositions.push_back(zSpace::zPoint(p[a0].x, p[a0].y, graphZ));
+            graphPositions.push_back(zSpace::zPoint(aEnd.x, aEnd.y, graphZ));
+            graphPositions.push_back(zSpace::zPoint(p[b0].x, p[b0].y, graphZ));
+            graphPositions.push_back(zSpace::zPoint(bEnd.x, bEnd.y, graphZ));
+
+            zSpace::zIntArray graphEdgeConnects;
+            graphEdgeConnects.push_back(0);
+            graphEdgeConnects.push_back(1);
+            graphEdgeConnects.push_back(2);
+            graphEdgeConnects.push_back(3);
+
+            typeCGraphSegments.push_back({ p[a0], aEnd });
+            typeCGraphSegments.push_back({ p[b0], bEnd });
+
+            zSpace::zFnGraph graphFn(typeCCenterlineGraph);
             graphFn.create(graphPositions, graphEdgeConnects);
         }
 
@@ -662,32 +715,35 @@ private:
         Vec3 topLeft(bMin.x, bMax.y, 0.0f);
         Vec3 topRight(bMax.x, bMax.y, 0.0f);
 
-        ShapeParams aFull;
-        aFull.typeBWeight = 0.0f;
-        aFull.buildingWidthMeters = 22.0f;
-        aFull.typeAEdgeLengthFraction = 1.0f;
-
-        ShapeParams aShort;
-        aShort.typeBWeight = 0.0f;
-        aShort.buildingWidthMeters = 18.0f;
-        aShort.typeAEdgeLengthFraction = 0.40f;
-
         ShapeParams bHalf;
         bHalf.typeBWeight = 1.0f;
-        bHalf.buildingWidthMeters = 22.0f;
+        bHalf.typeCWeight = 0.0f;
+        bHalf.buildingWidthMeters = 20.0f;
         bHalf.typeBXFraction = 0.5f;
         bHalf.typeBInternalEdgeFraction = 0.25f;
 
-        ShapeParams bFull;
-        bFull.typeBWeight = 1.0f;
-        bFull.buildingWidthMeters = 20.0f;
-        bFull.typeBXFraction = 0.5f;
-        bFull.typeBInternalEdgeFraction = 0.5f;
+        ShapeParams aFull;
+        aFull.typeBWeight = 0.0f;
+        aFull.typeCWeight = 0.0f;
+        aFull.buildingWidthMeters = 22.0f;
+        aFull.typeAEdgeLengthFraction = 1.0f;
 
-        m_typologyAnchors.push_back({ bottomLeft, aFull, 1.0f, radius });
-        m_typologyAnchors.push_back({ bottomRight, bFull, 1.0f, radius });
-        m_typologyAnchors.push_back({ topLeft, bHalf, 1.0f, radius });
-        m_typologyAnchors.push_back({ topRight, aShort, 1.0f, radius });
+        ShapeParams cParallel;
+        cParallel.typeBWeight = 0.0f;
+        cParallel.typeCWeight = 1.0f;
+        cParallel.buildingWidthMeters = 18.0f;
+        cParallel.typeCEdgeFraction = 0.75f;
+
+        ShapeParams aLong;
+        aLong.typeBWeight = 0.0f;
+        aLong.typeCWeight = 0.0f;
+        aLong.buildingWidthMeters = 20.0f;
+        aLong.typeAEdgeLengthFraction = 0.70f;
+
+        m_typologyAnchors.push_back({ bottomLeft, bHalf, 1.0f, radius });
+        m_typologyAnchors.push_back({ bottomRight, aFull, 1.0f, radius });
+        m_typologyAnchors.push_back({ topLeft, cParallel, 1.0f, radius });
+        m_typologyAnchors.push_back({ topRight, aLong, 1.0f, radius });
 
         std::cout << "[URBAN CODEX LOOP] Typology anchors: " << m_typologyAnchors.size()
                   << " | arbitrary anchor field enabled" << std::endl;
@@ -854,6 +910,7 @@ private:
     {
         int typeA = 0;
         int typeB = 0;
+        int typeC = 0;
         for (const auto& plotData : m_plots) {
             if (plotData.buildingType == BuildingType::TypeA) {
                 typeA++;
@@ -861,10 +918,14 @@ private:
             else if (plotData.buildingType == BuildingType::TypeB) {
                 typeB++;
             }
+            else if (plotData.buildingType == BuildingType::TypeC) {
+                typeC++;
+            }
         }
 
         std::cout << "[URBAN CODEX LOOP] Building type assignment | Type A: " << typeA
-                  << " Type B: " << typeB << std::endl;
+                  << " Type B: " << typeB
+                  << " Type C: " << typeC << std::endl;
     }
 
     ShapeParams computeTypologyGene(const Vec3& position) const
@@ -875,10 +936,12 @@ private:
 
         ShapeParams result;
         result.typeBWeight = 0.0f;
+        result.typeCWeight = 0.0f;
         result.buildingWidthMeters = 0.0f;
         result.typeAEdgeLengthFraction = 0.0f;
         result.typeBXFraction = 0.0f;
         result.typeBInternalEdgeFraction = 0.0f;
+        result.typeCEdgeFraction = 0.0f;
         float totalWeight = 0.0f;
 
         for (const auto& anchor : m_typologyAnchors) {
@@ -888,10 +951,12 @@ private:
             totalWeight += w;
 
             result.typeBWeight += anchor.params.typeBWeight * w;
+            result.typeCWeight += anchor.params.typeCWeight * w;
             result.buildingWidthMeters += anchor.params.buildingWidthMeters * w;
             result.typeAEdgeLengthFraction += anchor.params.typeAEdgeLengthFraction * w;
             result.typeBXFraction += anchor.params.typeBXFraction * w;
             result.typeBInternalEdgeFraction += anchor.params.typeBInternalEdgeFraction * w;
+            result.typeCEdgeFraction += anchor.params.typeCEdgeFraction * w;
         }
 
         if (totalWeight <= 1e-6f) {
@@ -899,10 +964,12 @@ private:
         }
 
         result.typeBWeight = std::clamp(result.typeBWeight / totalWeight, 0.0f, 1.0f);
+        result.typeCWeight = std::clamp(result.typeCWeight / totalWeight, 0.0f, 1.0f);
         result.buildingWidthMeters = std::clamp(result.buildingWidthMeters / totalWeight, m_typeAMinWidthMeters, m_typeAMaxWidthMeters);
         result.typeAEdgeLengthFraction = sanitizeTypeAEdgeLengthFraction(result.typeAEdgeLengthFraction / totalWeight);
         result.typeBXFraction = std::clamp(result.typeBXFraction / totalWeight, 0.25f, 0.75f);
         result.typeBInternalEdgeFraction = std::clamp(result.typeBInternalEdgeFraction / totalWeight, 0.0f, 0.5f);
+        result.typeCEdgeFraction = std::clamp(result.typeCEdgeFraction / totalWeight, 0.5f, 1.0f);
         return result;
     }
 
@@ -910,22 +977,32 @@ private:
     {
         ShapeParams params;
         params.typeBWeight = randomBuildingType(plotId) == BuildingType::TypeB ? 1.0f : 0.0f;
+        params.typeCWeight = 0.0f;
         params.buildingWidthMeters = randomTypeABuildingWidthMeters(plotId);
         params.typeAEdgeLengthFraction = randomTypeAEdgeLengthFraction(plotId);
         params.typeBXFraction = randomTypeBXFraction(plotId);
         params.typeBInternalEdgeFraction = randomTypeBInternalEdgeFraction(plotId);
+        params.typeCEdgeFraction = randomTypeCEdgeFraction(plotId);
         return params;
     }
 
     void applyTypologyGene(plot& plotData) const
     {
         ShapeParams gene = computeTypologyGene(plotData.center);
-        plotData.buildingType = gene.typeBWeight >= 0.5f ? BuildingType::TypeB : BuildingType::TypeA;
+        float typeAWeight = std::max(0.0f, 1.0f - gene.typeBWeight - gene.typeCWeight);
+        plotData.buildingType = BuildingType::TypeA;
+        if (gene.typeBWeight >= typeAWeight && gene.typeBWeight >= gene.typeCWeight) {
+            plotData.buildingType = BuildingType::TypeB;
+        }
+        else if (gene.typeCWeight >= typeAWeight && gene.typeCWeight >= gene.typeBWeight) {
+            plotData.buildingType = BuildingType::TypeC;
+        }
         plotData.typeABuildingWidthMeters = gene.buildingWidthMeters;
         plotData.typeAEdgeLengthFraction = gene.typeAEdgeLengthFraction;
         plotData.typeBXFraction = gene.typeBXFraction;
         plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
         plotData.typeBInternalEdgeFraction = gene.typeBInternalEdgeFraction;
+        plotData.typeCEdgeFraction = gene.typeCEdgeFraction;
     }
 
     float deterministicUnitRandom(int id, int salt) const
@@ -966,6 +1043,11 @@ private:
     float randomTypeBInternalEdgeFraction(int plotId) const
     {
         return deterministicUnitRandom(plotId, 5) * 0.5f;
+    }
+
+    float randomTypeCEdgeFraction(int plotId) const
+    {
+        return 0.5f + deterministicUnitRandom(plotId, 6) * 0.5f;
     }
 
     void buildTypeACenterlineGraphs()
@@ -1013,6 +1095,23 @@ private:
                   << " | X random range 0.25-0.75"
                   << " | Y = 1 - X"
                   << " | internal edge random range 0.0-0.5" << std::endl;
+    }
+
+    void buildTypeCCenterlineGraphs()
+    {
+        int graphCount = 0;
+        int graphEdges = 0;
+        for (auto& plotData : m_plots) {
+            if (plotData.buildingType != BuildingType::TypeC) continue;
+
+            plotData.buildTypeCParallelGraph(plotData.typeCEdgeFraction, m_massingZ + 0.009f);
+            graphCount++;
+            graphEdges += static_cast<int>(plotData.typeCGraphSegments.size());
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Type C parallel graphs: " << graphCount
+                  << " | graph edges: " << graphEdges
+                  << " | edge random range 0.5-1.0" << std::endl;
     }
 
     void buildTypeASdfField()
@@ -1162,7 +1261,7 @@ private:
         m_typeBSdfPlots.clear();
 
         for (auto& plotData : m_plots) {
-            if (plotData.buildingType != BuildingType::TypeB) continue;
+            if (plotData.buildingType != BuildingType::TypeB && plotData.buildingType != BuildingType::TypeC) continue;
 
             const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
             const float edgeHalfDepth = buildingWidth * 0.5f;
@@ -1171,12 +1270,15 @@ private:
             TypeBPlotSdf plotSdf;
             addTypeBSetbackClipPlanes(plotData, plotSdf);
 
-            if (plotData.typeBGraphSegments.empty()) continue;
+            const auto& sourceSegments = plotData.buildingType == BuildingType::TypeC
+                ? plotData.typeCGraphSegments
+                : plotData.typeBGraphSegments;
+            if (sourceSegments.empty()) continue;
 
             plotSdf.graphHalfWidth = edgeHalfDepth;
-            plotSdf.graphSegments.reserve(plotData.typeBGraphSegments.size());
-            plotSdf.graphJointPoints.reserve(plotData.typeBGraphSegments.size() * 2);
-            for (const auto& graphSegment : plotData.typeBGraphSegments) {
+            plotSdf.graphSegments.reserve(sourceSegments.size());
+            plotSdf.graphJointPoints.reserve(sourceSegments.size() * 2);
+            for (const auto& graphSegment : sourceSegments) {
                 plotSdf.graphSegments.push_back({ graphSegment.start, graphSegment.end });
                 plotSdf.graphJointPoints.push_back(graphSegment.start);
                 plotSdf.graphJointPoints.push_back(graphSegment.end);
@@ -1737,6 +1839,24 @@ private:
         for (auto& plotData : m_plots) {
             if (plotData.buildingType != BuildingType::TypeB) continue;
             scene().draw(plotData.typeBCenterlineGraph, graphDisplay);
+        }
+    }
+
+    void drawTypeCCenterlineGraphs(Renderer& renderer)
+    {
+        (void)renderer;
+        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
+        zDisplayGraphSetting graphDisplay;
+        graphDisplay.showEdges = true;
+        graphDisplay.showVertices = true;
+        graphDisplay.edgeColor = graphColor;
+        graphDisplay.vertexColor = graphColor;
+        graphDisplay.edgeWidth = 1.0f;
+        graphDisplay.vertexSize = 6.0f;
+
+        for (auto& plotData : m_plots) {
+            if (plotData.buildingType != BuildingType::TypeC) continue;
+            scene().draw(plotData.typeCCenterlineGraph, graphDisplay);
         }
     }
 
