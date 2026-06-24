@@ -205,9 +205,12 @@ Secondary and tertiary streets are derived from the primary network:
 
 Not every mesh edge is a street. Each mesh face is treated as a plot, and the algorithm selects only some plot edges as street centerlines. Non-selected edges remain plot divisions.
 
-The road widths are drawn as offset corridor geometry around selected street centerlines, not only as screen-space line weights. This makes the visible zGRAY street widths correspond to the `0.3 / 0.2 / 0.1` hierarchy when `p = 0.3`.
+The road widths are now sampled into a zSpace mesh scalar field. The sketch uses `zObjectMeshScalarField` with `zFnMeshScalarField`, then extracts level-0 street geometry with:
 
-Street corridors are rendered as a connected network. The sketch now draws junction geometry at every selected street vertex using the largest incident road half-width, so offset strips merge at intersections instead of leaving broken rectangular ends.
+- `getIsocontour(..., 0.0f)` for the street boundary graph
+- `getIsolineMesh(..., 0.0f)` for the street iso mesh
+
+The visible zGRAY street geometry is therefore returned by the SDF field extraction rather than drawn as independent corridor strips or junction discs.
 
 The road widths scale with `p`: primary is `p`, secondary is `2/3 p`, and tertiary is `1/3 p`.
 

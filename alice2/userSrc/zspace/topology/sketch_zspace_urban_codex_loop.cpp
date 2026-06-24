@@ -47,6 +47,7 @@ public:
         if (std::abs(m_p - m_lastBuiltP) > 0.001f) {
             zSpace::zFnMesh fn(m_mesh);
             buildStreetEdges(fn);
+            buildStreetSdfField();
         }
 
         m_frameCount++;
@@ -67,9 +68,7 @@ public:
 
         zSpace::zFnMesh fn(m_mesh);
         drawNeutralBaseMesh(renderer, fn);
-        drawStreetOffsets(renderer, fn);
-        drawStreetJunctions(renderer);
-        drawStreetEdgeHierarchy(renderer);
+        drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
         drawSimpleMassing(renderer, fn);
 
@@ -134,6 +133,7 @@ private:
     float m_civicSpineWidth = 0.055f;
     float m_civicPlazaRadius = 0.135f;
     float m_neighborhoodPlazaRadius = 0.105f;
+    int m_streetFieldResolution = 180;
     Vec3 m_civicSpineA;
     Vec3 m_civicSpineB;
     Vec3 m_neighborhoodPlazaA;
@@ -153,14 +153,10 @@ private:
         Color color;
     };
 
-    struct StreetJunction {
-        Vec3 position;
-        StreetClass streetClass;
-        float radius;
-        int valence;
-    };
-
     std::vector<StreetEdge> m_streetEdges;
+    zSpace::zObjectMeshScalarField m_streetSdfField;
+    zSpace::zObjectGraph m_streetIsoContour;
+    zSpace::zObjectMesh m_streetIsoMesh;
 
     static Vec3 toVec3(const zSpace::zVector& p)
     {
@@ -327,6 +323,7 @@ private:
         }
         if (m_maxDistance < 1e-5f) m_maxDistance = 1.0f;
         buildStreetEdges(fn);
+        buildStreetSdfField();
 
         m_loaded = true;
     }
@@ -418,6 +415,57 @@ private:
 
         m_lastBuiltP = m_p;
         std::cout << "[URBAN CODEX LOOP] Street edges: " << m_streetEdges.size() << " | p=" << m_p << std::endl;
+    }
+
+    void buildStreetSdfField()
+    {
+        Vec3 bMin = toVec3(m_boundsMin);
+        Vec3 bMax = toVec3(m_boundsMax);
+        Vec3 span = bMax - bMin;
+        float pad = std::max(span.x, span.y) * 0.05f;
+        zSpace::zPoint fieldMin(bMin.x - pad, bMin.y - pad, 0.0f);
+        zSpace::zPoint fieldMax(bMax.x + pad, bMax.y + pad, 0.0f);
+
+        zSpace::zFnMeshScalarField fn(m_streetSdfField);
+        fn.create(fieldMin, fieldMax, m_streetFieldResolution, m_streetFieldResolution, 1, true, false);
+
+        zSpace::zPointArray positions;
+        fn.getPositions(positions);
+
+        zSpace::zScalarArray values;
+        values.reserve(positions.size());
+        for (const auto& p : positions) {
+            values.push_back(streetOffsetSdf(toVec3(p)));
+        }
+
+        fn.setFieldValues(values, zSpace::zFieldColorType::zFieldSDF, primaryStreetWidth());
+        fn.updateColors(zSpace::zFieldColorType::zFieldSDF, primaryStreetWidth());
+        fn.getIsocontour(m_streetIsoContour, 0.0f);
+        fn.getIsolineMesh(m_streetIsoMesh, 0.0f, false);
+        liftStreetIsoGeometry();
+    }
+
+    void liftStreetIsoGeometry()
+    {
+        zSpace::zFnGraph contourFn(m_streetIsoContour);
+        zSpace::zPointArray contourPositions;
+        contourFn.getVertexPositions(contourPositions);
+        for (auto& p : contourPositions) {
+            p.z = m_openSpaceZ + 0.004f;
+        }
+        if (!contourPositions.empty()) {
+            contourFn.setVertexPositions(contourPositions);
+        }
+
+        zSpace::zFnMesh meshFn(m_streetIsoMesh);
+        zSpace::zPointArray meshPositions;
+        meshFn.getVertexPositions(meshPositions);
+        for (auto& p : meshPositions) {
+            p.z = m_openSpaceZ + 0.001f;
+        }
+        if (!meshPositions.empty()) {
+            meshFn.setVertexPositions(meshPositions);
+        }
     }
 
     bool isPrimaryStreetEdge(const Vec3& a, const Vec3& b, float length, float longest) const
@@ -586,33 +634,6 @@ private:
         return Color(0.5f, 0.5f, 0.5f, 1.0f);
     }
 
-    int streetClassRank(StreetClass streetClass) const
-    {
-        switch (streetClass) {
-            case StreetClass::Primary: return 3;
-            case StreetClass::Secondary: return 2;
-            case StreetClass::Tertiary: return 1;
-        }
-        return 1;
-    }
-
-    void addStreetJunction(std::vector<StreetJunction>& junctions, const Vec3& position, StreetClass streetClass, float radius) const
-    {
-        const float eps = 1e-4f;
-        for (auto& junction : junctions) {
-            if ((junction.position - position).length() > eps) continue;
-
-            junction.radius = std::max(junction.radius, radius);
-            junction.valence++;
-            if (streetClassRank(streetClass) > streetClassRank(junction.streetClass)) {
-                junction.streetClass = streetClass;
-            }
-            return;
-        }
-
-        junctions.push_back({ position, streetClass, radius, 1 });
-    }
-
     void drawNeutralBaseMesh(Renderer& renderer, zSpace::zFnMesh& fn)
     {
         for (int i = 0; i < fn.numPolygons(); ++i) {
@@ -692,61 +713,22 @@ private:
         }
     }
 
-    void drawStreetOffsets(Renderer& renderer, zSpace::zFnMesh&)
+    void drawStreetSdfGeometry(Renderer& renderer)
     {
-        for (const auto& edge : m_streetEdges) {
-            Vec3 dir = normalized2d(edge.b - edge.a);
-            Vec3 normal(-dir.y, dir.x, 0.0f);
-            Vec3 a0 = withZ(edge.a + normal * edge.offsetWidth, m_openSpaceZ + 0.001f);
-            Vec3 a1 = withZ(edge.a - normal * edge.offsetWidth, m_openSpaceZ + 0.001f);
-            Vec3 b0 = withZ(edge.b + normal * edge.offsetWidth, m_openSpaceZ + 0.001f);
-            Vec3 b1 = withZ(edge.b - normal * edge.offsetWidth, m_openSpaceZ + 0.001f);
-            Color streetFaceColor = streetOffsetColor(edge.streetClass);
+        (void)renderer;
+        zDisplayMeshSetting isoMeshDisplay;
+        isoMeshDisplay.showFaces = true;
+        isoMeshDisplay.showEdges = false;
+        isoMeshDisplay.showVertices = false;
+        isoMeshDisplay.faceColor = streetOffsetColor(StreetClass::Primary);
+        scene().draw(m_streetIsoMesh, isoMeshDisplay);
 
-            renderer.drawTriangle(a0, b0, b1, streetFaceColor);
-            renderer.drawTriangle(a0, b1, a1, streetFaceColor);
-        }
-    }
-
-    void drawStreetJunctions(Renderer& renderer)
-    {
-        std::vector<StreetJunction> junctions;
-        for (const auto& edge : m_streetEdges) {
-            addStreetJunction(junctions, edge.a, edge.streetClass, edge.offsetWidth);
-            addStreetJunction(junctions, edge.b, edge.streetClass, edge.offsetWidth);
-        }
-
-        for (const auto& junction : junctions) {
-            drawStreetJunctionDisc(renderer, junction);
-        }
-    }
-
-    void drawStreetJunctionDisc(Renderer& renderer, const StreetJunction& junction)
-    {
-        const int segments = 18;
-        const float twoPi = 6.28318530718f;
-        Vec3 center = withZ(junction.position, m_openSpaceZ + 0.002f);
-        Color color = streetOffsetColor(junction.streetClass);
-        float radius = junction.radius * 1.05f;
-
-        for (int i = 0; i < segments; ++i) {
-            float a0 = (static_cast<float>(i) / static_cast<float>(segments)) * twoPi;
-            float a1 = (static_cast<float>(i + 1) / static_cast<float>(segments)) * twoPi;
-            Vec3 p0 = withZ(junction.position + Vec3(std::cos(a0) * radius, std::sin(a0) * radius, 0.0f), m_openSpaceZ + 0.002f);
-            Vec3 p1 = withZ(junction.position + Vec3(std::cos(a1) * radius, std::sin(a1) * radius, 0.0f), m_openSpaceZ + 0.002f);
-            renderer.drawTriangle(center, p0, p1, color);
-        }
-    }
-
-    void drawStreetEdgeHierarchy(Renderer& renderer)
-    {
-        for (const auto& edge : m_streetEdges) {
-            float width = 1.5f;
-            if (edge.streetClass == StreetClass::Primary) width = 5.0f;
-            else if (edge.streetClass == StreetClass::Secondary) width = 3.5f;
-
-            renderer.drawLine(withZ(edge.a, m_openSpaceZ + 0.006f), withZ(edge.b, m_openSpaceZ + 0.006f), edge.color, width);
-        }
+        zDisplayGraphSetting contourDisplay;
+        contourDisplay.showEdges = true;
+        contourDisplay.showVertices = false;
+        contourDisplay.edgeColor = Color(0.12f, 0.12f, 0.12f, 1.0f);
+        contourDisplay.edgeWidth = 2.0f;
+        scene().draw(m_streetIsoContour, contourDisplay);
     }
 
     std::vector<Vec3> makeConstrainedBuildingFootprint(const Vec3& center, const std::vector<zSpace::zVector>& positions, float parcelCoverage) const
