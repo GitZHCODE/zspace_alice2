@@ -1462,10 +1462,30 @@ private:
 
         float d = 1e9f;
         for (size_t i = 0; i + 1 < graphPoints.size(); ++i) {
-            d = std::min(d, distanceToSegment2d(p, graphPoints[i], graphPoints[i + 1]));
+            Vec3 edgeVector = graphPoints[i + 1] - graphPoints[i];
+            float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
+            if (edgeLength < 1e-6f) continue;
+
+            Vec3 tangent = normalized2d(edgeVector);
+            Vec3 normal(-tangent.y, tangent.x, 0.0f);
+            Vec3 center = (graphPoints[i] + graphPoints[i + 1]) * 0.5f;
+            d = std::min(d, orientedBoxSdf(p, center, tangent, normal, edgeLength * 0.5f, halfWidth));
         }
 
-        return d - halfWidth;
+        for (size_t i = 0; i < graphPoints.size(); ++i) {
+            Vec3 axisX(1.0f, 0.0f, 0.0f);
+            if (i + 1 < graphPoints.size()) {
+                axisX = normalized2d(graphPoints[i + 1] - graphPoints[i]);
+            }
+            else if (i > 0) {
+                axisX = normalized2d(graphPoints[i] - graphPoints[i - 1]);
+            }
+
+            Vec3 axisY(-axisX.y, axisX.x, 0.0f);
+            d = std::min(d, orientedBoxSdf(p, graphPoints[i], axisX, axisY, halfWidth, halfWidth));
+        }
+
+        return d;
     }
 
     float orientedBoxSdf(const Vec3& p, const Vec3& center, const Vec3& axisX, const Vec3& axisY, float halfX, float halfY) const
