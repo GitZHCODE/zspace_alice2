@@ -479,6 +479,7 @@ private:
             float aWeight = typeABlendWeight / totalWeight;
             float bWeight = typeBBlendWeight / totalWeight;
             float cWeight = typeCBlendWeight / totalWeight;
+            keepStrongestTwoWeights(aWeight, bWeight, cWeight);
 
             if (aWeight > 0.001f) {
                 appendSegments(effectiveGraphSegments, makeTypeAEffectiveSegments(p, typeAEdgeLengthFraction));
@@ -505,6 +506,25 @@ private:
         static void appendSegments(std::vector<TypeBGraphSegment>& target, const std::vector<TypeBGraphSegment>& source)
         {
             target.insert(target.end(), source.begin(), source.end());
+        }
+
+        static void keepStrongestTwoWeights(float& aWeight, float& bWeight, float& cWeight)
+        {
+            float* weights[3] = { &aWeight, &bWeight, &cWeight };
+            int weakest = 0;
+            for (int i = 1; i < 3; ++i) {
+                if (*weights[i] < *weights[weakest]) weakest = i;
+            }
+
+            if (*weights[weakest] < 0.25f) {
+                *weights[weakest] = 0.0f;
+            }
+
+            float total = aWeight + bWeight + cWeight;
+            if (total <= 1e-6f) return;
+            aWeight /= total;
+            bWeight /= total;
+            cWeight /= total;
         }
 
         static std::vector<TypeBGraphSegment> makeTypeAEffectiveSegments(const std::vector<Vec3>& p, float edgeLengthFraction)
