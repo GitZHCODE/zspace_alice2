@@ -164,6 +164,7 @@ Commit: `fec2442`
 - Current sketch assignment: deterministic random width per plot between `15m` and `25m`.
 - Type A edge length parameter varies per plot.
 - Edge length parameter rule: values vary from `0.25` to `0.75`; if a generated or VLM-updated value is above `0.75`, Codex snaps it to `1.0`.
+- Current Type A edge assignment uses visible deterministic bins: `0.25`, `0.40`, `0.55`, `0.70`, and `1.0`, so neighboring plots show clear variation.
 - VLM only critiques the result. Codex updates these per-plot parameters and code.
 
 ### Building Type B

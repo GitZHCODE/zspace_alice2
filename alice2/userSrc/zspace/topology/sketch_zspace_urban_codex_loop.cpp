@@ -832,8 +832,9 @@ private:
 
     float randomTypeAEdgeLengthFraction(int plotId) const
     {
-        float candidate = 0.25f + deterministicUnitRandom(plotId, 2) * 0.75f;
-        return sanitizeTypeAEdgeLengthFraction(candidate);
+        static const float edgeBins[] = { 0.25f, 0.40f, 0.55f, 0.70f, 1.0f };
+        int bin = std::abs(plotId) % 5;
+        return sanitizeTypeAEdgeLengthFraction(edgeBins[bin]);
     }
 
     float sanitizeTypeAEdgeLengthFraction(float value) const
