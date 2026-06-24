@@ -565,22 +565,14 @@ private:
 
     Color streetColor(StreetClass streetClass) const
     {
-        switch (streetClass) {
-            case StreetClass::Primary: return Color(1.0f, 0.0f, 0.0f, 1.0f);
-            case StreetClass::Secondary: return Color(0.0f, 0.82f, 1.0f, 1.0f);
-            case StreetClass::Tertiary: return Color(0.0f, 1.0f, 0.0f, 1.0f);
-        }
-        return Color(0.0f, 1.0f, 0.0f, 1.0f);
+        (void)streetClass;
+        return Color(1.0f, 1.0f, 1.0f, 1.0f);
     }
 
     Color streetOffsetColor(StreetClass streetClass) const
     {
-        switch (streetClass) {
-            case StreetClass::Primary: return Color(1.0f, 0.82f, 0.82f, 1.0f);
-            case StreetClass::Secondary: return Color(0.72f, 0.93f, 1.0f, 1.0f);
-            case StreetClass::Tertiary: return Color(0.78f, 1.0f, 0.78f, 1.0f);
-        }
-        return Color(0.78f, 1.0f, 0.78f, 1.0f);
+        (void)streetClass;
+        return Color(1.0f, 1.0f, 1.0f, 1.0f);
     }
 
     int streetClassRank(StreetClass streetClass) const

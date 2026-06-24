@@ -181,11 +181,7 @@ The street SDF now affects both visualization and building placement. Buildings 
 
 ## Method Update: Interactive Street Parameter `p`
 
-Visible street colors now follow the user's hierarchy sketch:
-
-- primary = red
-- secondary = cyan
-- tertiary = green
+Visible streets are drawn white. The primary, secondary, and tertiary hierarchy remains internal and controls street selection, network derivation, dimensional width, and massing exclusion.
 
 The street SDF is dimensionally calibrated against the base mesh. The sketch treats the long site dimension as `500m` and converts requested road widths into model units:
 
@@ -207,7 +203,7 @@ Secondary and tertiary streets are derived from the primary network:
 
 Not every mesh edge is a street. Each mesh face is treated as a plot, and the algorithm selects only some plot edges as street centerlines. Non-selected edges remain plot divisions.
 
-The road widths are drawn as offset corridor geometry around selected street centerlines, not only as screen-space line weights. This makes the visible red/cyan/green street widths correspond to the `30m / 20m / 10m` dimensional rules.
+The road widths are drawn as offset corridor geometry around selected street centerlines, not only as screen-space line weights. This makes the visible white street widths correspond to the `30m / 20m / 10m` dimensional rules.
 
 Street corridors are rendered as a connected network. The sketch now draws junction geometry at every selected street vertex using the largest incident road half-width, so offset strips merge at intersections instead of leaving broken rectangular ends.
 
