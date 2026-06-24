@@ -57,9 +57,9 @@ The local VLM interface is Ollama.
   - Type A building width range is 15m to 25m; current graph uses 25m
   - Type A setback is 5m on primary/secondary roads and 2m on tertiary/plot-line edges
   - centerline graph geometry is stored as a zSpace `zObjectGraph` on each `plot`
-  - Type A SDF A: square at each centerline graph corner, side length `1.2 * building width`
-  - Type A SDF B: building-width strip along each graph edge, length controlled by a 0-1 `edge` slider
-  - Type A SDF C: union of A and B, extracted as a level-0 iso-contour
+  - Type A SDF A: square at two opposite centerline graph corners, side length `1.2 * building width`
+  - Type A SDF B: building-width strips starting from those same corners along incident graph edges, length controlled by a 0-1 `edge` slider
+  - Type A SDF C: union of A and B, extracted as a level-0 iso-contour; two L-shapes when `edge < 1.0`, full offset center graph when `edge = 1.0`
   - future building typologies should choose frontage/setback/open-side rules from these edge tags and graph edges
 - Make the sketch deterministic:
   - fixed top-down orthographic camera

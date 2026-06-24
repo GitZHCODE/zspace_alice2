@@ -739,6 +739,7 @@ private:
         const float cornerHalfSize = buildingWidth * 0.6f;
         const float edgeHalfDepth = buildingWidth * 0.5f;
         const float edgeLengthFraction = saturate(m_typeAEdgeLengthFraction);
+        const bool fullGraph = edgeLengthFraction >= 0.999f;
 
         for (auto& plotData : m_plots) {
             zSpace::zFnGraph graphFn(plotData.centerlineGraph);
@@ -746,9 +747,18 @@ private:
             graphFn.getVertexPositions(graphPositions);
             if (graphPositions.empty()) continue;
 
-            for (const auto& position : graphPositions) {
+            std::vector<int> cornerIndices = selectedTypeACorners(graphPositions);
+            if (fullGraph) {
+                cornerIndices.clear();
+                for (int i = 0; i < static_cast<int>(graphPositions.size()); ++i) {
+                    cornerIndices.push_back(i);
+                }
+            }
+
+            for (int cornerIndex : cornerIndices) {
+                if (cornerIndex < 0 || cornerIndex >= static_cast<int>(graphPositions.size())) continue;
                 m_typeASdfA.push_back({
-                    toVec3(position),
+                    toVec3(graphPositions[cornerIndex]),
                     Vec3(1.0f, 0.0f, 0.0f),
                     Vec3(0.0f, 1.0f, 0.0f),
                     cornerHalfSize,
@@ -756,25 +766,85 @@ private:
                 });
             }
 
-            for (const auto& edge : plotData.centerlineGraphEdges) {
-                if (edge.startVertexIndex < 0 || edge.endVertexIndex < 0) continue;
-                if (edge.startVertexIndex >= static_cast<int>(graphPositions.size())) continue;
-                if (edge.endVertexIndex >= static_cast<int>(graphPositions.size())) continue;
+            if (fullGraph) {
+                for (const auto& edge : plotData.centerlineGraphEdges) {
+                    if (edge.startVertexIndex < 0 || edge.endVertexIndex < 0) continue;
+                    if (edge.startVertexIndex >= static_cast<int>(graphPositions.size())) continue;
+                    if (edge.endVertexIndex >= static_cast<int>(graphPositions.size())) continue;
 
-                Vec3 a = toVec3(graphPositions[edge.startVertexIndex]);
-                Vec3 b = toVec3(graphPositions[edge.endVertexIndex]);
-                Vec3 edgeVector = b - a;
-                float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
-                if (edgeLength < 1e-6f || edgeLengthFraction <= 0.0f) continue;
+                    addTypeAEdgeStrip(
+                        toVec3(graphPositions[edge.startVertexIndex]),
+                        toVec3(graphPositions[edge.endVertexIndex]),
+                        1.0f,
+                        edgeHalfDepth
+                    );
+                }
+                continue;
+            }
 
-                Vec3 tangent = normalized2d(edgeVector);
-                Vec3 normal(-tangent.y, tangent.x, 0.0f);
-                Vec3 center = (a + b) * 0.5f;
-                float halfLength = edgeLength * edgeLengthFraction * 0.5f;
-
-                m_typeASdfB.push_back({ center, tangent, normal, halfLength, edgeHalfDepth });
+            for (int cornerIndex : cornerIndices) {
+                addTypeAIncidentEdgeStrips(plotData, graphPositions, cornerIndex, edgeLengthFraction, edgeHalfDepth);
             }
         }
+    }
+
+    std::vector<int> selectedTypeACorners(const zSpace::zPointArray& graphPositions) const
+    {
+        std::vector<int> result;
+        if (graphPositions.empty()) return result;
+
+        result.push_back(0);
+        if (graphPositions.size() == 1) return result;
+
+        int opposite = static_cast<int>(graphPositions.size() / 2);
+        if (opposite == 0) opposite = 1;
+        result.push_back(opposite);
+        return result;
+    }
+
+    void addTypeAIncidentEdgeStrips(
+        const plot& plotData,
+        const zSpace::zPointArray& graphPositions,
+        int cornerIndex,
+        float edgeLengthFraction,
+        float edgeHalfDepth
+    )
+    {
+        if (edgeLengthFraction <= 0.0f) return;
+
+        for (const auto& edge : plotData.centerlineGraphEdges) {
+            int otherIndex = -1;
+            if (edge.startVertexIndex == cornerIndex) {
+                otherIndex = edge.endVertexIndex;
+            }
+            else if (edge.endVertexIndex == cornerIndex) {
+                otherIndex = edge.startVertexIndex;
+            }
+            else {
+                continue;
+            }
+
+            if (otherIndex < 0 || otherIndex >= static_cast<int>(graphPositions.size())) continue;
+            addTypeAEdgeStrip(
+                toVec3(graphPositions[cornerIndex]),
+                toVec3(graphPositions[otherIndex]),
+                edgeLengthFraction,
+                edgeHalfDepth
+            );
+        }
+    }
+
+    void addTypeAEdgeStrip(const Vec3& start, const Vec3& end, float lengthFraction, float edgeHalfDepth)
+    {
+        Vec3 edgeVector = end - start;
+        float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
+        if (edgeLength < 1e-6f || lengthFraction <= 0.0f) return;
+
+        Vec3 tangent = normalized2d(edgeVector);
+        Vec3 normal(-tangent.y, tangent.x, 0.0f);
+        float segmentLength = edgeLength * saturate(lengthFraction);
+        Vec3 center = start + tangent * (segmentLength * 0.5f);
+        m_typeASdfB.push_back({ center, tangent, normal, segmentLength * 0.5f, edgeHalfDepth });
     }
 
     void liftTypeAIsoGeometry()
