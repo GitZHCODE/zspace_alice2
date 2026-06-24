@@ -376,11 +376,19 @@ private:
             longest = std::max(longest, (edge.second - edge.first).length());
         }
 
+        std::vector<std::pair<Vec3, Vec3>> primaryEdges;
+        for (const auto& edge : uniqueEdges) {
+            float length = (edge.second - edge.first).length();
+            if (isPrimaryStreetEdge(edge.first, edge.second, length, longest)) {
+                primaryEdges.push_back(edge);
+            }
+        }
+
         for (const auto& edge : uniqueEdges) {
             Vec3 a = edge.first;
             Vec3 b = edge.second;
             float length = (b - a).length();
-            StreetClass streetClass = classifyStreetEdge(a, b, length, longest);
+            StreetClass streetClass = classifyStreetEdge(a, b, length, longest, primaryEdges);
 
             m_streetEdges.push_back({
                 a,
@@ -395,7 +403,7 @@ private:
         std::cout << "[URBAN CODEX LOOP] Street edges: " << m_streetEdges.size() << " | p=" << m_p << std::endl;
     }
 
-    StreetClass classifyStreetEdge(const Vec3& a, const Vec3& b, float length, float longest) const
+    bool isPrimaryStreetEdge(const Vec3& a, const Vec3& b, float length, float longest) const
     {
         Vec3 bMin = toVec3(m_boundsMin);
         Vec3 bMax = toVec3(m_boundsMax);
@@ -404,23 +412,52 @@ private:
         Vec3 dir = normalized2d(b - a);
 
         float maxSpan = std::max(span.x, span.y);
-        float boundaryBand = maxSpan * (0.035f + m_p * 0.040f);
+        float primaryBand = maxSpan * (0.030f + m_p * 0.070f);
         float verticalScore = std::abs(dir.y);
-        float horizontalScore = std::abs(dir.x);
         float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
 
-        bool nearLeftBoundary = std::abs(mid.x - bMin.x) < boundaryBand;
-        bool nearRightBoundary = std::abs(mid.x - bMax.x) < boundaryBand;
-        if ((nearLeftBoundary || nearRightBoundary) && verticalScore > 0.35f) {
+        bool nearLeftBoundary = std::abs(mid.x - bMin.x) < primaryBand;
+        bool nearRightBoundary = std::abs(mid.x - bMax.x) < primaryBand;
+        bool majorVertical = verticalScore > 0.35f && normalizedLength > 0.18f;
+        return (nearLeftBoundary || nearRightBoundary) && majorVertical;
+    }
+
+    StreetClass classifyStreetEdge(
+        const Vec3& a,
+        const Vec3& b,
+        float length,
+        float longest,
+        const std::vector<std::pair<Vec3, Vec3>>& primaryEdges
+    ) const
+    {
+        if (isPrimaryStreetEdge(a, b, length, longest)) {
             return StreetClass::Primary;
         }
 
-        float secondaryLengthThreshold = 0.46f - m_p * 0.12f;
-        if (horizontalScore > 0.45f || normalizedLength > secondaryLengthThreshold) {
+        Vec3 dir = normalized2d(b - a);
+        Vec3 mid = (a + b) * 0.5f;
+        float horizontalScore = std::abs(dir.x);
+        float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
+        float primaryInfluenceDistance = metersToModelUnits(m_primaryRoadWidthMeters * 3.0f);
+        float nearestPrimary = nearestPrimaryStreetDistance(mid, primaryEdges);
+
+        bool feederFromPrimary = nearestPrimary < primaryInfluenceDistance && horizontalScore > 0.32f;
+        bool longCrossStreet = horizontalScore > 0.45f || normalizedLength > 0.42f;
+
+        if (feederFromPrimary || longCrossStreet) {
             return StreetClass::Secondary;
         }
 
         return StreetClass::Tertiary;
+    }
+
+    float nearestPrimaryStreetDistance(const Vec3& p, const std::vector<std::pair<Vec3, Vec3>>& primaryEdges) const
+    {
+        float nearest = 1e9f;
+        for (const auto& edge : primaryEdges) {
+            nearest = std::min(nearest, distanceToSegment2d(p, edge.first, edge.second));
+        }
+        return nearest;
     }
 
     bool edgeAlreadyAdded(const std::vector<std::pair<Vec3, Vec3>>& edges, const Vec3& a, const Vec3& b) const

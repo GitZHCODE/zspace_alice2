@@ -39,7 +39,8 @@ The local VLM interface is Ollama.
   - draw visible street hierarchy as red primary, cyan secondary, and green tertiary
   - derive street offset SDFs from the colored/classified edges
   - use dimensionally calibrated offsets: primary roads 30m, secondary 20m, tertiary 10m
-  - expose a live `p` slider for street classification tuning while keeping road widths fixed
+  - expose a live `p` slider for primary-street selection while keeping road widths fixed
+  - derive secondary and tertiary street classes from the selected primary network
 - Make the sketch deterministic:
   - fixed top-down orthographic camera
   - white background

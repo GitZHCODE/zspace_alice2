@@ -195,9 +195,15 @@ The street SDF is dimensionally calibrated against the base mesh. The sketch tre
 
 The sketch exposes a slider named `p`:
 
-- `p = 0.0` keeps hierarchy classification stricter.
-- `p = 1.0` classifies more boundary-adjacent and long edges into higher street classes.
-- moving the slider rebuilds the mesh-edge street classification live.
+- `p = 0.0` keeps the primary-street selection tight to the main boundary streets.
+- `p = 1.0` allows a wider primary-street search band.
+- moving the slider rebuilds the primary street network live.
+
+Secondary and tertiary streets are derived from the primary network:
+
+- primary streets are selected first from `p`.
+- secondary streets are long cross streets or feeders related to the primary streets.
+- tertiary streets are the remaining local connector edges.
 
 The road widths do not scale with `p`; they remain fixed at `30m / 20m / 10m` so the SDF remains dimensionally accurate.
 
