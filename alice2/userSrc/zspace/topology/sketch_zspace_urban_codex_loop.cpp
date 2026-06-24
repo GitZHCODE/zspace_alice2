@@ -207,7 +207,8 @@ private:
     };
 
     struct TypeBPlotSdf {
-        std::vector<Vec3> graphPoints;
+        std::vector<std::pair<Vec3, Vec3>> graphSegments;
+        std::vector<Vec3> graphJointPoints;
         float graphHalfWidth = 0.0f;
         std::vector<TypeASetbackPlane> setbackPlanes;
     };
@@ -221,6 +222,11 @@ private:
             float offsetDistance;
         };
 
+        struct TypeBGraphSegment {
+            Vec3 start;
+            Vec3 end;
+        };
+
         int id;
         int faceIndex;
         BuildingType buildingType = BuildingType::TypeA;
@@ -229,9 +235,11 @@ private:
         float typeAEdgeLengthFraction = 1.0f;
         float typeBXFraction = 0.5f;
         float typeBYFraction = 0.5f;
+        float typeBInternalEdgeFraction = 0.5f;
         std::vector<Vec3> vertices;
         std::vector<PlotBoundaryEdge> boundaryEdges;
         std::vector<CenterlineGraphEdge> centerlineGraphEdges;
+        std::vector<TypeBGraphSegment> typeBGraphSegments;
         zSpace::zObjectGraph centerlineGraph;
         zSpace::zObjectGraph typeBCenterlineGraph;
 
@@ -308,11 +316,14 @@ private:
             graphFn.create(graphPositions, graphEdgeConnects);
         }
 
-        void buildTypeBSGraph(float xFraction, float graphZ)
+        void buildTypeBSGraph(float xFraction, float internalEdgeFraction, float graphZ)
         {
             xFraction = std::clamp(xFraction, 0.0f, 1.0f);
+            internalEdgeFraction = std::clamp(internalEdgeFraction, 0.0f, 0.5f);
             typeBXFraction = xFraction;
             typeBYFraction = 1.0f - typeBXFraction;
+            typeBInternalEdgeFraction = internalEdgeFraction;
+            typeBGraphSegments.clear();
 
             zSpace::zFnGraph sourceFn(centerlineGraph);
             zSpace::zPointArray sourcePositions;
@@ -345,9 +356,14 @@ private:
                 midB = sideB1;
             }
 
+            Vec3 partialA = lerp(midA, midB, typeBInternalEdgeFraction);
+            Vec3 partialB = lerp(midB, midA, typeBInternalEdgeFraction);
+
             zSpace::zPointArray graphPositions;
             graphPositions.push_back(zSpace::zPoint(p[a].x, p[a].y, graphZ));
             graphPositions.push_back(zSpace::zPoint(midA.x, midA.y, graphZ));
+            graphPositions.push_back(zSpace::zPoint(partialA.x, partialA.y, graphZ));
+            graphPositions.push_back(zSpace::zPoint(partialB.x, partialB.y, graphZ));
             graphPositions.push_back(zSpace::zPoint(midB.x, midB.y, graphZ));
             graphPositions.push_back(zSpace::zPoint(p[b].x, p[b].y, graphZ));
 
@@ -356,8 +372,19 @@ private:
             graphEdgeConnects.push_back(1);
             graphEdgeConnects.push_back(1);
             graphEdgeConnects.push_back(2);
-            graphEdgeConnects.push_back(2);
+            graphEdgeConnects.push_back(5);
+            graphEdgeConnects.push_back(4);
+            graphEdgeConnects.push_back(4);
             graphEdgeConnects.push_back(3);
+
+            typeBGraphSegments.push_back({ p[a], midA });
+            if ((partialA - midA).length() > 1e-6f) {
+                typeBGraphSegments.push_back({ midA, partialA });
+            }
+            typeBGraphSegments.push_back({ p[b], midB });
+            if ((partialB - midB).length() > 1e-6f) {
+                typeBGraphSegments.push_back({ midB, partialB });
+            }
 
             zSpace::zFnGraph graphFn(typeBCenterlineGraph);
             graphFn.create(graphPositions, graphEdgeConnects);
@@ -717,6 +744,7 @@ private:
             plotData.typeAEdgeLengthFraction = randomTypeAEdgeLengthFraction(plotData.id);
             plotData.typeBXFraction = randomTypeBXFraction(plotData.id);
             plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
+            plotData.typeBInternalEdgeFraction = randomTypeBInternalEdgeFraction(plotData.id);
             plotData.vertices.reserve(positions.size());
             plotData.boundaryEdges.reserve(positions.size());
 
@@ -819,6 +847,11 @@ private:
         return 0.25f + deterministicUnitRandom(plotId, 3) * 0.5f;
     }
 
+    float randomTypeBInternalEdgeFraction(int plotId) const
+    {
+        return deterministicUnitRandom(plotId, 5) * 0.5f;
+    }
+
     void buildTypeACenterlineGraphs()
     {
         const float minWidth = metersToModelUnits(m_typeAMinWidthMeters);
@@ -848,19 +881,22 @@ private:
 
     void buildTypeBCenterlineGraphs()
     {
+        int graphCount = 0;
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
             if (plotData.buildingType != BuildingType::TypeB) continue;
 
             plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
-            plotData.buildTypeBSGraph(plotData.typeBXFraction, m_massingZ + 0.009f);
-            graphEdges += 3;
+            plotData.buildTypeBSGraph(plotData.typeBXFraction, plotData.typeBInternalEdgeFraction, m_massingZ + 0.009f);
+            graphCount++;
+            graphEdges += static_cast<int>(plotData.typeBGraphSegments.size());
         }
 
-        std::cout << "[URBAN CODEX LOOP] Type B S graphs: " << graphEdges / 3
+        std::cout << "[URBAN CODEX LOOP] Type B S graphs: " << graphCount
                   << " | graph edges: " << graphEdges
                   << " | X random range 0.25-0.75"
-                  << " | Y = 1 - X" << std::endl;
+                  << " | Y = 1 - X"
+                  << " | internal edge random range 0.0-0.5" << std::endl;
     }
 
     void buildTypeASdfField()
@@ -1019,18 +1055,18 @@ private:
             TypeBPlotSdf plotSdf;
             addTypeBSetbackClipPlanes(plotData, plotSdf);
 
-            zSpace::zFnGraph graphFn(plotData.typeBCenterlineGraph);
-            zSpace::zPointArray graphPositions;
-            graphFn.getVertexPositions(graphPositions);
-            if (graphPositions.size() < 2) continue;
+            if (plotData.typeBGraphSegments.empty()) continue;
 
             plotSdf.graphHalfWidth = edgeHalfDepth;
-            plotSdf.graphPoints.reserve(graphPositions.size());
-            for (const auto& graphPosition : graphPositions) {
-                plotSdf.graphPoints.push_back(toVec3(graphPosition));
+            plotSdf.graphSegments.reserve(plotData.typeBGraphSegments.size());
+            plotSdf.graphJointPoints.reserve(plotData.typeBGraphSegments.size() * 2);
+            for (const auto& graphSegment : plotData.typeBGraphSegments) {
+                plotSdf.graphSegments.push_back({ graphSegment.start, graphSegment.end });
+                plotSdf.graphJointPoints.push_back(graphSegment.start);
+                plotSdf.graphJointPoints.push_back(graphSegment.end);
             }
 
-            if (plotSdf.graphPoints.size() > 1) {
+            if (!plotSdf.graphSegments.empty()) {
                 m_typeBSdfPlots.push_back(plotSdf);
             }
         }
@@ -1436,7 +1472,7 @@ private:
         float d = 1e9f;
 
         for (const auto& plotSdf : m_typeBSdfPlots) {
-            float a = wholeGraphOffsetSdf(p, plotSdf.graphPoints, plotSdf.graphHalfWidth);
+            float a = wholeGraphOffsetSdf(p, plotSdf.graphSegments, plotSdf.graphJointPoints, plotSdf.graphHalfWidth);
 
             float clip = typeBSetbackClipSdf(p, plotSdf);
             d = std::min(d, std::max(a, clip));
@@ -1456,33 +1492,42 @@ private:
         return clip;
     }
 
-    float wholeGraphOffsetSdf(const Vec3& p, const std::vector<Vec3>& graphPoints, float halfWidth) const
+    float wholeGraphOffsetSdf(
+        const Vec3& p,
+        const std::vector<std::pair<Vec3, Vec3>>& graphSegments,
+        const std::vector<Vec3>& graphJointPoints,
+        float halfWidth
+    ) const
     {
-        if (graphPoints.size() < 2) return 1e9f;
+        if (graphSegments.empty()) return 1e9f;
 
         float d = 1e9f;
-        for (size_t i = 0; i + 1 < graphPoints.size(); ++i) {
-            Vec3 edgeVector = graphPoints[i + 1] - graphPoints[i];
+        for (const auto& segment : graphSegments) {
+            Vec3 edgeVector = segment.second - segment.first;
             float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
             if (edgeLength < 1e-6f) continue;
 
             Vec3 tangent = normalized2d(edgeVector);
             Vec3 normal(-tangent.y, tangent.x, 0.0f);
-            Vec3 center = (graphPoints[i] + graphPoints[i + 1]) * 0.5f;
+            Vec3 center = (segment.first + segment.second) * 0.5f;
             d = std::min(d, orientedBoxSdf(p, center, tangent, normal, edgeLength * 0.5f, halfWidth));
         }
 
-        for (size_t i = 0; i < graphPoints.size(); ++i) {
+        for (const auto& jointPoint : graphJointPoints) {
             Vec3 axisX(1.0f, 0.0f, 0.0f);
-            if (i + 1 < graphPoints.size()) {
-                axisX = normalized2d(graphPoints[i + 1] - graphPoints[i]);
-            }
-            else if (i > 0) {
-                axisX = normalized2d(graphPoints[i] - graphPoints[i - 1]);
+            for (const auto& segment : graphSegments) {
+                if ((segment.first - jointPoint).length() < 1e-6f) {
+                    axisX = normalized2d(segment.second - segment.first);
+                    break;
+                }
+                if ((segment.second - jointPoint).length() < 1e-6f) {
+                    axisX = normalized2d(segment.second - segment.first);
+                    break;
+                }
             }
 
             Vec3 axisY(-axisX.y, axisX.x, 0.0f);
-            d = std::min(d, orientedBoxSdf(p, graphPoints[i], axisX, axisY, halfWidth, halfWidth));
+            d = std::min(d, orientedBoxSdf(p, jointPoint, axisX, axisY, halfWidth, halfWidth));
         }
 
         return d;

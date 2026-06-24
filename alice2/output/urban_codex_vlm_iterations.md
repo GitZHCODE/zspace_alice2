@@ -175,6 +175,10 @@ Commit: `fec2442`
 - Type B has parameters `X` and `Y`.
 - Constraint: `X + Y = 1.0`.
 - Current sketch assignment: deterministic random `X` per plot from `0.25` to `0.75`; `Y` is computed as `1.0 - X`.
+- Type B has an internal-edge parameter from `0.0` to `0.5`.
+- The internal-edge parameter controls how much of the S graph middle edge is used from both internal vertices along their corresponding half-edge.
+- At `0.0`, Type B forms two separated L shapes.
+- At `0.5`, both internal-edge halves meet and the full S graph edge is used.
 - Type B displays its S graph in `zMagenta` for inspection.
 - Type B SDF A offsets the whole S graph as exact square-ended edge rectangles plus compact square vertex fills, avoiding rounded corners and projection artefacts at valence-2 internal graph vertices.
 - Type B SDF B is the same continuous inset boundary half-plane clip used for Type A.
