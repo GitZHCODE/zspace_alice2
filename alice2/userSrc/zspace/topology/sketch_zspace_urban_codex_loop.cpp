@@ -486,16 +486,26 @@ private:
         const std::vector<std::pair<Vec3, Vec3>>& primaryEdges
     ) const
     {
+        (void)primaryEdges;
+        Vec3 bMin = toVec3(m_boundsMin);
+        Vec3 bMax = toVec3(m_boundsMax);
+        Vec3 span = bMax - bMin;
         Vec3 dir = normalized2d(b - a);
         Vec3 mid = (a + b) * 0.5f;
         float horizontalScore = std::abs(dir.x);
+        float verticalScore = std::abs(dir.y);
         float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
-        float primaryInfluenceDistance = primaryStreetWidth() * 3.0f;
-        float nearestPrimary = nearestPrimaryStreetDistance(mid, primaryEdges);
+        float maxSpan = std::max(span.x, span.y);
+        float boundaryBand = maxSpan * 0.055f;
+        float nx = span.x > 1e-6f ? (mid.x - bMin.x) / span.x : 0.0f;
 
-        bool feederFromPrimary = nearestPrimary < primaryInfluenceDistance && horizontalScore > 0.45f && normalizedLength > 0.18f;
-        bool longCrossStreet = horizontalScore > 0.62f && normalizedLength > 0.26f;
-        return feederFromPrimary || longCrossStreet;
+        bool nearTopBoundary = std::abs(mid.y - bMax.y) < boundaryBand;
+        bool nearBottomBoundary = std::abs(mid.y - bMin.y) < boundaryBand;
+        bool perimeterRoute = (nearTopBoundary || nearBottomBoundary) && horizontalScore > 0.38f && normalizedLength > 0.14f;
+        bool rightSideCollector = nx > 0.48f && verticalScore > 0.42f && normalizedLength > 0.16f;
+        bool longBlueRoute = horizontalScore > 0.62f && normalizedLength > 0.32f;
+
+        return perimeterRoute || rightSideCollector || longBlueRoute;
     }
 
     bool isTertiaryStreetEdge(
@@ -506,24 +516,24 @@ private:
         const std::vector<std::pair<Vec3, Vec3>>& secondaryEdges
     ) const
     {
+        (void)secondaryEdges;
         Vec3 bMin = toVec3(m_boundsMin);
         Vec3 bMax = toVec3(m_boundsMax);
         Vec3 span = bMax - bMin;
         Vec3 dir = normalized2d(b - a);
         Vec3 mid = (a + b) * 0.5f;
+        float horizontalScore = std::abs(dir.x);
         float verticalScore = std::abs(dir.y);
         float normalizedLength = (longest > 1e-6f) ? length / longest : 0.0f;
-        float nearestSecondary = nearestEdgeDistance(mid, secondaryEdges);
-        float secondaryInfluenceDistance = secondaryStreetWidth() * 2.5f;
 
         float nx = span.x > 1e-6f ? (mid.x - bMin.x) / span.x : 0.0f;
-        float ny = span.y > 1e-6f ? (mid.y - bMin.y) / span.y : 0.0f;
-        float spacingGate = std::fmod(nx * 9.0f + ny * 5.0f, 2.0f);
+        float maxSpan = std::max(span.x, span.y);
+        float boundaryBand = maxSpan * 0.050f;
+        bool nearLeftOrRightBoundary = std::abs(mid.x - bMin.x) < boundaryBand || std::abs(mid.x - bMax.x) < boundaryBand;
+        bool interiorConnector = !nearLeftOrRightBoundary && nx > 0.05f && nx < 0.96f;
+        bool routeLike = horizontalScore > 0.34f || verticalScore > 0.42f;
 
-        return verticalScore > 0.45f &&
-               normalizedLength > 0.18f &&
-               nearestSecondary < secondaryInfluenceDistance &&
-               spacingGate < 1.0f;
+        return interiorConnector && routeLike && normalizedLength > 0.12f;
     }
 
     bool tryClassifyStreetEdge(
@@ -615,8 +625,12 @@ private:
 
     Color streetColor(StreetClass streetClass) const
     {
-        (void)streetClass;
-        return Color(0.5f, 0.5f, 0.5f, 1.0f);
+        switch (streetClass) {
+            case StreetClass::Primary: return Color(1.0f, 0.0f, 0.0f, 1.0f);
+            case StreetClass::Secondary: return Color(0.0f, 0.18f, 0.86f, 1.0f);
+            case StreetClass::Tertiary: return Color(0.0f, 0.82f, 0.0f, 1.0f);
+        }
+        return Color(0.0f, 0.82f, 0.0f, 1.0f);
     }
 
     Color streetOffsetColor(StreetClass streetClass) const
@@ -722,6 +736,7 @@ private:
         contourDisplay.edgeColor = Color(0.12f, 0.12f, 0.12f, 1.0f);
         contourDisplay.edgeWidth = 2.0f;
         scene().draw(m_streetIsoContour, contourDisplay);
+
     }
 
     std::vector<Vec3> makeConstrainedBuildingFootprint(const Vec3& center, const std::vector<zSpace::zVector>& positions, float parcelCoverage) const

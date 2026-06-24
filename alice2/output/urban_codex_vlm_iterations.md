@@ -181,7 +181,13 @@ The street SDF now affects both visualization and building placement. Buildings 
 
 ## Method Update: Interactive Street Parameter `p`
 
-Visible streets are drawn zGRAY. The primary, secondary, and tertiary hierarchy remains internal and controls street selection, network derivation, dimensional width, and massing exclusion.
+The level-0 street contour is drawn zGRAY. The red/blue/green hierarchy from the markup image is used only to classify selected mesh edges internally:
+
+- primary = red
+- secondary = blue
+- tertiary = green
+
+The primary, secondary, and tertiary hierarchy controls street selection, network derivation, dimensional width, and massing exclusion, but it is not drawn as colored street geometry.
 
 The street SDF uses `p` as the primary-street full width. The default value is `p = 0.3`, and secondary/tertiary widths are derived from it:
 
@@ -199,9 +205,9 @@ The sketch exposes a slider named `p`:
 
 Secondary and tertiary streets are derived from the primary network:
 
-- primary streets are selected first from `p`.
-- secondary streets are long cross streets or feeders related to the primary streets.
-- tertiary streets are the remaining local connector edges.
+- primary streets are selected as the left/right boundary routes.
+- secondary streets include perimeter routes, right-side collectors, and long blue cross routes.
+- tertiary streets include the remaining long interior connectors, so they are sampled into the SDF instead of being dropped.
 
 Not every mesh edge is a street. Each mesh face is treated as a plot, and the algorithm selects only some plot edges as street centerlines. Non-selected edges remain plot divisions.
 

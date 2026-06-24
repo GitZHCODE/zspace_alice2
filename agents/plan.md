@@ -38,7 +38,7 @@ The local VLM interface is Ollama.
   - treat each mesh face as a plot
   - select only some plot edges as street centerlines; non-selected edges remain plot divisions
   - classify actual mesh edges as primary, secondary, or tertiary
-  - draw visible streets as zGRAY while keeping hierarchy internal
+  - draw only the level-0 street contour as zGRAY; keep red primary, blue secondary, green tertiary as internal edge classes
   - derive a zSpace mesh scalar-field SDF from the selected classified edges
   - extract level-0 street geometry with `zFnMeshScalarField::getIsocontour`
   - keep the sampled field mesh behind a `Field Mesh` UI toggle, off by default
