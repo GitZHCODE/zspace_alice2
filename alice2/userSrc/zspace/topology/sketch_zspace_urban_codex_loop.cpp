@@ -147,7 +147,7 @@ private:
     float m_lastBuiltP = -1.0f;
     float m_siteLongDimensionMeters = 500.0f;
     float m_modelUnitsPerMeter = 1.0f;
-    float m_globalParameterScale = 0.1f;
+    float m_globalParameterScale = 1.0f;
     float m_civicSpineWidth = 0.055f;
     float m_civicPlazaRadius = 0.135f;
     float m_neighborhoodPlazaRadius = 0.105f;
