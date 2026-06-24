@@ -177,11 +177,6 @@ private:
 
     class plot {
     public:
-        struct CenterlineGraphVertex {
-            Vec3 position;
-            int sourceVertexIndex;
-        };
-
         struct CenterlineGraphEdge {
             int startVertexIndex;
             int endVertexIndex;
@@ -194,8 +189,8 @@ private:
         Vec3 center;
         std::vector<Vec3> vertices;
         std::vector<PlotBoundaryEdge> boundaryEdges;
-        std::vector<CenterlineGraphVertex> centerlineGraphVertices;
         std::vector<CenterlineGraphEdge> centerlineGraphEdges;
+        zSpace::zObjectGraph centerlineGraph;
 
         void buildCenterlineGraph(
             float roadSetback,
@@ -203,10 +198,10 @@ private:
             float buildingWidth,
             float primaryRoadHalfWidth,
             float secondaryRoadHalfWidth,
-            float tertiaryRoadHalfWidth
+            float tertiaryRoadHalfWidth,
+            float graphZ
         )
         {
-            centerlineGraphVertices.clear();
             centerlineGraphEdges.clear();
             if (vertices.size() < 3 || boundaryEdges.size() != vertices.size()) return;
 
@@ -238,25 +233,36 @@ private:
                 offsetLines.push_back({ edge.a + offset, edge.b + offset, offsetDistance });
             }
 
-            centerlineGraphVertices.reserve(vertices.size());
+            zSpace::zPointArray graphPositions;
+            graphPositions.reserve(vertices.size());
             for (size_t i = 0; i < vertices.size(); ++i) {
                 size_t previous = (i + offsetLines.size() - 1) % offsetLines.size();
                 Vec3 position;
                 if (!intersectLines2d(offsetLines[previous].a, offsetLines[previous].b, offsetLines[i].a, offsetLines[i].b, position)) {
                     position = (offsetLines[previous].b + offsetLines[i].a) * 0.5f;
                 }
-                centerlineGraphVertices.push_back({ position, static_cast<int>(i) });
+                position.z = graphZ;
+                graphPositions.push_back(zSpace::zPoint(position.x, position.y, position.z));
             }
 
             centerlineGraphEdges.reserve(boundaryEdges.size());
+            zSpace::zIntArray graphEdgeConnects;
+            graphEdgeConnects.reserve(boundaryEdges.size() * 2);
             for (size_t i = 0; i < boundaryEdges.size(); ++i) {
+                int start = static_cast<int>(i);
+                int end = static_cast<int>((i + 1) % boundaryEdges.size());
                 centerlineGraphEdges.push_back({
-                    static_cast<int>(i),
-                    static_cast<int>((i + 1) % boundaryEdges.size()),
+                    start,
+                    end,
                     boundaryEdges[i].boundaryType,
                     offsetLines[i].offsetDistance
                 });
+                graphEdgeConnects.push_back(start);
+                graphEdgeConnects.push_back(end);
             }
+
+            zSpace::zFnGraph graphFn(centerlineGraph);
+            graphFn.create(graphPositions, graphEdgeConnects);
         }
 
     private:
@@ -658,7 +664,8 @@ private:
                 width,
                 primaryStreetWidth() * 0.5f,
                 secondaryStreetWidth() * 0.5f,
-                tertiaryStreetWidth() * 0.5f
+                tertiaryStreetWidth() * 0.5f,
+                m_massingZ + 0.003f
             );
             graphEdges += static_cast<int>(plotData.centerlineGraphEdges.size());
         }
@@ -946,22 +953,18 @@ private:
 
     void drawTypeACenterlineGraphs(Renderer& renderer)
     {
+        (void)renderer;
         const Color graphColor(1.0f, 0.0f, 1.0f, 1.0f);
+        zDisplayGraphSetting graphDisplay;
+        graphDisplay.showEdges = true;
+        graphDisplay.showVertices = true;
+        graphDisplay.edgeColor = graphColor;
+        graphDisplay.vertexColor = graphColor;
+        graphDisplay.edgeWidth = 2.0f;
+        graphDisplay.vertexSize = 5.0f;
 
-        for (const auto& plotData : m_plots) {
-            for (const auto& edge : plotData.centerlineGraphEdges) {
-                if (edge.startVertexIndex < 0 || edge.endVertexIndex < 0) continue;
-                if (edge.startVertexIndex >= static_cast<int>(plotData.centerlineGraphVertices.size())) continue;
-                if (edge.endVertexIndex >= static_cast<int>(plotData.centerlineGraphVertices.size())) continue;
-
-                Vec3 a = withZ(plotData.centerlineGraphVertices[edge.startVertexIndex].position, m_massingZ + 0.002f);
-                Vec3 b = withZ(plotData.centerlineGraphVertices[edge.endVertexIndex].position, m_massingZ + 0.002f);
-                renderer.drawLine(a, b, graphColor, 2.0f);
-            }
-
-            for (const auto& vertex : plotData.centerlineGraphVertices) {
-                renderer.drawPoint(withZ(vertex.position, m_massingZ + 0.003f), graphColor, 5.0f);
-            }
+        for (auto& plotData : m_plots) {
+            scene().draw(plotData.centerlineGraph, graphDisplay);
         }
     }
 

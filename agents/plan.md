@@ -53,6 +53,7 @@ The local VLM interface is Ollama.
   - graph vertex count equals plot vertex count
   - each graph edge stores its offset distance from the matching boundary edge
   - graph offset = setback distance + half building width + half road width for primary/secondary/tertiary frontages
+  - centerline graph geometry is stored as a zSpace `zObjectGraph` on each `plot`
   - future building typologies should choose frontage/setback/open-side rules from these edge tags and graph edges
 - Make the sketch deterministic:
   - fixed top-down orthographic camera
