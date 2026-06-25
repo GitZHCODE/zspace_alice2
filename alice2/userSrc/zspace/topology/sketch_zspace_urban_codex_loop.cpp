@@ -168,7 +168,8 @@ private:
     enum class BuildingType {
         TypeA,
         TypeB,
-        TypeC
+        TypeC,
+        TypeD
     };
 
     enum class PlotUse {
@@ -180,6 +181,7 @@ private:
         float typeAWeight = 1.0f;
         float typeBWeight = 0.0f;
         float typeCWeight = 0.0f;
+        float typeDWeight = 0.0f;
         float buildingWidthMeters = 20.0f;
         float typeAEdgeLengthFraction = 0.5f;
         float typeBXFraction = 0.5f;
@@ -221,6 +223,8 @@ private:
         std::vector<std::pair<Vec3, Vec3>> graphSegments;
         std::vector<Vec3> graphJointPoints;
         float graphHalfWidth = 0.0f;
+        bool usePolygonSdf = false;
+        std::vector<Vec3> polygonVertices;
         std::vector<TypeASetbackPlane> setbackPlanes;
     };
 
@@ -251,6 +255,7 @@ private:
         float typeABlendWeight = 1.0f;
         float typeBBlendWeight = 0.0f;
         float typeCBlendWeight = 0.0f;
+        float typeDBlendWeight = 0.0f;
         float typeABuildingWidthMeters = 25.0f;
         float typeAEdgeLengthFraction = 1.0f;
         float typeBXFraction = 0.5f;
@@ -470,11 +475,19 @@ private:
             }
 
             float totalWeight = typeABlendWeight + typeBBlendWeight + typeCBlendWeight;
+            totalWeight += typeDBlendWeight;
             if (totalWeight <= 0.001f) return;
 
             float aWeight = typeABlendWeight / totalWeight;
             float bWeight = typeBBlendWeight / totalWeight;
             float cWeight = typeCBlendWeight / totalWeight;
+            float dWeight = typeDBlendWeight / totalWeight;
+
+            if (dWeight >= aWeight && dWeight >= bWeight && dWeight >= cWeight) {
+                effectiveGraphSegments = makeTypeDOverlaySegments(p);
+                createGraphFromSegments(effectiveGraphSegments, effectiveCenterlineGraph, graphZ);
+                return;
+            }
 
             std::vector<WeightedGraphSegment> overlaySegments;
             addWeightedOverlaySegments(overlaySegments, makeTypeAOverlaySegments(p, typeAEdgeLengthFraction), aWeight);
@@ -604,6 +617,20 @@ private:
 
             segments.push_back({ p[a0], lerp(p[a0], p[a1], edgeFraction) });
             segments.push_back({ p[b0], lerp(p[b0], p[b1], edgeFraction) });
+
+            return segments;
+        }
+
+        static std::vector<TypeBGraphSegment> makeTypeDOverlaySegments(const std::vector<Vec3>& p)
+        {
+            std::vector<TypeBGraphSegment> segments;
+            const int n = static_cast<int>(p.size());
+            if (n < 3) return segments;
+
+            segments.reserve(n);
+            for (int i = 0; i < n; ++i) {
+                segments.push_back({ p[i], p[(i + 1) % n] });
+            }
 
             return segments;
         }
@@ -851,6 +878,7 @@ private:
         bHalf.typeAWeight = 0.0f;
         bHalf.typeBWeight = 1.0f;
         bHalf.typeCWeight = 0.0f;
+        bHalf.typeDWeight = 0.0f;
         bHalf.buildingWidthMeters = 20.0f;
         bHalf.typeBXFraction = 0.5f;
         bHalf.typeBInternalEdgeFraction = 0.25f;
@@ -860,6 +888,7 @@ private:
         aFull.typeAWeight = 1.0f;
         aFull.typeBWeight = 0.0f;
         aFull.typeCWeight = 0.0f;
+        aFull.typeDWeight = 0.0f;
         aFull.buildingWidthMeters = 22.0f;
         aFull.typeAEdgeLengthFraction = 1.0f;
 
@@ -867,6 +896,7 @@ private:
         cParallel.typeAWeight = 0.0f;
         cParallel.typeBWeight = 0.0f;
         cParallel.typeCWeight = 1.0f;
+        cParallel.typeDWeight = 0.0f;
         cParallel.buildingWidthMeters = 18.0f;
         cParallel.typeCEdgeFraction = 1.0f;
         cParallel.typeCOrientationIndex = 1.0f;
@@ -875,6 +905,7 @@ private:
         aLong.typeAWeight = 1.0f;
         aLong.typeBWeight = 0.0f;
         aLong.typeCWeight = 0.0f;
+        aLong.typeDWeight = 0.0f;
         aLong.buildingWidthMeters = 20.0f;
         aLong.typeAEdgeLengthFraction = 0.70f;
 
@@ -1262,6 +1293,7 @@ private:
         int typeA = 0;
         int typeB = 0;
         int typeC = 0;
+        int typeD = 0;
         for (const auto& plotData : m_plots) {
             if (plotData.plotUse == PlotUse::Green) {
                 green++;
@@ -1278,13 +1310,17 @@ private:
             else if (plotData.buildingType == BuildingType::TypeC) {
                 typeC++;
             }
+            else if (plotData.buildingType == BuildingType::TypeD) {
+                typeD++;
+            }
         }
 
         std::cout << "[URBAN CODEX LOOP] Plot use assignment | building: " << building
                   << " green: " << green << std::endl;
         std::cout << "[URBAN CODEX LOOP] Building type assignment | Type A: " << typeA
                   << " Type B: " << typeB
-                  << " Type C: " << typeC << std::endl;
+                  << " Type C: " << typeC
+                  << " Type D: " << typeD << std::endl;
     }
 
     ShapeParams computeTypologyGene(const plot& plotData) const
@@ -1344,6 +1380,7 @@ private:
         result.typeAWeight = 0.0f;
         result.typeBWeight = 0.0f;
         result.typeCWeight = 0.0f;
+        result.typeDWeight = 0.0f;
         result.buildingWidthMeters = 0.0f;
         result.typeAEdgeLengthFraction = 0.0f;
         result.typeBXFraction = 0.0f;
@@ -1361,6 +1398,7 @@ private:
             result.typeAWeight += anchor.params.typeAWeight * w;
             result.typeBWeight += anchor.params.typeBWeight * w;
             result.typeCWeight += anchor.params.typeCWeight * w;
+            result.typeDWeight += anchor.params.typeDWeight * w;
             result.buildingWidthMeters += anchor.params.buildingWidthMeters * w;
             result.typeAEdgeLengthFraction += anchor.params.typeAEdgeLengthFraction * w;
             result.typeBXFraction += anchor.params.typeBXFraction * w;
@@ -1377,6 +1415,7 @@ private:
         result.typeAWeight = std::clamp(result.typeAWeight / totalWeight, 0.0f, 1.0f);
         result.typeBWeight = std::clamp(result.typeBWeight / totalWeight, 0.0f, 1.0f);
         result.typeCWeight = std::clamp(result.typeCWeight / totalWeight, 0.0f, 1.0f);
+        result.typeDWeight = std::clamp(result.typeDWeight / totalWeight, 0.0f, 1.0f);
         result.buildingWidthMeters = std::clamp(result.buildingWidthMeters / totalWeight, m_typeAMinWidthMeters, m_typeAMaxWidthMeters);
         result.typeAEdgeLengthFraction = sanitizeTypeAEdgeLengthFraction(result.typeAEdgeLengthFraction / totalWeight);
         result.typeBXFraction = std::clamp(result.typeBXFraction / totalWeight, 0.25f, 0.75f);
@@ -1390,10 +1429,11 @@ private:
     ShapeParams fallbackShapeParams(int plotId) const
     {
         ShapeParams params;
-        bool isTypeB = randomBuildingType(plotId) == BuildingType::TypeB;
-        params.typeAWeight = isTypeB ? 0.0f : 1.0f;
-        params.typeBWeight = isTypeB ? 1.0f : 0.0f;
-        params.typeCWeight = 0.0f;
+        BuildingType randomType = randomBuildingType(plotId);
+        params.typeAWeight = randomType == BuildingType::TypeA ? 1.0f : 0.0f;
+        params.typeBWeight = randomType == BuildingType::TypeB ? 1.0f : 0.0f;
+        params.typeCWeight = randomType == BuildingType::TypeC ? 1.0f : 0.0f;
+        params.typeDWeight = randomType == BuildingType::TypeD ? 1.0f : 0.0f;
         params.buildingWidthMeters = randomTypeABuildingWidthMeters(plotId);
         params.typeAEdgeLengthFraction = randomTypeAEdgeLengthFraction(plotId);
         params.typeBXFraction = randomTypeBXFraction(plotId);
@@ -1407,16 +1447,21 @@ private:
     void applyTypologyGene(plot& plotData) const
     {
         ShapeParams gene = computeTypologyGene(plotData);
-        float totalWeight = gene.typeAWeight + gene.typeBWeight + gene.typeCWeight;
+        float totalWeight = gene.typeAWeight + gene.typeBWeight + gene.typeCWeight + gene.typeDWeight;
         if (totalWeight <= 1e-6f) totalWeight = 1.0f;
         float typeAWeight = std::clamp(gene.typeAWeight / totalWeight, 0.0f, 1.0f);
         float typeBWeight = std::clamp(gene.typeBWeight / totalWeight, 0.0f, 1.0f);
         float typeCWeight = std::clamp(gene.typeCWeight / totalWeight, 0.0f, 1.0f);
+        float typeDWeight = std::clamp(gene.typeDWeight / totalWeight, 0.0f, 1.0f);
         plotData.typeABlendWeight = typeAWeight;
         plotData.typeBBlendWeight = typeBWeight;
         plotData.typeCBlendWeight = typeCWeight;
+        plotData.typeDBlendWeight = typeDWeight;
         plotData.buildingType = BuildingType::TypeA;
-        if (typeBWeight >= typeAWeight && typeBWeight >= typeCWeight) {
+        if (typeDWeight >= typeAWeight && typeDWeight >= typeBWeight && typeDWeight >= typeCWeight) {
+            plotData.buildingType = BuildingType::TypeD;
+        }
+        else if (typeBWeight >= typeAWeight && typeBWeight >= typeCWeight) {
             plotData.buildingType = BuildingType::TypeB;
         }
         else if (typeCWeight >= typeAWeight && typeCWeight >= typeBWeight) {
@@ -1445,7 +1490,11 @@ private:
 
     BuildingType randomBuildingType(int plotId) const
     {
-        return deterministicUnitRandom(plotId, 4) < 0.5f ? BuildingType::TypeA : BuildingType::TypeB;
+        float value = deterministicUnitRandom(plotId, 4);
+        if (value < 0.25f) return BuildingType::TypeA;
+        if (value < 0.50f) return BuildingType::TypeB;
+        if (value < 0.75f) return BuildingType::TypeC;
+        return BuildingType::TypeD;
     }
 
     float randomTypeABuildingWidthMeters(int plotId) const
@@ -1591,8 +1640,15 @@ private:
             TypeBPlotSdf plotSdf;
             addTypeBSetbackClipPlanes(plotData, plotSdf);
             plotSdf.graphHalfWidth = edgeHalfDepth;
-            addGraphSegmentsToSdf(plotData.effectiveGraphSegments, plotSdf);
-            if (plotSdf.graphSegments.empty()) continue;
+            plotSdf.usePolygonSdf = plotData.buildingType == BuildingType::TypeD;
+            if (plotSdf.usePolygonSdf) {
+                plotSdf.polygonVertices = centerlineGraphPolygon(plotData);
+                if (plotSdf.polygonVertices.size() < 3) continue;
+            }
+            else {
+                addGraphSegmentsToSdf(plotData.effectiveGraphSegments, plotSdf);
+                if (plotSdf.graphSegments.empty()) continue;
+            }
 
             Vec3 pMin = plotData.vertices[0];
             Vec3 pMax = plotData.vertices[0];
@@ -1620,7 +1676,9 @@ private:
             values.reserve(positions.size());
             for (const auto& p : positions) {
                 Vec3 sample = toVec3(p);
-                float graphSdf = wholeGraphOffsetSdf(sample, plotSdf.graphSegments, plotSdf.graphJointPoints, plotSdf.graphHalfWidth);
+                float graphSdf = plotSdf.usePolygonSdf
+                    ? polygonSdf(sample, plotSdf.polygonVertices)
+                    : wholeGraphOffsetSdf(sample, plotSdf.graphSegments, plotSdf.graphJointPoints, plotSdf.graphHalfWidth);
                 float clipSdf = typeBSetbackClipSdf(sample, plotSdf);
                 values.push_back(std::max(graphSdf, clipSdf));
             }
@@ -1660,6 +1718,19 @@ private:
             plotSdf.graphJointPoints.push_back(graphSegment.start);
             plotSdf.graphJointPoints.push_back(graphSegment.end);
         }
+    }
+
+    std::vector<Vec3> centerlineGraphPolygon(plot& plotData) const
+    {
+        std::vector<Vec3> polygon;
+        zSpace::zFnGraph graphFn(plotData.centerlineGraph);
+        zSpace::zPointArray positions;
+        graphFn.getVertexPositions(positions);
+        polygon.reserve(positions.size());
+        for (const auto& position : positions) {
+            polygon.push_back(toVec3(position));
+        }
+        return polygon;
     }
 
     float graphSegmentCost(const plot::TypeBGraphSegment& a, const plot::TypeBGraphSegment& b) const
@@ -1987,6 +2058,29 @@ private:
         }
 
         return clip;
+    }
+
+    float polygonSdf(const Vec3& p, const std::vector<Vec3>& polygon) const
+    {
+        if (polygon.size() < 3) return 1e9f;
+
+        float d = 1e9f;
+        bool inside = false;
+        for (size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+            const Vec3& a = polygon[i];
+            const Vec3& b = polygon[j];
+            d = std::min(d, distanceToSegment2d(p, a, b));
+
+            bool crosses = ((a.y > p.y) != (b.y > p.y));
+            if (crosses) {
+                float denominator = b.y - a.y;
+                if (std::abs(denominator) < 1e-8f) continue;
+                float x = (b.x - a.x) * (p.y - a.y) / denominator + a.x;
+                if (p.x < x) inside = !inside;
+            }
+        }
+
+        return inside ? -d : d;
     }
 
     float wholeGraphOffsetSdf(
