@@ -1,4 +1,4 @@
-// #define __MAIN__
+#define __MAIN__
 #ifdef __MAIN__
 
 #include <zspace/interface.h>
@@ -20,7 +20,7 @@
 
 using namespace alice2;
 
-class zSpaceUrbanCodexLoopSketch : public ISketch {
+class zSpaceUrbanBlendSketch : public ISketch {
 public:
     std::string getName() const override { return "zSpace Urban Codex Loop"; }
     std::string getDescription() const override { return "Clean minimal urban streets and buildings sketch for Codex/VLM critique iterations."; }
@@ -44,8 +44,8 @@ public:
         loadMesh();
         if (!m_loaded) return;
 
-        std::cout << "[URBAN CODEX LOOP] Clean streets and buildings sketch loaded." << std::endl;
-        std::cout << "[URBAN CODEX LOOP] Faces: " << zSpace::zFnMesh(m_mesh).numPolygons() << std::endl;
+        std::cout << "[URBAN BLEND] Clean streets and buildings sketch loaded." << std::endl;
+        std::cout << "[URBAN BLEND] Faces: " << zSpace::zFnMesh(m_mesh).numPolygons() << std::endl;
     }
 
     void update(float) override
@@ -67,7 +67,7 @@ public:
         else if (m_autoCapture && m_frameCount > 30) {
             Application::getInstance()->takeScreenshot();
             m_screenshotTaken = true;
-            std::cout << "[URBAN CODEX LOOP] Screenshot captured. Exiting." << std::endl;
+            std::cout << "[URBAN BLEND] Screenshot captured. Exiting." << std::endl;
             exit(0);
         }
     }
@@ -97,7 +97,7 @@ public:
         if (key == 's' || key == 'S') {
             Application::getInstance()->takeScreenshot();
             m_screenshotTaken = true;
-            std::cout << "[URBAN CODEX LOOP] Manual screenshot captured. Exiting." << std::endl;
+            std::cout << "[URBAN BLEND] Manual screenshot captured. Exiting." << std::endl;
             exit(0);
         }
         return false;
@@ -829,7 +829,7 @@ private:
         Vec3 bMin = toVec3(m_boundsMin);
         Vec3 bMax = toVec3(m_boundsMax);
         m_modelUnitsPerMeter = 1.0f;
-        std::cout << "[URBAN CODEX LOOP] Input units treated as meters | model units per meter: "
+        std::cout << "[URBAN BLEND] Input units treated as meters | model units per meter: "
                   << m_modelUnitsPerMeter * m_globalParameterScale << std::endl;
         initializeTypologyAnchors(bMin, bMax);
 
@@ -874,47 +874,46 @@ private:
         Vec3 topLeft(bMin.x, bMax.y, 0.0f);
         Vec3 topRight(bMax.x, bMax.y, 0.0f);
 
-        ShapeParams bHalf;
-        bHalf.typeAWeight = 0.0f;
-        bHalf.typeBWeight = 1.0f;
-        bHalf.typeCWeight = 0.0f;
-        bHalf.typeDWeight = 0.0f;
-        bHalf.buildingWidthMeters = 20.0f;
-        bHalf.typeBXFraction = 0.5f;
-        bHalf.typeBInternalEdgeFraction = 0.25f;
-        bHalf.typeBOrientationIndex = 1.0f;
+        ShapeParams topLeftC;
+        topLeftC.typeAWeight = 0.0f;
+        topLeftC.typeBWeight = 0.0f;
+        topLeftC.typeCWeight = 1.0f;
+        topLeftC.typeDWeight = 0.0f;
+        topLeftC.buildingWidthMeters = 18.0f;
+        topLeftC.typeCEdgeFraction = 1.0f;
+        topLeftC.typeCOrientationIndex = 1.0f;
 
-        ShapeParams aFull;
-        aFull.typeAWeight = 1.0f;
-        aFull.typeBWeight = 0.0f;
-        aFull.typeCWeight = 0.0f;
-        aFull.typeDWeight = 0.0f;
-        aFull.buildingWidthMeters = 22.0f;
-        aFull.typeAEdgeLengthFraction = 1.0f;
+        ShapeParams bottomLeftB;
+        bottomLeftB.typeAWeight = 0.0f;
+        bottomLeftB.typeBWeight = 1.0f;
+        bottomLeftB.typeCWeight = 0.0f;
+        bottomLeftB.typeDWeight = 0.0f;
+        bottomLeftB.buildingWidthMeters = 20.0f;
+        bottomLeftB.typeBXFraction = 0.5f;
+        bottomLeftB.typeBInternalEdgeFraction = 0.5f;
+        bottomLeftB.typeBOrientationIndex = 1.0f;
 
-        ShapeParams cParallel;
-        cParallel.typeAWeight = 0.0f;
-        cParallel.typeBWeight = 0.0f;
-        cParallel.typeCWeight = 1.0f;
-        cParallel.typeDWeight = 0.0f;
-        cParallel.buildingWidthMeters = 18.0f;
-        cParallel.typeCEdgeFraction = 1.0f;
-        cParallel.typeCOrientationIndex = 1.0f;
+        ShapeParams bottomRightD;
+        bottomRightD.typeAWeight = 0.0f;
+        bottomRightD.typeBWeight = 0.0f;
+        bottomRightD.typeCWeight = 0.0f;
+        bottomRightD.typeDWeight = 1.0f;
+        bottomRightD.buildingWidthMeters = 22.0f;
 
-        ShapeParams aLong;
-        aLong.typeAWeight = 1.0f;
-        aLong.typeBWeight = 0.0f;
-        aLong.typeCWeight = 0.0f;
-        aLong.typeDWeight = 0.0f;
-        aLong.buildingWidthMeters = 20.0f;
-        aLong.typeAEdgeLengthFraction = 0.70f;
+        ShapeParams topRightA;
+        topRightA.typeAWeight = 1.0f;
+        topRightA.typeBWeight = 0.0f;
+        topRightA.typeCWeight = 0.0f;
+        topRightA.typeDWeight = 0.0f;
+        topRightA.buildingWidthMeters = 20.0f;
+        topRightA.typeAEdgeLengthFraction = 0.6f;
 
-        m_typologyAnchors.push_back({ bottomLeft, bHalf, 1.0f, radius });
-        m_typologyAnchors.push_back({ bottomRight, aFull, 1.0f, radius });
-        m_typologyAnchors.push_back({ topLeft, cParallel, 1.0f, radius });
-        m_typologyAnchors.push_back({ topRight, aLong, 1.0f, radius });
+        m_typologyAnchors.push_back({ topLeft, topLeftC, 1.0f, radius });
+        m_typologyAnchors.push_back({ bottomLeft, bottomLeftB, 1.0f, radius });
+        m_typologyAnchors.push_back({ bottomRight, bottomRightD, 1.0f, radius });
+        m_typologyAnchors.push_back({ topRight, topRightA, 1.0f, radius });
 
-        std::cout << "[URBAN CODEX LOOP] Typology anchors: " << m_typologyAnchors.size()
+        std::cout << "[URBAN BLEND] Typology anchors: " << m_typologyAnchors.size()
                   << " | arbitrary anchor field enabled" << std::endl;
     }
 
@@ -1004,7 +1003,7 @@ private:
         }
 
         m_lastBuiltP = m_p;
-        std::cout << "[URBAN CODEX LOOP] Street edges: " << m_streetEdges.size() << " | p=" << m_p << std::endl;
+        std::cout << "[URBAN BLEND] Street edges: " << m_streetEdges.size() << " | p=" << m_p << std::endl;
     }
 
     void buildPlotRecords(zSpace::zFnMesh& fn)
@@ -1027,7 +1026,7 @@ private:
             plotData.id = static_cast<int>(m_plots.size());
             plotData.faceIndex = i;
             plotData.center = toVec3(face.getCenter());
-            plotData.plotUse = randomPlotUse(plotData.id);
+            plotData.plotUse = PlotUse::Building;
             m_plotCenterMin.x = std::min(m_plotCenterMin.x, plotData.center.x);
             m_plotCenterMin.y = std::min(m_plotCenterMin.y, plotData.center.y);
             m_plotCenterMax.x = std::max(m_plotCenterMax.x, plotData.center.x);
@@ -1068,7 +1067,7 @@ private:
             }
         }
 
-        std::cout << "[URBAN CODEX LOOP] Plot records: " << m_plots.size() << std::endl;
+        std::cout << "[URBAN BLEND] Plot records: " << m_plots.size() << std::endl;
         logPlotBoundarySummary();
         logBuildingTypeSummary();
     }
@@ -1145,7 +1144,7 @@ private:
             1e-6f
         );
 
-        std::cout << "[URBAN CODEX LOOP] Building SDF reference cell: " << referenceCellSize
+        std::cout << "[URBAN BLEND] Building SDF reference cell: " << referenceCellSize
                   << " model units | samples per input cell: " << m_buildingSdfSamplesPerInputCell
                   << " | SDF sample spacing: " << m_buildingSdfCellSizeModelUnits
                   << " model units" << std::endl;
@@ -1201,7 +1200,7 @@ private:
             m_plots[plotId].plotUse = PlotUse::Building;
         }
 
-        std::cout << "[URBAN CODEX LOOP] Typology anchor plot IDs | BL: " << m_typologyAnchors[0].plotId
+        std::cout << "[URBAN BLEND] Typology anchor plot IDs | BL: " << m_typologyAnchors[0].plotId
                   << " BR: " << m_typologyAnchors[1].plotId
                   << " TL: " << m_typologyAnchors[2].plotId
                   << " TR: " << m_typologyAnchors[3].plotId << std::endl;
@@ -1280,7 +1279,7 @@ private:
             }
         }
 
-        std::cout << "[URBAN CODEX LOOP] Plot boundary edges | primary: " << primary
+        std::cout << "[URBAN BLEND] Plot boundary edges | primary: " << primary
                   << " secondary: " << secondary
                   << " tertiary: " << tertiary
                   << " split: " << split << std::endl;
@@ -1315,9 +1314,9 @@ private:
             }
         }
 
-        std::cout << "[URBAN CODEX LOOP] Plot use assignment | building: " << building
+        std::cout << "[URBAN BLEND] Plot use assignment | building: " << building
                   << " green: " << green << std::endl;
-        std::cout << "[URBAN CODEX LOOP] Building type assignment | Type A: " << typeA
+        std::cout << "[URBAN BLEND] Building type assignment | Type A: " << typeA
                   << " Type B: " << typeB
                   << " Type C: " << typeC
                   << " Type D: " << typeD << std::endl;
@@ -1483,11 +1482,6 @@ private:
         return value - std::floor(value);
     }
 
-    PlotUse randomPlotUse(int plotId) const
-    {
-        return deterministicUnitRandom(plotId, 11) < 0.72f ? PlotUse::Building : PlotUse::Green;
-    }
-
     BuildingType randomBuildingType(int plotId) const
     {
         float value = deterministicUnitRandom(plotId, 4);
@@ -1552,7 +1546,7 @@ private:
             graphEdges += static_cast<int>(plotData.centerlineGraphEdges.size());
         }
 
-        std::cout << "[URBAN CODEX LOOP] Type A plot centerline graph edges: " << graphEdges
+        std::cout << "[URBAN BLEND] Type A plot centerline graph edges: " << graphEdges
                   << " | width range " << m_typeAMinWidthMeters << "-" << m_typeAMaxWidthMeters << "m"
                   << " | road setback " << m_typeARoadSetbackMeters << "m"
                   << " | local setback " << m_typeALocalSetbackMeters << "m" << std::endl;
@@ -1577,7 +1571,7 @@ private:
             graphEdges += static_cast<int>(plotData.typeBGraphSegments.size());
         }
 
-        std::cout << "[URBAN CODEX LOOP] Type B S graphs: " << graphCount
+        std::cout << "[URBAN BLEND] Type B S graphs: " << graphCount
                   << " | graph edges: " << graphEdges
                   << " | X random range 0.25-0.75"
                   << " | Y = 1 - X"
@@ -1601,7 +1595,7 @@ private:
             graphEdges += static_cast<int>(plotData.typeCGraphSegments.size());
         }
 
-        std::cout << "[URBAN CODEX LOOP] Type C parallel graphs: " << graphCount
+        std::cout << "[URBAN BLEND] Type C parallel graphs: " << graphCount
                   << " | graph edges: " << graphEdges
                   << " | edge random range 0.5-1.0" << std::endl;
     }
@@ -1619,7 +1613,7 @@ private:
             graphEdges += static_cast<int>(plotData.effectiveGraphSegments.size());
         }
 
-        std::cout << "[URBAN CODEX LOOP] Effective typology transport graphs: " << graphCount
+        std::cout << "[URBAN BLEND] Effective typology transport graphs: " << graphCount
                   << " | graph edges: " << graphEdges
                   << " | shared parametric topology" << std::endl;
     }
@@ -1695,7 +1689,7 @@ private:
             m_typeBSdfPlots.push_back(plotSdf);
         }
 
-        std::cout << "[URBAN CODEX LOOP] Building iso meshes: " << m_buildingIsoMeshes.size()
+        std::cout << "[URBAN BLEND] Building iso meshes: " << m_buildingIsoMeshes.size()
                   << " | per-plot SDF spacing " << m_buildingSdfCellSizeModelUnits << " model units"
                   << " | reference samples/cell " << m_buildingSdfSamplesPerInputCell
                   << " | resolution clamp " << m_buildingSdfMinResolution
@@ -2279,6 +2273,7 @@ private:
 
 };
 
-ALICE2_REGISTER_SKETCH_AUTO(zSpaceUrbanCodexLoopSketch)
+ALICE2_REGISTER_SKETCH_AUTO(zSpaceUrbanBlendSketch)
 
 #endif
+
