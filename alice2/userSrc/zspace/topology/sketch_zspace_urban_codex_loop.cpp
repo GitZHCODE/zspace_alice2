@@ -146,7 +146,6 @@ private:
     float m_openSpaceZ = 0.001f;
     float m_p = 12.0f;
     float m_lastBuiltP = -1.0f;
-    float m_siteLongDimensionMeters = 500.0f;
     float m_modelUnitsPerMeter = 1.0f;
     float m_globalParameterScale = 1.0f;
     float m_civicSpineWidth = 0.055f;
@@ -890,10 +889,9 @@ private:
         Vec3 bMin = toVec3(m_boundsMin);
         Vec3 bMax = toVec3(m_boundsMax);
         Vec3 span = bMax - bMin;
-        float siteLongDimensionModelUnits = std::max(span.x, span.y);
-        if (siteLongDimensionModelUnits > 1e-6f) {
-            m_modelUnitsPerMeter = siteLongDimensionModelUnits / m_siteLongDimensionMeters;
-        }
+        m_modelUnitsPerMeter = 1.0f;
+        std::cout << "[URBAN CODEX LOOP] Input units treated as meters | model units per meter: "
+                  << m_modelUnitsPerMeter * m_globalParameterScale << std::endl;
         m_civicSpineA = Vec3(bMin.x + span.x * 0.18f, bMin.y + span.y * 0.45f, 0.0f);
         m_civicSpineB = Vec3(bMax.x - span.x * 0.18f, bMin.y + span.y * 0.58f, 0.0f);
         m_neighborhoodPlazaA = Vec3(bMin.x + span.x * 0.32f, bMin.y + span.y * 0.47f, 0.0f);
