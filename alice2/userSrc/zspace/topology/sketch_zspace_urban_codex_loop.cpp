@@ -1493,6 +1493,8 @@ private:
 
     void buildTypeBSdfField()
     {
+        buildTypeBSdfPrimitives();
+
         Vec3 bMin = toVec3(m_boundsMin);
         Vec3 bMax = toVec3(m_boundsMax);
         Vec3 span = bMax - bMin;
@@ -1506,38 +1508,20 @@ private:
         zSpace::zPointArray positions;
         fn.getPositions(positions);
 
-        zSpace::zScalarArray values(positions.size(), 1e9f);
-        for (const auto& plotData : m_plots) {
-            if (plotData.effectiveGraphSegments.empty()) continue;
-
-            const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
-            const float edgeHalfDepth = buildingWidth * 0.5f;
-            if (edgeHalfDepth <= 1e-6f) continue;
-
-            zSpace::zScalarArray edgeValues;
-            fn.getScalarsAsEdgeDistance(edgeValues, const_cast<zSpace::zObjectGraph&>(plotData.effectiveCenterlineGraph), edgeHalfDepth, false);
-            if (edgeValues.size() != positions.size()) continue;
-
-            TypeBPlotSdf plotSdf;
-            addTypeBSetbackClipPlanes(plotData, plotSdf);
-
-            zSpace::zFnGraph graphFn(const_cast<zSpace::zObjectGraph&>(plotData.effectiveCenterlineGraph));
-            zSpace::zPointArray graphPositions;
-            graphFn.getVertexPositions(graphPositions);
-
-            for (size_t i = 0; i < positions.size(); ++i) {
-                Vec3 sample = toVec3(positions[i]);
-                float vertexSdf = graphVertexSquareSdf(sample, graphPositions, edgeHalfDepth);
-                float graphSdf = std::min(static_cast<float>(edgeValues[i]), vertexSdf);
-                float clipSdf = typeBSetbackClipSdf(sample, plotSdf);
-                values[i] = std::min(values[i], std::max(graphSdf, clipSdf));
-            }
+        zSpace::zScalarArray values;
+        values.reserve(positions.size());
+        for (const auto& p : positions) {
+            values.push_back(typeBSdf(toVec3(p)));
         }
 
         fn.setFieldValues(values, zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
         fn.updateColors(zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
         fn.getIsocontour(m_typeBIsoContour, 0.0f);
         liftTypeBIsoGeometry();
+
+        std::cout << "[URBAN CODEX LOOP] Effective graph SDF plots: " << m_typeBSdfPlots.size()
+                  << " | field samples: " << positions.size()
+                  << " | zFnMeshField edge scalars disabled" << std::endl;
     }
 
     void buildTypeASdfPrimitives()
