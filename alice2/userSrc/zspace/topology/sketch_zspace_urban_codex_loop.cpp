@@ -505,6 +505,7 @@ private:
                 effectiveGraphSegments.push_back({ start, end });
             }
 
+            keepDominantConnectedComponent(effectiveGraphSegments);
             createGraphFromSegments(effectiveGraphSegments, effectiveCenterlineGraph, graphZ);
         }
 
@@ -694,6 +695,79 @@ private:
             return 100 + pairIndex * 2 + std::clamp(side, 0, 1);
         }
 
+        static void keepDominantConnectedComponent(std::vector<TypeBGraphSegment>& segments)
+        {
+            if (segments.size() <= 1) return;
+
+            std::vector<Vec3> nodes;
+            std::vector<std::pair<int, int>> edgeNodes;
+            nodes.reserve(segments.size() * 2);
+            edgeNodes.reserve(segments.size());
+
+            for (const auto& segment : segments) {
+                int start = findOrAddVecPosition(nodes, segment.start);
+                int end = findOrAddVecPosition(nodes, segment.end);
+                if (start == end) continue;
+                edgeNodes.emplace_back(start, end);
+            }
+
+            if (edgeNodes.size() <= 1) return;
+
+            std::vector<std::vector<int>> adjacency(nodes.size());
+            for (int i = 0; i < static_cast<int>(edgeNodes.size()); ++i) {
+                adjacency[edgeNodes[i].first].push_back(i);
+                adjacency[edgeNodes[i].second].push_back(i);
+            }
+
+            std::vector<bool> visitedEdges(edgeNodes.size(), false);
+            std::vector<int> bestEdges;
+            float bestScore = -1.0f;
+
+            for (int seed = 0; seed < static_cast<int>(edgeNodes.size()); ++seed) {
+                if (visitedEdges[seed]) continue;
+
+                std::vector<int> componentEdges;
+                std::vector<int> stack;
+                stack.push_back(seed);
+                visitedEdges[seed] = true;
+
+                while (!stack.empty()) {
+                    int edgeIndex = stack.back();
+                    stack.pop_back();
+                    componentEdges.push_back(edgeIndex);
+
+                    int a = edgeNodes[edgeIndex].first;
+                    int b = edgeNodes[edgeIndex].second;
+                    for (int nodeIndex : { a, b }) {
+                        for (int neighborEdge : adjacency[nodeIndex]) {
+                            if (visitedEdges[neighborEdge]) continue;
+                            visitedEdges[neighborEdge] = true;
+                            stack.push_back(neighborEdge);
+                        }
+                    }
+                }
+
+                float score = 0.0f;
+                for (int edgeIndex : componentEdges) {
+                    score += (segments[edgeIndex].end - segments[edgeIndex].start).length();
+                }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestEdges = componentEdges;
+                }
+            }
+
+            if (bestEdges.size() == edgeNodes.size()) return;
+
+            std::vector<TypeBGraphSegment> filtered;
+            filtered.reserve(bestEdges.size());
+            for (int edgeIndex : bestEdges) {
+                filtered.push_back(segments[edgeIndex]);
+            }
+            segments = filtered;
+        }
+
         static Vec3 lerp(const Vec3& a, const Vec3& b, float t)
         {
             return a + (b - a) * t;
@@ -727,6 +801,18 @@ private:
 
             zSpace::zFnGraph graphFn(graph);
             graphFn.create(graphPositions, graphEdgeConnects);
+        }
+
+        static int findOrAddVecPosition(std::vector<Vec3>& graphPositions, const Vec3& position)
+        {
+            for (int i = 0; i < static_cast<int>(graphPositions.size()); ++i) {
+                if ((graphPositions[i] - position).length() < 1e-6f) {
+                    return i;
+                }
+            }
+
+            graphPositions.push_back(position);
+            return static_cast<int>(graphPositions.size() - 1);
         }
 
         static int findOrAddGraphPosition(zSpace::zPointArray& graphPositions, const Vec3& position, float graphZ)
