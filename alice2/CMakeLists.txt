@@ -358,9 +358,11 @@ add_custom_command(TARGET alice2 POST_BUILD
     COMMENT "Creating runtime data directory")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
     add_custom_command(TARGET alice2 POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_CURRENT_SOURCE_DIR}/data" "$<TARGET_FILE_DIR:alice2>/data"
-        COMMENT "Copying data directory to output directory")
+        COMMAND ${CMAKE_COMMAND}
+                -DSOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+                -DDEST_DIR="$<TARGET_FILE_DIR:alice2>/data"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/copy_runtime_data_if_missing.cmake"
+        COMMENT "Copying missing data files to output directory")
 endif()
 
 if(MSVC)
