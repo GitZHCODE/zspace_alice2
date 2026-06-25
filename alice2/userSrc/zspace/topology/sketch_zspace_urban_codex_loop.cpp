@@ -35,7 +35,9 @@ public:
         m_ui = std::make_unique<SimpleUI>(input());
         m_ui->setTheme(SimpleUI::UITheme::Dark);
         m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.0f, 100.0f, m_p);
-        m_ui->addToggle("Field Mesh", UIRect{14.0f, 112.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
+        m_ui->addSlider("minW", Vec2{14.0f, 112.0f}, 240.0f, 1.0f, 60.0f, m_typeAMinWidthMeters);
+        m_ui->addSlider("maxW", Vec2{14.0f, 142.0f}, 240.0f, 1.0f, 80.0f, m_typeAMaxWidthMeters);
+        m_ui->addToggle("Field Mesh", UIRect{14.0f, 172.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
 
         loadMesh();
         if (!m_loaded) return;
@@ -48,16 +50,12 @@ public:
     {
         if (!m_loaded || m_screenshotTaken) return;
 
-        if (std::abs(m_p - m_lastBuiltP) > 0.001f) {
+        sanitizeBuildingWidthControls();
+        if (std::abs(m_p - m_lastBuiltP) > 0.001f ||
+            std::abs(m_typeAMinWidthMeters - m_lastBuiltMinWidthMeters) > 0.001f ||
+            std::abs(m_typeAMaxWidthMeters - m_lastBuiltMaxWidthMeters) > 0.001f) {
             zSpace::zFnMesh fn(m_mesh);
-            buildStreetEdges(fn);
-            buildPlotRecords(fn);
-            buildStreetSdfField();
-            buildTypeACenterlineGraphs();
-            buildTypeBCenterlineGraphs();
-            buildTypeCCenterlineGraphs();
-            buildEffectiveTypologyGraphs();
-            buildBuildingIsoMeshes();
+            rebuildUrbanModel(fn);
         }
 
         m_frameCount++;
@@ -130,6 +128,8 @@ private:
     float m_baseZ = -0.004f;
     float m_typeAMinWidthMeters = 15.0f;
     float m_typeAMaxWidthMeters = 25.0f;
+    float m_lastBuiltMinWidthMeters = -1.0f;
+    float m_lastBuiltMaxWidthMeters = -1.0f;
     float m_typeARoadSetbackMeters = 5.0f;
     float m_typeALocalSetbackMeters = 2.0f;
     float m_p = 12.0f;
@@ -160,6 +160,11 @@ private:
         TypeA,
         TypeB,
         TypeC
+    };
+
+    enum class PlotUse {
+        Building,
+        Green
     };
 
     struct ShapeParams {
@@ -232,6 +237,7 @@ private:
         int id;
         int faceIndex;
         BuildingType buildingType = BuildingType::TypeA;
+        PlotUse plotUse = PlotUse::Building;
         Vec3 center;
         float typeABlendWeight = 1.0f;
         float typeBBlendWeight = 0.0f;
@@ -780,6 +786,14 @@ private:
                   << m_modelUnitsPerMeter * m_globalParameterScale << std::endl;
         initializeTypologyAnchors(bMin, bMax);
 
+        sanitizeBuildingWidthControls();
+        rebuildUrbanModel(fn);
+
+        m_loaded = true;
+    }
+
+    void rebuildUrbanModel(zSpace::zFnMesh& fn)
+    {
         buildStreetEdges(fn);
         buildPlotRecords(fn);
         buildStreetSdfField();
@@ -788,8 +802,18 @@ private:
         buildTypeCCenterlineGraphs();
         buildEffectiveTypologyGraphs();
         buildBuildingIsoMeshes();
+        m_lastBuiltP = m_p;
+        m_lastBuiltMinWidthMeters = m_typeAMinWidthMeters;
+        m_lastBuiltMaxWidthMeters = m_typeAMaxWidthMeters;
+    }
 
-        m_loaded = true;
+    void sanitizeBuildingWidthControls()
+    {
+        m_typeAMinWidthMeters = std::clamp(m_typeAMinWidthMeters, 1.0f, 80.0f);
+        m_typeAMaxWidthMeters = std::clamp(m_typeAMaxWidthMeters, 1.0f, 80.0f);
+        if (m_typeAMaxWidthMeters < m_typeAMinWidthMeters + 0.5f) {
+            m_typeAMaxWidthMeters = std::min(80.0f, m_typeAMinWidthMeters + 0.5f);
+        }
     }
 
     void initializeTypologyAnchors(const Vec3& bMin, const Vec3& bMax)
@@ -952,6 +976,7 @@ private:
             plotData.id = static_cast<int>(m_plots.size());
             plotData.faceIndex = i;
             plotData.center = toVec3(face.getCenter());
+            plotData.plotUse = randomPlotUse(plotData.id);
             m_plotCenterMin.x = std::min(m_plotCenterMin.x, plotData.center.x);
             m_plotCenterMin.y = std::min(m_plotCenterMin.y, plotData.center.y);
             m_plotCenterMax.x = std::max(m_plotCenterMax.x, plotData.center.x);
@@ -1122,6 +1147,7 @@ private:
             int plotId = std::clamp(defaultAnchors[i], 0, static_cast<int>(m_plots.size()) - 1);
             m_typologyAnchors[i].plotId = plotId;
             m_typologyAnchors[i].position = m_plots[plotId].center;
+            m_plots[plotId].plotUse = PlotUse::Building;
         }
 
         std::cout << "[URBAN CODEX LOOP] Typology anchor plot IDs | BL: " << m_typologyAnchors[0].plotId
@@ -1211,10 +1237,18 @@ private:
 
     void logBuildingTypeSummary() const
     {
+        int building = 0;
+        int green = 0;
         int typeA = 0;
         int typeB = 0;
         int typeC = 0;
         for (const auto& plotData : m_plots) {
+            if (plotData.plotUse == PlotUse::Green) {
+                green++;
+                continue;
+            }
+
+            building++;
             if (plotData.buildingType == BuildingType::TypeA) {
                 typeA++;
             }
@@ -1226,6 +1260,8 @@ private:
             }
         }
 
+        std::cout << "[URBAN CODEX LOOP] Plot use assignment | building: " << building
+                  << " green: " << green << std::endl;
         std::cout << "[URBAN CODEX LOOP] Building type assignment | Type A: " << typeA
                   << " Type B: " << typeB
                   << " Type C: " << typeC << std::endl;
@@ -1382,6 +1418,11 @@ private:
         return value - std::floor(value);
     }
 
+    PlotUse randomPlotUse(int plotId) const
+    {
+        return deterministicUnitRandom(plotId, 11) < 0.72f ? PlotUse::Building : PlotUse::Green;
+    }
+
     BuildingType randomBuildingType(int plotId) const
     {
         return deterministicUnitRandom(plotId, 4) < 0.5f ? BuildingType::TypeA : BuildingType::TypeB;
@@ -1426,6 +1467,7 @@ private:
 
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
+            if (plotData.plotUse != PlotUse::Building) continue;
             float width = metersToModelUnits(plotData.typeABuildingWidthMeters);
             if (width < minWidth || width <= 1e-6f) continue;
 
@@ -1452,6 +1494,7 @@ private:
         int graphCount = 0;
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
+            if (plotData.plotUse != PlotUse::Building) continue;
             if (plotData.typeBBlendWeight <= 0.001f) continue;
 
             plotData.typeBYFraction = 1.0f - plotData.typeBXFraction;
@@ -1477,6 +1520,7 @@ private:
         int graphCount = 0;
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
+            if (plotData.plotUse != PlotUse::Building) continue;
             if (plotData.typeCBlendWeight <= 0.001f) continue;
 
             plotData.buildTypeCParallelGraph(
@@ -1498,6 +1542,7 @@ private:
         int graphCount = 0;
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
+            if (plotData.plotUse != PlotUse::Building) continue;
             plotData.buildEffectiveGraph(m_buildingZ + 0.011f);
             if (plotData.effectiveGraphSegments.empty()) continue;
 
@@ -1516,6 +1561,7 @@ private:
         m_typeBSdfPlots.clear();
 
         for (auto& plotData : m_plots) {
+            if (plotData.plotUse != PlotUse::Building) continue;
             if (plotData.effectiveGraphSegments.empty()) continue;
 
             const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
@@ -1997,7 +2043,9 @@ private:
             if (positions.size() < 3) continue;
 
             Vec3 center = withZ(toVec3(face.getCenter()), m_baseZ);
-            Color faceColor(0.88f, 0.88f, 0.82f, 1.0f);
+            Color faceColor = plotUseForFaceIndex(i) == PlotUse::Green
+                ? Color(0.62f, 0.78f, 0.54f, 1.0f)
+                : Color(0.88f, 0.88f, 0.82f, 1.0f);
 
             for (size_t j = 0; j < positions.size(); ++j) {
                 Vec3 p1 = withZ(toVec3(positions[j]), m_baseZ);
@@ -2011,6 +2059,14 @@ private:
                 renderer.drawLine(p1, p2, Color(0.78f, 0.78f, 0.74f, 1.0f), 1.0f);
             }
         }
+    }
+
+    PlotUse plotUseForFaceIndex(int faceIndex) const
+    {
+        for (const auto& plotData : m_plots) {
+            if (plotData.faceIndex == faceIndex) return plotData.plotUse;
+        }
+        return PlotUse::Building;
     }
 
     void drawEffectiveTypologyGraphs(Renderer& renderer)
