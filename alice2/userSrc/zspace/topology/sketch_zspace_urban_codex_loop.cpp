@@ -154,8 +154,10 @@ private:
     float m_neighborhoodPlazaRadius = 0.105f;
     int m_streetFieldResolution = 320;
     float m_buildingSdfCellSizeMeters = 1.5f;
+    float m_buildingSdfCellSizeModelUnits = 0.0f;
+    int m_buildingSdfSamplesPerInputCell = 96;
     int m_buildingSdfMinResolution = 32;
-    int m_buildingSdfMaxResolution = 192;
+    int m_buildingSdfMaxResolution = 512;
     Vec3 m_civicSpineA;
     Vec3 m_civicSpineB;
     Vec3 m_neighborhoodPlazaA;
@@ -1111,6 +1113,7 @@ private:
             buildPlotAdjacency();
             assignTypologyAnchorPlots();
             buildTypologyAnchorDistances();
+            updateBuildingSdfCellSizeFromInputGrid();
             for (auto& plotData : m_plots) {
                 applyTypologyGene(plotData);
             }
@@ -1168,6 +1171,35 @@ private:
             area += a.x * b.y - b.x * a.y;
         }
         return area * 0.5f;
+    }
+
+    void updateBuildingSdfCellSizeFromInputGrid()
+    {
+        std::vector<float> cellSizes;
+        cellSizes.reserve(m_plots.size());
+
+        for (const auto& plotData : m_plots) {
+            float area = std::abs(signedArea2d(plotData.vertices));
+            if (area <= 1e-8f) continue;
+            cellSizes.push_back(std::sqrt(area));
+        }
+
+        if (cellSizes.empty()) {
+            m_buildingSdfCellSizeModelUnits = std::max(metersToModelUnits(m_buildingSdfCellSizeMeters), 1e-6f);
+            return;
+        }
+
+        std::sort(cellSizes.begin(), cellSizes.end());
+        float referenceCellSize = cellSizes[cellSizes.size() / 2];
+        m_buildingSdfCellSizeModelUnits = std::max(
+            referenceCellSize / static_cast<float>(std::max(m_buildingSdfSamplesPerInputCell, 1)),
+            1e-6f
+        );
+
+        std::cout << "[URBAN CODEX LOOP] Building SDF reference cell: " << referenceCellSize
+                  << " model units | samples per input cell: " << m_buildingSdfSamplesPerInputCell
+                  << " | SDF sample spacing: " << m_buildingSdfCellSizeModelUnits
+                  << " model units" << std::endl;
     }
 
     void buildPlotAdjacency()
@@ -1729,14 +1761,17 @@ private:
         }
 
         std::cout << "[URBAN CODEX LOOP] Building iso meshes: " << m_buildingIsoMeshes.size()
-                  << " | per-plot SDF cell " << m_buildingSdfCellSizeMeters << "m"
+                  << " | per-plot SDF spacing " << m_buildingSdfCellSizeModelUnits << " model units"
+                  << " | reference samples/cell " << m_buildingSdfSamplesPerInputCell
                   << " | resolution clamp " << m_buildingSdfMinResolution
                   << "-" << m_buildingSdfMaxResolution << std::endl;
     }
 
     int buildingFieldResolution(float modelLength) const
     {
-        float cellSize = std::max(metersToModelUnits(m_buildingSdfCellSizeMeters), 1e-6f);
+        float cellSize = m_buildingSdfCellSizeModelUnits > 1e-6f
+            ? m_buildingSdfCellSizeModelUnits
+            : std::max(metersToModelUnits(m_buildingSdfCellSizeMeters), 1e-6f);
         int resolution = static_cast<int>(std::ceil(std::max(modelLength, cellSize) / cellSize)) + 1;
         return std::clamp(resolution, m_buildingSdfMinResolution, m_buildingSdfMaxResolution);
     }
