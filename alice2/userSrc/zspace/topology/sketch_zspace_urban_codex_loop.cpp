@@ -55,7 +55,7 @@ public:
             buildTypeBCenterlineGraphs();
             buildTypeCCenterlineGraphs();
             buildEffectiveTypologyGraphs();
-            buildTypeBSdfField();
+            buildBuildingIsoMeshes();
         }
 
         m_frameCount++;
@@ -78,7 +78,7 @@ public:
         drawNeutralBaseMesh(renderer, fn);
         drawStreetSdfGeometry(renderer);
         drawOpenSpaceSdf(renderer, fn);
-        drawTypeBSdfContour(renderer);
+        drawBuildingIsoMeshes(renderer);
         drawEffectiveTypologyGraphs(renderer);
 
         if (m_ui) {
@@ -728,6 +728,7 @@ private:
     zSpace::zObjectGraph m_typeAIsoContour;
     zSpace::zObjectMeshScalarField m_typeBSdfField;
     zSpace::zObjectGraph m_typeBIsoContour;
+    std::vector<zSpace::zObjectMesh> m_buildingIsoMeshes;
     std::vector<TypeAPlotSdf> m_typeASdfPlots;
     std::vector<TypeBPlotSdf> m_typeBSdfPlots;
 
@@ -903,7 +904,7 @@ private:
         buildTypeBCenterlineGraphs();
         buildTypeCCenterlineGraphs();
         buildEffectiveTypologyGraphs();
-        buildTypeBSdfField();
+        buildBuildingIsoMeshes();
 
         m_loaded = true;
     }
@@ -1524,6 +1525,69 @@ private:
                   << " | zFnMeshField edge scalars disabled" << std::endl;
     }
 
+    void buildBuildingIsoMeshes()
+    {
+        m_buildingIsoMeshes.clear();
+        m_typeBSdfPlots.clear();
+
+        for (auto& plotData : m_plots) {
+            if (plotData.effectiveGraphSegments.empty()) continue;
+
+            const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
+            const float edgeHalfDepth = buildingWidth * 0.5f;
+            if (edgeHalfDepth <= 1e-6f || plotData.vertices.empty()) continue;
+
+            TypeBPlotSdf plotSdf;
+            addTypeBSetbackClipPlanes(plotData, plotSdf);
+            plotSdf.graphHalfWidth = edgeHalfDepth;
+            addGraphSegmentsToSdf(plotData.effectiveGraphSegments, plotSdf);
+            if (plotSdf.graphSegments.empty()) continue;
+
+            Vec3 pMin = plotData.vertices[0];
+            Vec3 pMax = plotData.vertices[0];
+            for (const auto& p : plotData.vertices) {
+                pMin.x = std::min(pMin.x, p.x);
+                pMin.y = std::min(pMin.y, p.y);
+                pMax.x = std::max(pMax.x, p.x);
+                pMax.y = std::max(pMax.y, p.y);
+            }
+
+            float pad = edgeHalfDepth * 1.5f;
+            zSpace::zPoint fieldMin(pMin.x - pad, pMin.y - pad, 0.0f);
+            zSpace::zPoint fieldMax(pMax.x + pad, pMax.y + pad, 0.0f);
+
+            zSpace::zObjectMeshScalarField plotField;
+            zSpace::zFnMeshScalarField fieldFn(plotField);
+            fieldFn.create(fieldMin, fieldMax, 96, 96, 1, true, false);
+
+            zSpace::zPointArray positions;
+            fieldFn.getPositions(positions);
+
+            zSpace::zScalarArray values;
+            values.reserve(positions.size());
+            for (const auto& p : positions) {
+                Vec3 sample = toVec3(p);
+                float graphSdf = wholeGraphOffsetSdf(sample, plotSdf.graphSegments, plotSdf.graphJointPoints, plotSdf.graphHalfWidth);
+                float clipSdf = typeBSetbackClipSdf(sample, plotSdf);
+                values.push_back(std::max(graphSdf, clipSdf));
+            }
+
+            zSpace::zObjectMesh isoMesh;
+            zSpace::zFnMesh fieldMeshFn(plotField);
+            fieldMeshFn.getIsoMesh(values, 0.0f, true, isoMesh);
+            liftBuildingIsoMesh(isoMesh);
+
+            zSpace::zFnMesh isoFn(isoMesh);
+            if (isoFn.numPolygons() <= 0) continue;
+
+            m_buildingIsoMeshes.push_back(isoMesh);
+            m_typeBSdfPlots.push_back(plotSdf);
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Building iso meshes: " << m_buildingIsoMeshes.size()
+                  << " | per-plot SDF fields" << std::endl;
+    }
+
     void buildTypeASdfPrimitives()
     {
         m_typeASdfPlots.clear();
@@ -1789,6 +1853,19 @@ private:
         }
         if (!contourPositions.empty()) {
             contourFn.setVertexPositions(contourPositions);
+        }
+    }
+
+    void liftBuildingIsoMesh(zSpace::zObjectMesh& mesh)
+    {
+        zSpace::zFnMesh meshFn(mesh);
+        zSpace::zPointArray positions;
+        meshFn.getVertexPositions(positions);
+        for (auto& p : positions) {
+            p.z = m_massingZ + 0.006f;
+        }
+        if (!positions.empty()) {
+            meshFn.setVertexPositions(positions);
         }
     }
 
@@ -2281,18 +2358,33 @@ private:
     void drawEffectiveTypologyGraphs(Renderer& renderer)
     {
         (void)renderer;
-        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
+        const Color graphColor(1.0f, 0.0f, 1.0f, 1.0f);
         zDisplayGraphSetting graphDisplay;
         graphDisplay.showEdges = true;
         graphDisplay.showVertices = true;
         graphDisplay.edgeColor = graphColor;
         graphDisplay.vertexColor = graphColor;
-        graphDisplay.edgeWidth = 1.0f;
+        graphDisplay.edgeWidth = 1.5f;
         graphDisplay.vertexSize = 6.0f;
 
         for (auto& plotData : m_plots) {
             if (plotData.effectiveGraphSegments.empty()) continue;
             scene().draw(plotData.effectiveCenterlineGraph, graphDisplay);
+        }
+    }
+
+    void drawBuildingIsoMeshes(Renderer& renderer)
+    {
+        (void)renderer;
+        zDisplayMeshSetting meshDisplay;
+        meshDisplay.showFaces = true;
+        meshDisplay.showEdges = false;
+        meshDisplay.showVertices = false;
+        meshDisplay.useVertexColors = false;
+        meshDisplay.faceColor = Color(0.0f, 0.0f, 0.0f, 1.0f);
+
+        for (auto& mesh : m_buildingIsoMeshes) {
+            scene().draw(mesh, meshDisplay);
         }
     }
 
