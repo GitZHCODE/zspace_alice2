@@ -9,9 +9,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <queue>
 #include <string>
 #include <utility>
 #include <vector>
@@ -196,6 +198,7 @@ private:
         ShapeParams params;
         float strength = 1.0f;
         float radius = 1.0f;
+        int plotId = -1;
     };
 
     struct StreetEdge {
@@ -724,7 +727,9 @@ private:
 
     std::vector<StreetEdge> m_streetEdges;
     std::vector<plot> m_plots;
+    std::vector<std::vector<std::pair<int, float>>> m_plotAdjacency;
     std::vector<TypologyAnchor> m_typologyAnchors;
+    std::vector<std::vector<float>> m_typologyAnchorDistances;
     zSpace::zObjectMeshScalarField m_streetSdfField;
     zSpace::zObjectGraph m_streetIsoContour;
     zSpace::zObjectMeshScalarField m_typeASdfField;
@@ -1103,6 +1108,9 @@ private:
             m_plotCenterMax = Vec3(1.0f, 1.0f, 0.0f);
         }
         else {
+            buildPlotAdjacency();
+            assignTypologyAnchorPlots();
+            buildTypologyAnchorDistances();
             for (auto& plotData : m_plots) {
                 applyTypologyGene(plotData);
             }
@@ -1162,6 +1170,116 @@ private:
         return area * 0.5f;
     }
 
+    void buildPlotAdjacency()
+    {
+        m_plotAdjacency.assign(m_plots.size(), {});
+
+        for (int i = 0; i < static_cast<int>(m_plots.size()); ++i) {
+            for (int j = i + 1; j < static_cast<int>(m_plots.size()); ++j) {
+                if (!plotsShareBoundaryEdge(m_plots[i], m_plots[j])) continue;
+
+                float cost = std::max((m_plots[i].center - m_plots[j].center).length(), 1e-6f);
+                m_plotAdjacency[i].push_back({ j, cost });
+                m_plotAdjacency[j].push_back({ i, cost });
+            }
+        }
+    }
+
+    bool plotsShareBoundaryEdge(const plot& a, const plot& b) const
+    {
+        for (const auto& edgeA : a.boundaryEdges) {
+            for (const auto& edgeB : b.boundaryEdges) {
+                if (sameUndirectedEdge(edgeA.a, edgeA.b, edgeB.a, edgeB.b)) return true;
+            }
+        }
+        return false;
+    }
+
+    bool sameUndirectedEdge(const Vec3& a0, const Vec3& a1, const Vec3& b0, const Vec3& b1) const
+    {
+        const float eps = 1e-4f;
+        bool same = (a0 - b0).length() < eps && (a1 - b1).length() < eps;
+        bool reverse = (a0 - b1).length() < eps && (a1 - b0).length() < eps;
+        return same || reverse;
+    }
+
+    void assignTypologyAnchorPlots()
+    {
+        if (m_plots.empty() || m_typologyAnchors.size() < 4) return;
+
+        int bottomLeft = extremePlotByScore([](const Vec3& p) { return p.x + p.y; }, false);
+        int bottomRight = extremePlotByScore([](const Vec3& p) { return p.x - p.y; }, true);
+        int topLeft = extremePlotByScore([](const Vec3& p) { return p.x - p.y; }, false);
+        int topRight = extremePlotByScore([](const Vec3& p) { return p.x + p.y; }, true);
+
+        const int defaultAnchors[4] = { bottomLeft, bottomRight, topLeft, topRight };
+        for (int i = 0; i < 4; ++i) {
+            int plotId = std::clamp(defaultAnchors[i], 0, static_cast<int>(m_plots.size()) - 1);
+            m_typologyAnchors[i].plotId = plotId;
+            m_typologyAnchors[i].position = m_plots[plotId].center;
+        }
+
+        std::cout << "[URBAN CODEX LOOP] Typology anchor plot IDs | BL: " << m_typologyAnchors[0].plotId
+                  << " BR: " << m_typologyAnchors[1].plotId
+                  << " TL: " << m_typologyAnchors[2].plotId
+                  << " TR: " << m_typologyAnchors[3].plotId << std::endl;
+    }
+
+    template <typename ScoreFn>
+    int extremePlotByScore(ScoreFn scoreFn, bool findMax) const
+    {
+        int bestIndex = 0;
+        float bestScore = findMax ? -std::numeric_limits<float>::max() : std::numeric_limits<float>::max();
+        for (int i = 0; i < static_cast<int>(m_plots.size()); ++i) {
+            float score = scoreFn(m_plots[i].center);
+            if ((findMax && score > bestScore) || (!findMax && score < bestScore)) {
+                bestScore = score;
+                bestIndex = i;
+            }
+        }
+        return bestIndex;
+    }
+
+    void buildTypologyAnchorDistances()
+    {
+        m_typologyAnchorDistances.clear();
+        m_typologyAnchorDistances.reserve(m_typologyAnchors.size());
+        for (const auto& anchor : m_typologyAnchors) {
+            m_typologyAnchorDistances.push_back(shortestPlotDistances(anchor.plotId));
+        }
+    }
+
+    std::vector<float> shortestPlotDistances(int sourcePlotId) const
+    {
+        const float infinity = std::numeric_limits<float>::max();
+        std::vector<float> distances(m_plots.size(), infinity);
+        if (sourcePlotId < 0 || sourcePlotId >= static_cast<int>(m_plots.size())) return distances;
+
+        using QueueItem = std::pair<float, int>;
+        std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> queue;
+        distances[sourcePlotId] = 0.0f;
+        queue.push({ 0.0f, sourcePlotId });
+
+        while (!queue.empty()) {
+            auto [distance, plotId] = queue.top();
+            queue.pop();
+            if (distance > distances[plotId]) continue;
+
+            if (plotId < 0 || plotId >= static_cast<int>(m_plotAdjacency.size())) continue;
+            for (const auto& edge : m_plotAdjacency[plotId]) {
+                int neighbor = edge.first;
+                float nextDistance = distance + edge.second;
+                if (neighbor < 0 || neighbor >= static_cast<int>(distances.size())) continue;
+                if (nextDistance >= distances[neighbor]) continue;
+
+                distances[neighbor] = nextDistance;
+                queue.push({ nextDistance, neighbor });
+            }
+        }
+
+        return distances;
+    }
+
     void logPlotBoundarySummary() const
     {
         int primary = 0;
@@ -1208,30 +1326,51 @@ private:
                   << " Type C: " << typeC << std::endl;
     }
 
-    ShapeParams computeTypologyGene(const Vec3& position) const
+    ShapeParams computeTypologyGene(const plot& plotData) const
     {
         if (m_typologyAnchors.empty()) {
-            return fallbackShapeParams(0);
+            return fallbackShapeParams(plotData.id);
         }
 
-        if (m_typologyAnchors.size() == 4) {
-            float u = saturate((position.x - m_plotCenterMin.x) / std::max(m_plotCenterMax.x - m_plotCenterMin.x, 1e-6f));
-            float v = saturate((position.y - m_plotCenterMin.y) / std::max(m_plotCenterMax.y - m_plotCenterMin.y, 1e-6f));
+        std::vector<float> weights(m_typologyAnchors.size(), 0.0f);
+        bool hasGraphDistances = m_typologyAnchorDistances.size() == m_typologyAnchors.size();
+        bool exactAnchor = false;
+        const float epsilon = 1e-5f;
 
-            std::vector<float> weights = {
-                (1.0f - u) * (1.0f - v),
-                u * (1.0f - v),
-                (1.0f - u) * v,
-                u * v
-            };
+        if (hasGraphDistances && plotData.id >= 0 && plotData.id < static_cast<int>(m_plots.size())) {
+            for (size_t i = 0; i < m_typologyAnchors.size(); ++i) {
+                const auto& distances = m_typologyAnchorDistances[i];
+                if (plotData.id >= static_cast<int>(distances.size())) {
+                    hasGraphDistances = false;
+                    break;
+                }
+
+                float distance = distances[plotData.id];
+                if (distance == std::numeric_limits<float>::max()) continue;
+
+                if (distance <= epsilon) {
+                    std::fill(weights.begin(), weights.end(), 0.0f);
+                    weights[i] = 1.0f;
+                    exactAnchor = true;
+                    break;
+                }
+
+                float influence = m_typologyAnchors[i].strength / ((distance + 0.05f) * (distance + 0.05f));
+                weights[i] = influence;
+            }
+        }
+
+        float totalWeight = 0.0f;
+        for (float weight : weights) totalWeight += weight;
+        if (hasGraphDistances && (exactAnchor || totalWeight > 1e-6f)) {
             return blendedShapeParams(weights);
         }
 
-        std::vector<float> weights;
+        weights.clear();
         weights.reserve(m_typologyAnchors.size());
         for (const auto& anchor : m_typologyAnchors) {
             float radius = std::max(anchor.radius, 1e-6f);
-            float d = (position - anchor.position).length() / radius;
+            float d = (plotData.center - anchor.position).length() / radius;
             weights.push_back(anchor.strength / (d * d + 0.015f));
         }
 
@@ -1306,7 +1445,7 @@ private:
 
     void applyTypologyGene(plot& plotData) const
     {
-        ShapeParams gene = computeTypologyGene(plotData.center);
+        ShapeParams gene = computeTypologyGene(plotData);
         float totalWeight = gene.typeAWeight + gene.typeBWeight + gene.typeCWeight;
         if (totalWeight <= 1e-6f) totalWeight = 1.0f;
         float typeAWeight = std::clamp(gene.typeAWeight / totalWeight, 0.0f, 1.0f);
