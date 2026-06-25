@@ -12,8 +12,8 @@ This note documents `topology/sketch_zspace_urban_blend.cpp`.
 
 - Top left anchor: Type C, edge fraction `1.0`.
 - Bottom left anchor: Type B, edge fraction `0.5`, internal edge fraction `0.5`.
-- Bottom right anchor: Type D.
-- Top right anchor: Type A, edge fraction `0.6`.
+- Bottom right anchor: Type A, edge fraction `1.0`.
+- Top right anchor: Type A, edge fraction `0.65`.
 
 ## Display
 

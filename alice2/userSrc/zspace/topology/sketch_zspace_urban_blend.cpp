@@ -893,12 +893,13 @@ private:
         bottomLeftB.typeBInternalEdgeFraction = 0.5f;
         bottomLeftB.typeBOrientationIndex = 1.0f;
 
-        ShapeParams bottomRightD;
-        bottomRightD.typeAWeight = 0.0f;
-        bottomRightD.typeBWeight = 0.0f;
-        bottomRightD.typeCWeight = 0.0f;
-        bottomRightD.typeDWeight = 1.0f;
-        bottomRightD.buildingWidthMeters = 22.0f;
+        ShapeParams bottomRightA;
+        bottomRightA.typeAWeight = 1.0f;
+        bottomRightA.typeBWeight = 0.0f;
+        bottomRightA.typeCWeight = 0.0f;
+        bottomRightA.typeDWeight = 0.0f;
+        bottomRightA.buildingWidthMeters = 22.0f;
+        bottomRightA.typeAEdgeLengthFraction = 1.0f;
 
         ShapeParams topRightA;
         topRightA.typeAWeight = 1.0f;
@@ -906,11 +907,11 @@ private:
         topRightA.typeCWeight = 0.0f;
         topRightA.typeDWeight = 0.0f;
         topRightA.buildingWidthMeters = 20.0f;
-        topRightA.typeAEdgeLengthFraction = 0.6f;
+        topRightA.typeAEdgeLengthFraction = 0.65f;
 
         m_typologyAnchors.push_back({ topLeft, topLeftC, 1.0f, radius });
         m_typologyAnchors.push_back({ bottomLeft, bottomLeftB, 1.0f, radius });
-        m_typologyAnchors.push_back({ bottomRight, bottomRightD, 1.0f, radius });
+        m_typologyAnchors.push_back({ bottomRight, bottomRightA, 1.0f, radius });
         m_typologyAnchors.push_back({ topRight, topRightA, 1.0f, radius });
 
         std::cout << "[URBAN BLEND] Typology anchors: " << m_typologyAnchors.size()
