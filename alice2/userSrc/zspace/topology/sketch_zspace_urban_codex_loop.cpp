@@ -37,7 +37,9 @@ public:
         m_ui->addSlider("p", Vec2{14.0f, 82.0f}, 240.0f, 0.0f, 100.0f, m_p);
         m_ui->addSlider("minW", Vec2{14.0f, 112.0f}, 240.0f, 1.0f, 60.0f, m_typeAMinWidthMeters);
         m_ui->addSlider("maxW", Vec2{14.0f, 142.0f}, 240.0f, 1.0f, 80.0f, m_typeAMaxWidthMeters);
-        m_ui->addToggle("Field Mesh", UIRect{14.0f, 172.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
+        m_ui->addToggle("Base Mesh", UIRect{14.0f, 172.0f, 130.0f, 24.0f}, m_drawBaseMesh);
+        m_ui->addToggle("Height Map", UIRect{14.0f, 202.0f, 130.0f, 24.0f}, m_drawHeightFieldMap);
+        m_ui->addToggle("Field Mesh", UIRect{14.0f, 232.0f, 130.0f, 24.0f}, m_drawStreetFieldMesh);
 
         loadMesh();
         if (!m_loaded) return;
@@ -75,7 +77,12 @@ public:
         if (!m_loaded) return;
 
         zSpace::zFnMesh fn(m_mesh);
-        drawNeutralBaseMesh(renderer, fn);
+        if (m_drawBaseMesh) {
+            drawNeutralBaseMesh(renderer, fn);
+        }
+        if (m_drawHeightFieldMap) {
+            drawHeightFieldMap(renderer, fn);
+        }
         drawStreetSdfGeometry(renderer);
         drawBuildingIsoMeshes(renderer);
         drawEffectiveTypologyGraphs(renderer);
@@ -116,6 +123,8 @@ private:
     bool m_loaded = false;
     bool m_screenshotTaken = false;
     bool m_autoCapture = false;
+    bool m_drawBaseMesh = true;
+    bool m_drawHeightFieldMap = false;
     bool m_drawStreetFieldMesh = false;
     int m_frameCount = 0;
 
@@ -734,6 +743,17 @@ private:
     float saturate(float value) const
     {
         return std::clamp(value, 0.0f, 1.0f);
+    }
+
+    Color lerpColor(const Color& a, const Color& b, float t) const
+    {
+        t = saturate(t);
+        return Color(
+            a.r + (b.r - a.r) * t,
+            a.g + (b.g - a.g) * t,
+            a.b + (b.b - a.b) * t,
+            a.a + (b.a - a.a) * t
+        );
     }
 
     float metersToModelUnits(float meters) const
@@ -2059,6 +2079,46 @@ private:
                 renderer.drawLine(p1, p2, Color(0.78f, 0.78f, 0.74f, 1.0f), 1.0f);
             }
         }
+    }
+
+    void drawHeightFieldMap(Renderer& renderer, zSpace::zFnMesh& fn)
+    {
+        for (int i = 0; i < fn.numPolygons(); ++i) {
+            zSpace::zItMeshFace face(m_mesh, i);
+            if (!face.isActive()) continue;
+
+            std::vector<zSpace::zVector> positions;
+            face.getVertexPositions(positions);
+            if (positions.size() < 3) continue;
+
+            Vec3 faceCenter = toVec3(face.getCenter());
+            float value = attractorHeightValue(faceCenter);
+            Color faceColor = lerpColor(
+                Color(0.0f, 0.0f, 1.0f, 1.0f),
+                Color(1.0f, 0.0f, 1.0f, 1.0f),
+                value
+            );
+
+            Vec3 center = withZ(faceCenter, m_baseZ + 0.002f);
+            for (size_t j = 0; j < positions.size(); ++j) {
+                Vec3 p1 = withZ(toVec3(positions[j]), m_baseZ + 0.002f);
+                Vec3 p2 = withZ(toVec3(positions[(j + 1) % positions.size()]), m_baseZ + 0.002f);
+                renderer.drawTriangle(center, p1, p2, faceColor);
+            }
+        }
+    }
+
+    float attractorHeightValue(const Vec3& p) const
+    {
+        Vec3 span = m_plotCenterMax - m_plotCenterMin;
+        float radius = std::max(std::max(span.x, span.y), 1e-6f);
+        Vec3 attractor(
+            m_plotCenterMin.x + span.x * 0.35f,
+            m_plotCenterMin.y + span.y * 0.65f,
+            0.0f
+        );
+        float d = (p - attractor).length() / radius;
+        return saturate(1.0f - d);
     }
 
     PlotUse plotUseForFaceIndex(int faceIndex) const
