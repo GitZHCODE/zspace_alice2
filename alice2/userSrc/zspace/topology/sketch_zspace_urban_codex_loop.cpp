@@ -23,7 +23,7 @@ using namespace alice2;
 class zSpaceUrbanCodexLoopSketch : public ISketch {
 public:
     std::string getName() const override { return "zSpace Urban Codex Loop"; }
-    std::string getDescription() const override { return "Clean minimal urban massing sketch for Codex/VLM critique iterations."; }
+    std::string getDescription() const override { return "Clean minimal urban streets and buildings sketch for Codex/VLM critique iterations."; }
     std::string getAuthor() const override { return "Codex + alice2 + zspace_core"; }
 
     void setup() override
@@ -40,7 +40,7 @@ public:
         loadMesh();
         if (!m_loaded) return;
 
-        std::cout << "[URBAN CODEX LOOP] Clean neutral baseline loaded." << std::endl;
+        std::cout << "[URBAN CODEX LOOP] Clean streets and buildings sketch loaded." << std::endl;
         std::cout << "[URBAN CODEX LOOP] Faces: " << zSpace::zFnMesh(m_mesh).numPolygons() << std::endl;
     }
 
@@ -79,7 +79,6 @@ public:
         zSpace::zFnMesh fn(m_mesh);
         drawNeutralBaseMesh(renderer, fn);
         drawStreetSdfGeometry(renderer);
-        drawOpenSpaceSdf(renderer, fn);
         drawBuildingIsoMeshes(renderer);
         drawEffectiveTypologyGraphs(renderer);
 
@@ -124,43 +123,25 @@ private:
 
     zSpace::zPoint m_boundsMin;
     zSpace::zPoint m_boundsMax;
-    zSpace::zPoint m_meshCenter;
     Vec3 m_plotCenterMin;
     Vec3 m_plotCenterMax;
-    float m_maxDistance = 1.0f;
 
-    // First-pass parameters. No gradient, greenery, open-space hierarchy, or SDF field yet.
-    // Codex will add those methods later only after VLM critique calls for them.
-    float m_massingZ = 0.004f;
+    float m_buildingZ = 0.004f;
     float m_baseZ = -0.004f;
-    float m_massingCoverageStep = 2.0f;
-    float m_parcelCoverage = 0.54f;
-    float m_minBuildingLength = 0.11f;
-    float m_minBuildingDepth = 0.060f;
-    float m_maxBuildingAspect = 2.6f;
-    float m_edgeClearanceFactor = 0.82f;
     float m_typeAMinWidthMeters = 15.0f;
     float m_typeAMaxWidthMeters = 25.0f;
     float m_typeARoadSetbackMeters = 5.0f;
     float m_typeALocalSetbackMeters = 2.0f;
-    float m_openSpaceZ = 0.001f;
     float m_p = 12.0f;
     float m_lastBuiltP = -1.0f;
     float m_modelUnitsPerMeter = 1.0f;
     float m_globalParameterScale = 0.1f;
-    float m_civicSpineWidth = 0.055f;
-    float m_civicPlazaRadius = 0.135f;
-    float m_neighborhoodPlazaRadius = 0.105f;
     int m_streetFieldResolution = 320;
     float m_buildingSdfCellSizeMeters = 1.5f;
     float m_buildingSdfCellSizeModelUnits = 0.0f;
     int m_buildingSdfSamplesPerInputCell = 96;
     int m_buildingSdfMinResolution = 32;
     int m_buildingSdfMaxResolution = 512;
-    Vec3 m_civicSpineA;
-    Vec3 m_civicSpineB;
-    Vec3 m_neighborhoodPlazaA;
-    Vec3 m_neighborhoodPlazaB;
 
     enum class StreetClass {
         Primary,
@@ -217,23 +198,9 @@ private:
         int streetEdgeIndex;
     };
 
-    struct TypeASdfBox {
-        Vec3 center;
-        Vec3 axisX;
-        Vec3 axisY;
-        float halfX;
-        float halfY;
-    };
-
     struct TypeASetbackPlane {
         Vec3 point;
         Vec3 inwardNormal;
-    };
-
-    struct TypeAPlotSdf {
-        std::vector<TypeASdfBox> sdfA;
-        std::vector<TypeASdfBox> sdfB;
-        std::vector<TypeASetbackPlane> setbackPlanes;
     };
 
     struct TypeBPlotSdf {
@@ -733,12 +700,7 @@ private:
     std::vector<std::vector<float>> m_typologyAnchorDistances;
     zSpace::zObjectMeshScalarField m_streetSdfField;
     zSpace::zObjectGraph m_streetIsoContour;
-    zSpace::zObjectMeshScalarField m_typeASdfField;
-    zSpace::zObjectGraph m_typeAIsoContour;
-    zSpace::zObjectMeshScalarField m_typeBSdfField;
-    zSpace::zObjectGraph m_typeBIsoContour;
     std::vector<zSpace::zObjectMesh> m_buildingIsoMeshes;
-    std::vector<TypeAPlotSdf> m_typeASdfPlots;
     std::vector<TypeBPlotSdf> m_typeBSdfPlots;
 
     static Vec3 toVec3(const zSpace::zVector& p)
@@ -768,12 +730,6 @@ private:
         return std::clamp(value, 0.0f, 1.0f);
     }
 
-    float smoothstep(float edge0, float edge1, float x) const
-    {
-        float t = saturate((x - edge0) / (edge1 - edge0));
-        return t * t * (3.0f - 2.0f * t);
-    }
-
     float metersToModelUnits(float meters) const
     {
         return meters * m_modelUnitsPerMeter * m_globalParameterScale;
@@ -791,20 +747,6 @@ private:
         return (p - closest).length();
     }
 
-    float civicOpenSpaceSdf(const Vec3& p) const
-    {
-        float spine = distanceToSegment2d(p, m_civicSpineA, m_civicSpineB) - m_civicSpineWidth;
-        float plaza = (p - toVec3(m_meshCenter)).length() - m_civicPlazaRadius;
-        float plazaB = (p - m_neighborhoodPlazaA).length() - m_neighborhoodPlazaRadius;
-        float plazaC = (p - m_neighborhoodPlazaB).length() - m_neighborhoodPlazaRadius;
-        return std::min(std::min(spine, plaza), std::min(plazaB, plazaC));
-    }
-
-    bool isCivicOpenSpace(const Vec3& p) const
-    {
-        return civicOpenSpaceSdf(p) < 0.0f;
-    }
-
     float streetOffsetSdf(const Vec3& p) const
     {
         float d = 1e9f;
@@ -812,60 +754,6 @@ private:
             d = std::min(d, distanceToSegment2d(p, edge.a, edge.b) - edge.offsetWidth);
         }
         return d;
-    }
-
-    const StreetEdge* nearestStreetEdge(const Vec3& p) const
-    {
-        const StreetEdge* nearest = nullptr;
-        float bestDistance = 1e9f;
-        for (const auto& edge : m_streetEdges) {
-            float distance = distanceToSegment2d(p, edge.a, edge.b) - edge.offsetWidth;
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                nearest = &edge;
-            }
-        }
-        return nearest;
-    }
-
-    bool isStreetSpace(const Vec3& p) const
-    {
-        return streetOffsetSdf(p) < 0.0f;
-    }
-
-    Color lerpColor(const Color& a, const Color& b, float t) const
-    {
-        t = saturate(t);
-        return Color(
-            a.r + (b.r - a.r) * t,
-            a.g + (b.g - a.g) * t,
-            a.b + (b.b - a.b) * t,
-            a.a + (b.a - a.a) * t
-        );
-    }
-
-    Color densityBaseColor(const Vec3& p) const
-    {
-        float density = densityValue(p);
-        const Color low(0.90f, 0.90f, 0.84f, 1.0f);
-        const Color mid(0.95f, 0.84f, 0.56f, 1.0f);
-        const Color high(0.82f, 0.40f, 0.30f, 1.0f);
-
-        if (density < 0.5f) return lerpColor(low, mid, density * 2.0f);
-        return lerpColor(mid, high, (density - 0.5f) * 2.0f);
-    }
-
-    float densityValue(const Vec3& p) const
-    {
-        float centerDistance = (p - toVec3(m_meshCenter)).length() / m_maxDistance;
-        float core = 1.0f - smoothstep(0.12f, 0.58f, centerDistance);
-        float primaryProximity = 0.0f;
-        for (const auto& edge : m_streetEdges) {
-            if (edge.streetClass != StreetClass::Primary) continue;
-            primaryProximity = std::max(primaryProximity, 1.0f - smoothstep(0.04f, 0.34f, distanceToSegment2d(p, edge.a, edge.b)));
-        }
-        float spineProximity = std::max(primaryProximity, 1.0f - smoothstep(0.04f, 0.34f, distanceToSegment2d(p, m_civicSpineA, m_civicSpineB)));
-        return saturate(core * 0.72f + spineProximity * 0.28f);
     }
 
     void loadMesh()
@@ -885,26 +773,13 @@ private:
         }
 
         fn.getBounds(m_boundsMin, m_boundsMax);
-        m_meshCenter = (m_boundsMin + m_boundsMax) * 0.5;
         Vec3 bMin = toVec3(m_boundsMin);
         Vec3 bMax = toVec3(m_boundsMax);
-        Vec3 span = bMax - bMin;
         m_modelUnitsPerMeter = 1.0f;
         std::cout << "[URBAN CODEX LOOP] Input units treated as meters | model units per meter: "
                   << m_modelUnitsPerMeter * m_globalParameterScale << std::endl;
-        m_civicSpineA = Vec3(bMin.x + span.x * 0.18f, bMin.y + span.y * 0.45f, 0.0f);
-        m_civicSpineB = Vec3(bMax.x - span.x * 0.18f, bMin.y + span.y * 0.58f, 0.0f);
-        m_neighborhoodPlazaA = Vec3(bMin.x + span.x * 0.32f, bMin.y + span.y * 0.47f, 0.0f);
-        m_neighborhoodPlazaB = Vec3(bMin.x + span.x * 0.74f, bMin.y + span.y * 0.61f, 0.0f);
         initializeTypologyAnchors(bMin, bMax);
 
-        zSpace::zPointArray vertices;
-        fn.getVertexPositions(vertices);
-        m_maxDistance = 0.0f;
-        for (const auto& v : vertices) {
-            m_maxDistance = std::max(m_maxDistance, (toVec3(v) - toVec3(m_meshCenter)).length());
-        }
-        if (m_maxDistance < 1e-5f) m_maxDistance = 1.0f;
         buildStreetEdges(fn);
         buildPlotRecords(fn);
         buildStreetSdfField();
@@ -1561,7 +1436,7 @@ private:
                 primaryStreetWidth() * 0.5f,
                 secondaryStreetWidth() * 0.5f,
                 tertiaryStreetWidth() * 0.5f,
-                m_massingZ + 0.003f
+                m_buildingZ + 0.003f
             );
             graphEdges += static_cast<int>(plotData.centerlineGraphEdges.size());
         }
@@ -1584,7 +1459,7 @@ private:
                 plotData.typeBXFraction,
                 plotData.typeBInternalEdgeFraction,
                 plotData.typeBOrientationIndex,
-                m_massingZ + 0.009f
+                m_buildingZ + 0.009f
             );
             graphCount++;
             graphEdges += static_cast<int>(plotData.typeBGraphSegments.size());
@@ -1607,7 +1482,7 @@ private:
             plotData.buildTypeCParallelGraph(
                 plotData.typeCEdgeFraction,
                 plotData.typeCOrientationIndex,
-                m_massingZ + 0.009f
+                m_buildingZ + 0.009f
             );
             graphCount++;
             graphEdges += static_cast<int>(plotData.typeCGraphSegments.size());
@@ -1623,7 +1498,7 @@ private:
         int graphCount = 0;
         int graphEdges = 0;
         for (auto& plotData : m_plots) {
-            plotData.buildEffectiveGraph(m_massingZ + 0.011f);
+            plotData.buildEffectiveGraph(m_buildingZ + 0.011f);
             if (plotData.effectiveGraphSegments.empty()) continue;
 
             graphCount++;
@@ -1633,68 +1508,6 @@ private:
         std::cout << "[URBAN CODEX LOOP] Effective typology transport graphs: " << graphCount
                   << " | graph edges: " << graphEdges
                   << " | shared parametric topology" << std::endl;
-    }
-
-    void buildTypeASdfField()
-    {
-        buildTypeASdfPrimitives();
-
-        Vec3 bMin = toVec3(m_boundsMin);
-        Vec3 bMax = toVec3(m_boundsMax);
-        Vec3 span = bMax - bMin;
-        float pad = std::max(span.x, span.y) * 0.05f;
-        zSpace::zPoint fieldMin(bMin.x - pad, bMin.y - pad, 0.0f);
-        zSpace::zPoint fieldMax(bMax.x + pad, bMax.y + pad, 0.0f);
-
-        zSpace::zFnMeshScalarField fn(m_typeASdfField);
-        fn.create(fieldMin, fieldMax, m_streetFieldResolution, m_streetFieldResolution, 1, true, false);
-
-        zSpace::zPointArray positions;
-        fn.getPositions(positions);
-
-        zSpace::zScalarArray values;
-        values.reserve(positions.size());
-        for (const auto& p : positions) {
-            values.push_back(typeASdf(toVec3(p)));
-        }
-
-        fn.setFieldValues(values, zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
-        fn.updateColors(zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
-        fn.getIsocontour(m_typeAIsoContour, 0.0f);
-        liftTypeAIsoGeometry();
-    }
-
-    void buildTypeBSdfField()
-    {
-        buildTypeBSdfPrimitives();
-
-        Vec3 bMin = toVec3(m_boundsMin);
-        Vec3 bMax = toVec3(m_boundsMax);
-        Vec3 span = bMax - bMin;
-        float pad = std::max(span.x, span.y) * 0.05f;
-        zSpace::zPoint fieldMin(bMin.x - pad, bMin.y - pad, 0.0f);
-        zSpace::zPoint fieldMax(bMax.x + pad, bMax.y + pad, 0.0f);
-
-        zSpace::zFnMeshScalarField fn(m_typeBSdfField);
-        fn.create(fieldMin, fieldMax, m_streetFieldResolution, m_streetFieldResolution, 1, true, false);
-
-        zSpace::zPointArray positions;
-        fn.getPositions(positions);
-
-        zSpace::zScalarArray values;
-        values.reserve(positions.size());
-        for (const auto& p : positions) {
-            values.push_back(typeBSdf(toVec3(p)));
-        }
-
-        fn.setFieldValues(values, zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
-        fn.updateColors(zSpace::zFieldColorType::zFieldSDF, metersToModelUnits(m_typeAMaxWidthMeters));
-        fn.getIsocontour(m_typeBIsoContour, 0.0f);
-        liftTypeBIsoGeometry();
-
-        std::cout << "[URBAN CODEX LOOP] Effective graph SDF plots: " << m_typeBSdfPlots.size()
-                  << " | field samples: " << positions.size()
-                  << " | zFnMeshField edge scalars disabled" << std::endl;
     }
 
     void buildBuildingIsoMeshes()
@@ -1774,125 +1587,6 @@ private:
         return std::clamp(resolution, m_buildingSdfMinResolution, m_buildingSdfMaxResolution);
     }
 
-    void buildTypeASdfPrimitives()
-    {
-        m_typeASdfPlots.clear();
-
-        for (auto& plotData : m_plots) {
-            if (plotData.typeABlendWeight <= 0.001f) continue;
-
-            const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
-            const float cornerHalfSize = buildingWidth * 0.6f;
-            const float edgeHalfDepth = buildingWidth * 0.5f;
-            const float edgeLengthFraction = sanitizeTypeAEdgeLengthFraction(plotData.typeAEdgeLengthFraction);
-            const bool fullGraph = edgeLengthFraction >= 0.999f;
-
-            TypeAPlotSdf plotSdf;
-            addTypeASetbackClipPlanes(plotData, plotSdf);
-
-            zSpace::zFnGraph graphFn(plotData.centerlineGraph);
-            zSpace::zPointArray graphPositions;
-            graphFn.getVertexPositions(graphPositions);
-            if (graphPositions.empty()) continue;
-
-            std::vector<int> cornerIndices = selectedTypeACorners(graphPositions);
-            if (fullGraph) {
-                cornerIndices.clear();
-                for (int i = 0; i < static_cast<int>(graphPositions.size()); ++i) {
-                    cornerIndices.push_back(i);
-                }
-            }
-
-            for (int cornerIndex : cornerIndices) {
-                if (cornerIndex < 0 || cornerIndex >= static_cast<int>(graphPositions.size())) continue;
-                plotSdf.sdfA.push_back({
-                    toVec3(graphPositions[cornerIndex]),
-                    Vec3(1.0f, 0.0f, 0.0f),
-                    Vec3(0.0f, 1.0f, 0.0f),
-                    cornerHalfSize,
-                    cornerHalfSize
-                });
-            }
-
-            if (fullGraph) {
-                for (const auto& edge : plotData.centerlineGraphEdges) {
-                    if (edge.startVertexIndex < 0 || edge.endVertexIndex < 0) continue;
-                    if (edge.startVertexIndex >= static_cast<int>(graphPositions.size())) continue;
-                    if (edge.endVertexIndex >= static_cast<int>(graphPositions.size())) continue;
-
-                    addTypeAEdgeStrip(
-                        plotSdf,
-                        toVec3(graphPositions[edge.startVertexIndex]),
-                        toVec3(graphPositions[edge.endVertexIndex]),
-                        1.0f,
-                        edgeHalfDepth
-                    );
-                }
-                m_typeASdfPlots.push_back(plotSdf);
-                continue;
-            }
-
-            for (int cornerIndex : cornerIndices) {
-                addTypeAIncidentEdgeStrips(plotData, plotSdf, graphPositions, cornerIndex, edgeLengthFraction, edgeHalfDepth);
-            }
-
-            if (!plotSdf.sdfA.empty() || !plotSdf.sdfB.empty()) {
-                m_typeASdfPlots.push_back(plotSdf);
-            }
-        }
-    }
-
-    void addTypeASetbackClipPlanes(const plot& plotData, TypeAPlotSdf& plotSdf) const
-    {
-        for (const auto& edge : plotData.boundaryEdges) {
-            Vec3 edgeVector = edge.b - edge.a;
-            float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
-            float clearance = setbackClearanceForTypeABoundary(edge.boundaryType);
-            if (edgeLength < 1e-6f || clearance <= 1e-6f) continue;
-
-            Vec3 tangent = normalized2d(edgeVector);
-            Vec3 normalA(-tangent.y, tangent.x, 0.0f);
-            Vec3 midpoint = (edge.a + edge.b) * 0.5f;
-            Vec3 inwardNormal = dot2d(plotData.center - midpoint, normalA) >= 0.0f ? normalA : normalA * -1.0f;
-            plotSdf.setbackPlanes.push_back({ edge.a + inwardNormal * clearance, inwardNormal });
-        }
-    }
-
-    void buildTypeBSdfPrimitives()
-    {
-        m_typeBSdfPlots.clear();
-
-        for (auto& plotData : m_plots) {
-            if (plotData.effectiveGraphSegments.empty()) continue;
-
-            const float buildingWidth = metersToModelUnits(plotData.typeABuildingWidthMeters);
-            const float edgeHalfDepth = buildingWidth * 0.5f;
-            if (edgeHalfDepth <= 1e-6f) continue;
-
-            addTypeBGraphSdf(plotData, plotData.effectiveGraphSegments, edgeHalfDepth);
-        }
-    }
-
-    void addTypeBGraphSdf(
-        const plot& plotData,
-        const std::vector<plot::TypeBGraphSegment>& sourceSegments,
-        float graphHalfWidth
-    )
-    {
-        if (sourceSegments.empty() || graphHalfWidth <= 1e-6f) return;
-
-        TypeBPlotSdf plotSdf;
-        addTypeBSetbackClipPlanes(plotData, plotSdf);
-        plotSdf.graphHalfWidth = graphHalfWidth;
-        plotSdf.graphSegments.reserve(sourceSegments.size());
-        plotSdf.graphJointPoints.reserve(sourceSegments.size() * 2);
-        addGraphSegmentsToSdf(sourceSegments, plotSdf);
-
-        if (!plotSdf.graphSegments.empty()) {
-            m_typeBSdfPlots.push_back(plotSdf);
-        }
-    }
-
     void addGraphSegmentsToSdf(const std::vector<plot::TypeBGraphSegment>& sourceSegments, TypeBPlotSdf& plotSdf) const
     {
         for (const auto& graphSegment : sourceSegments) {
@@ -1900,17 +1594,6 @@ private:
             plotSdf.graphJointPoints.push_back(graphSegment.start);
             plotSdf.graphJointPoints.push_back(graphSegment.end);
         }
-    }
-
-    float graphVertexSquareSdf(const Vec3& p, const zSpace::zPointArray& graphPositions, float halfSize) const
-    {
-        float d = 1e9f;
-        Vec3 axisX(1.0f, 0.0f, 0.0f);
-        Vec3 axisY(0.0f, 1.0f, 0.0f);
-        for (const auto& graphPosition : graphPositions) {
-            d = std::min(d, orientedBoxSdf(p, toVec3(graphPosition), axisX, axisY, halfSize, halfSize));
-        }
-        return d;
     }
 
     float graphSegmentCost(const plot::TypeBGraphSegment& a, const plot::TypeBGraphSegment& b) const
@@ -1955,100 +1638,13 @@ private:
         }
     }
 
-    std::vector<int> selectedTypeACorners(const zSpace::zPointArray& graphPositions) const
-    {
-        std::vector<int> result;
-        if (graphPositions.empty()) return result;
-
-        result.push_back(0);
-        if (graphPositions.size() == 1) return result;
-
-        int opposite = static_cast<int>(graphPositions.size() / 2);
-        if (opposite == 0) opposite = 1;
-        result.push_back(opposite);
-        return result;
-    }
-
-    void addTypeAIncidentEdgeStrips(
-        const plot& plotData,
-        TypeAPlotSdf& plotSdf,
-        const zSpace::zPointArray& graphPositions,
-        int cornerIndex,
-        float edgeLengthFraction,
-        float edgeHalfDepth
-    )
-    {
-        if (edgeLengthFraction <= 0.0f) return;
-
-        for (const auto& edge : plotData.centerlineGraphEdges) {
-            int otherIndex = -1;
-            if (edge.startVertexIndex == cornerIndex) {
-                otherIndex = edge.endVertexIndex;
-            }
-            else if (edge.endVertexIndex == cornerIndex) {
-                otherIndex = edge.startVertexIndex;
-            }
-            else {
-                continue;
-            }
-
-            if (otherIndex < 0 || otherIndex >= static_cast<int>(graphPositions.size())) continue;
-            addTypeAEdgeStrip(
-                plotSdf,
-                toVec3(graphPositions[cornerIndex]),
-                toVec3(graphPositions[otherIndex]),
-                edgeLengthFraction,
-                edgeHalfDepth
-            );
-        }
-    }
-
-    void addTypeAEdgeStrip(TypeAPlotSdf& plotSdf, const Vec3& start, const Vec3& end, float lengthFraction, float edgeHalfDepth)
-    {
-        Vec3 edgeVector = end - start;
-        float edgeLength = std::sqrt(edgeVector.x * edgeVector.x + edgeVector.y * edgeVector.y);
-        if (edgeLength < 1e-6f || lengthFraction <= 0.0f) return;
-
-        Vec3 tangent = normalized2d(edgeVector);
-        Vec3 normal(-tangent.y, tangent.x, 0.0f);
-        float segmentLength = edgeLength * saturate(lengthFraction);
-        Vec3 center = start + tangent * (segmentLength * 0.5f);
-        plotSdf.sdfB.push_back({ center, tangent, normal, segmentLength * 0.5f, edgeHalfDepth });
-    }
-
-    void liftTypeAIsoGeometry()
-    {
-        zSpace::zFnGraph contourFn(m_typeAIsoContour);
-        zSpace::zPointArray contourPositions;
-        contourFn.getVertexPositions(contourPositions);
-        for (auto& p : contourPositions) {
-            p.z = m_massingZ + 0.006f;
-        }
-        if (!contourPositions.empty()) {
-            contourFn.setVertexPositions(contourPositions);
-        }
-    }
-
-    void liftTypeBIsoGeometry()
-    {
-        zSpace::zFnGraph contourFn(m_typeBIsoContour);
-        zSpace::zPointArray contourPositions;
-        contourFn.getVertexPositions(contourPositions);
-        for (auto& p : contourPositions) {
-            p.z = m_massingZ + 0.007f;
-        }
-        if (!contourPositions.empty()) {
-            contourFn.setVertexPositions(contourPositions);
-        }
-    }
-
     void liftBuildingIsoMesh(zSpace::zObjectMesh& mesh)
     {
         zSpace::zFnMesh meshFn(mesh);
         zSpace::zPointArray positions;
         meshFn.getVertexPositions(positions);
         for (auto& p : positions) {
-            p.z = m_massingZ + 0.006f;
+            p.z = m_buildingZ + 0.006f;
         }
         if (!positions.empty()) {
             meshFn.setVertexPositions(positions);
@@ -2088,7 +1684,7 @@ private:
         zSpace::zPointArray contourPositions;
         contourFn.getVertexPositions(contourPositions);
         for (auto& p : contourPositions) {
-            p.z = m_openSpaceZ + 0.004f;
+            p.z = m_baseZ + 0.004f;
         }
         if (!contourPositions.empty()) {
             contourFn.setVertexPositions(contourPositions);
@@ -2316,51 +1912,6 @@ private:
         return setbackForTypeABoundary(boundaryType) + roadHalfWidthForTypeABoundary(boundaryType);
     }
 
-    float typeASdf(const Vec3& p) const
-    {
-        float d = 1e9f;
-
-        for (const auto& plotSdf : m_typeASdfPlots) {
-            float ab = 1e9f;
-            for (const auto& box : plotSdf.sdfA) {
-                ab = std::min(ab, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
-            }
-            for (const auto& box : plotSdf.sdfB) {
-                ab = std::min(ab, orientedBoxSdf(p, box.center, box.axisX, box.axisY, box.halfX, box.halfY));
-            }
-
-            float clip = typeASetbackClipSdf(p, plotSdf);
-            d = std::min(d, std::max(ab, clip));
-        }
-
-        return d;
-    }
-
-    float typeASetbackClipSdf(const Vec3& p, const TypeAPlotSdf& plotSdf) const
-    {
-        float clip = -1e9f;
-        for (const auto& plane : plotSdf.setbackPlanes) {
-            float outsideOffsetBoundary = -dot2d(p - plane.point, plane.inwardNormal);
-            clip = std::max(clip, outsideOffsetBoundary);
-        }
-
-        return clip;
-    }
-
-    float typeBSdf(const Vec3& p) const
-    {
-        float d = 1e9f;
-
-        for (const auto& plotSdf : m_typeBSdfPlots) {
-            float a = wholeGraphOffsetSdf(p, plotSdf.graphSegments, plotSdf.graphJointPoints, plotSdf.graphHalfWidth);
-
-            float clip = typeBSetbackClipSdf(p, plotSdf);
-            d = std::min(d, std::max(a, clip));
-        }
-
-        return d;
-    }
-
     float typeBSetbackClipSdf(const Vec3& p, const TypeBPlotSdf& plotSdf) const
     {
         float clip = -1e9f;
@@ -2435,12 +1986,6 @@ private:
         return Color(0.0f, 0.82f, 0.0f, 1.0f);
     }
 
-    Color streetOffsetColor(StreetClass streetClass) const
-    {
-        (void)streetClass;
-        return Color(0.5f, 0.5f, 0.5f, 1.0f);
-    }
-
     void drawNeutralBaseMesh(Renderer& renderer, zSpace::zFnMesh& fn)
     {
         for (int i = 0; i < fn.numPolygons(); ++i) {
@@ -2452,7 +1997,7 @@ private:
             if (positions.size() < 3) continue;
 
             Vec3 center = withZ(toVec3(face.getCenter()), m_baseZ);
-            Color faceColor = densityBaseColor(toVec3(face.getCenter()));
+            Color faceColor(0.88f, 0.88f, 0.82f, 1.0f);
 
             for (size_t j = 0; j < positions.size(); ++j) {
                 Vec3 p1 = withZ(toVec3(positions[j]), m_baseZ);
@@ -2465,79 +2010,6 @@ private:
                 Vec3 p2 = withZ(toVec3(positions[(j + 1) % positions.size()]), m_baseZ + 0.001f);
                 renderer.drawLine(p1, p2, Color(0.78f, 0.78f, 0.74f, 1.0f), 1.0f);
             }
-        }
-    }
-
-    void drawTypeACenterlineGraphs(Renderer& renderer)
-    {
-        (void)renderer;
-        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
-        zDisplayGraphSetting graphDisplay;
-        graphDisplay.showEdges = true;
-        graphDisplay.showVertices = true;
-        graphDisplay.edgeColor = graphColor;
-        graphDisplay.vertexColor = graphColor;
-        graphDisplay.edgeWidth = 1.0f;
-        graphDisplay.vertexSize = 5.0f;
-
-        for (auto& plotData : m_plots) {
-            if (plotData.typeABlendWeight <= 0.001f) continue;
-            scene().draw(plotData.centerlineGraph, graphDisplay);
-        }
-    }
-
-    void drawCenterlineGraphDebug(Renderer& renderer)
-    {
-        (void)renderer;
-        zDisplayGraphSetting graphDisplay;
-        graphDisplay.showEdges = true;
-        graphDisplay.showVertices = true;
-        graphDisplay.drawVertexIds = true;
-        graphDisplay.edgeColor = Color(0.15f, 0.15f, 0.15f, 1.0f);
-        graphDisplay.vertexColor = Color(0.0f, 0.0f, 0.0f, 1.0f);
-        graphDisplay.vertexIdColor = Color(0.75f, 0.0f, 0.35f, 1.0f);
-        graphDisplay.edgeWidth = 1.0f;
-        graphDisplay.vertexSize = 5.0f;
-        graphDisplay.vertexIdSize = 0.18f;
-
-        for (auto& plotData : m_plots) {
-            scene().draw(plotData.centerlineGraph, graphDisplay);
-        }
-    }
-
-    void drawTypeBCenterlineGraphs(Renderer& renderer)
-    {
-        (void)renderer;
-        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
-        zDisplayGraphSetting graphDisplay;
-        graphDisplay.showEdges = true;
-        graphDisplay.showVertices = true;
-        graphDisplay.edgeColor = graphColor;
-        graphDisplay.vertexColor = graphColor;
-        graphDisplay.edgeWidth = 1.0f;
-        graphDisplay.vertexSize = 6.0f;
-
-        for (auto& plotData : m_plots) {
-            if (plotData.typeBBlendWeight <= 0.001f) continue;
-            scene().draw(plotData.typeBCenterlineGraph, graphDisplay);
-        }
-    }
-
-    void drawTypeCCenterlineGraphs(Renderer& renderer)
-    {
-        (void)renderer;
-        const Color graphColor(0.0f, 0.0f, 0.0f, 1.0f);
-        zDisplayGraphSetting graphDisplay;
-        graphDisplay.showEdges = true;
-        graphDisplay.showVertices = true;
-        graphDisplay.edgeColor = graphColor;
-        graphDisplay.vertexColor = graphColor;
-        graphDisplay.edgeWidth = 1.0f;
-        graphDisplay.vertexSize = 6.0f;
-
-        for (auto& plotData : m_plots) {
-            if (plotData.typeCBlendWeight <= 0.001f) continue;
-            scene().draw(plotData.typeCCenterlineGraph, graphDisplay);
         }
     }
 
@@ -2574,80 +2046,6 @@ private:
         }
     }
 
-    void drawTypeASdfContour(Renderer& renderer)
-    {
-        (void)renderer;
-        zDisplayGraphSetting contourDisplay;
-        contourDisplay.showEdges = true;
-        contourDisplay.showVertices = false;
-        contourDisplay.edgeColor = Color(1.0f, 0.0f, 1.0f, 1.0f);
-        contourDisplay.edgeWidth = 3.0f;
-        scene().draw(m_typeAIsoContour, contourDisplay);
-    }
-
-    void drawTypeBSdfContour(Renderer& renderer)
-    {
-        (void)renderer;
-        zDisplayGraphSetting contourDisplay;
-        contourDisplay.showEdges = true;
-        contourDisplay.showVertices = false;
-        contourDisplay.edgeColor = Color(1.0f, 0.0f, 1.0f, 1.0f);
-        contourDisplay.edgeWidth = 3.0f;
-        scene().draw(m_typeBIsoContour, contourDisplay);
-    }
-
-    void drawSimpleMassing(Renderer& renderer, zSpace::zFnMesh& fn)
-    {
-        for (int i = 0; i < fn.numPolygons(); ++i) {
-            zSpace::zItMeshFace face(m_mesh, i);
-            if (!face.isActive()) continue;
-
-            Vec3 center = toVec3(face.getCenter());
-            if (isCivicOpenSpace(center)) continue;
-            if (isStreetSpace(center)) continue;
-
-            float density = densityValue(center);
-            if (density < 0.42f && std::fmod(static_cast<float>(i), m_massingCoverageStep) > 0.01f) continue;
-            if (density >= 0.42f && density < 0.68f && std::fmod(static_cast<float>(i), 2.0f) > 0.01f) continue;
-
-            std::vector<zSpace::zVector> positions;
-            face.getVertexPositions(positions);
-            if (positions.size() < 3) continue;
-
-            float coverage = m_parcelCoverage + density * 0.22f;
-            std::vector<Vec3> footprint = makeConstrainedBuildingFootprint(center, positions, coverage);
-            if (footprint.empty()) continue;
-
-            Vec3 c = withZ(center, m_massingZ);
-            for (size_t j = 0; j < footprint.size(); ++j) {
-                renderer.drawTriangle(c, footprint[j], footprint[(j + 1) % footprint.size()], Color(0.0f, 0.0f, 0.0f, 1.0f));
-            }
-        }
-    }
-
-    void drawOpenSpaceSdf(Renderer& renderer, zSpace::zFnMesh& fn)
-    {
-        for (int i = 0; i < fn.numPolygons(); ++i) {
-            zSpace::zItMeshFace face(m_mesh, i);
-            if (!face.isActive()) continue;
-
-            Vec3 center = toVec3(face.getCenter());
-            if (!isCivicOpenSpace(center)) continue;
-
-            std::vector<zSpace::zVector> positions;
-            face.getVertexPositions(positions);
-            if (positions.size() < 3) continue;
-
-            Vec3 c = withZ(center, m_openSpaceZ);
-            Color openSpaceColor(0.74f, 0.84f, 0.67f, 1.0f);
-            for (size_t j = 0; j < positions.size(); ++j) {
-                Vec3 p1 = withZ(toVec3(positions[j]), m_openSpaceZ);
-                Vec3 p2 = withZ(toVec3(positions[(j + 1) % positions.size()]), m_openSpaceZ);
-                renderer.drawTriangle(c, p1, p2, openSpaceColor);
-            }
-        }
-    }
-
     void drawStreetSdfGeometry(Renderer& renderer)
     {
         (void)renderer;
@@ -2669,70 +2067,6 @@ private:
 
     }
 
-    std::vector<Vec3> makeConstrainedBuildingFootprint(const Vec3& center, const std::vector<zSpace::zVector>& positions, float parcelCoverage) const
-    {
-        Vec3 axisX(1.0f, 0.0f, 0.0f);
-        float longestEdge = 0.0f;
-
-        for (size_t i = 0; i < positions.size(); ++i) {
-            Vec3 a = toVec3(positions[i]);
-            Vec3 b = toVec3(positions[(i + 1) % positions.size()]);
-            Vec3 edge = b - a;
-            float length = std::sqrt(edge.x * edge.x + edge.y * edge.y);
-            if (length > longestEdge) {
-                longestEdge = length;
-                axisX = normalized2d(edge);
-            }
-        }
-
-        Vec3 axisY(-axisX.y, axisX.x, 0.0f);
-        float minX = 1e9f;
-        float maxX = -1e9f;
-        float minY = 1e9f;
-        float maxY = -1e9f;
-
-        for (const auto& p : positions) {
-            Vec3 rel = toVec3(p) - center;
-            float x = dot2d(rel, axisX);
-            float y = dot2d(rel, axisY);
-            minX = std::min(minX, x);
-            maxX = std::max(maxX, x);
-            minY = std::min(minY, y);
-            maxY = std::max(maxY, y);
-        }
-
-        float availableLength = (maxX - minX) * m_edgeClearanceFactor;
-        float availableDepth = (maxY - minY) * m_edgeClearanceFactor;
-        if (availableLength < m_minBuildingLength || availableDepth < m_minBuildingDepth) {
-            return {};
-        }
-
-        float length = std::max(m_minBuildingLength, availableLength * parcelCoverage);
-        float depth = std::max(m_minBuildingDepth, availableDepth * parcelCoverage);
-
-        length = std::min(length, availableLength);
-        depth = std::min(depth, availableDepth);
-
-        if (length / depth > m_maxBuildingAspect) {
-            length = std::min(availableLength, depth * m_maxBuildingAspect);
-        }
-        if (depth / length > m_maxBuildingAspect) {
-            depth = std::min(availableDepth, length * m_maxBuildingAspect);
-        }
-
-        if (length < m_minBuildingLength || depth < m_minBuildingDepth) {
-            return {};
-        }
-
-        float halfLength = length * 0.5f;
-        float halfDepth = depth * 0.5f;
-        return {
-            withZ(center - axisX * halfLength - axisY * halfDepth, m_massingZ),
-            withZ(center + axisX * halfLength - axisY * halfDepth, m_massingZ),
-            withZ(center + axisX * halfLength + axisY * halfDepth, m_massingZ),
-            withZ(center - axisX * halfLength + axisY * halfDepth, m_massingZ)
-        };
-    }
 };
 
 ALICE2_REGISTER_SKETCH_AUTO(zSpaceUrbanCodexLoopSketch)
