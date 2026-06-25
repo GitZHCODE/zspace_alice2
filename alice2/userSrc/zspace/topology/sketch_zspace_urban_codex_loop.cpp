@@ -151,6 +151,9 @@ private:
     float m_civicPlazaRadius = 0.135f;
     float m_neighborhoodPlazaRadius = 0.105f;
     int m_streetFieldResolution = 320;
+    float m_buildingSdfCellSizeMeters = 1.5f;
+    int m_buildingSdfMinResolution = 32;
+    int m_buildingSdfMaxResolution = 192;
     Vec3 m_civicSpineA;
     Vec3 m_civicSpineB;
     Vec3 m_neighborhoodPlazaA;
@@ -1558,7 +1561,9 @@ private:
 
             zSpace::zObjectMeshScalarField plotField;
             zSpace::zFnMeshScalarField fieldFn(plotField);
-            fieldFn.create(fieldMin, fieldMax, 96, 96, 1, true, false);
+            int fieldResX = buildingFieldResolution(fieldMax.x - fieldMin.x);
+            int fieldResY = buildingFieldResolution(fieldMax.y - fieldMin.y);
+            fieldFn.create(fieldMin, fieldMax, fieldResX, fieldResY, 1, true, false);
 
             zSpace::zPointArray positions;
             fieldFn.getPositions(positions);
@@ -1585,7 +1590,16 @@ private:
         }
 
         std::cout << "[URBAN CODEX LOOP] Building iso meshes: " << m_buildingIsoMeshes.size()
-                  << " | per-plot SDF fields" << std::endl;
+                  << " | per-plot SDF cell " << m_buildingSdfCellSizeMeters << "m"
+                  << " | resolution clamp " << m_buildingSdfMinResolution
+                  << "-" << m_buildingSdfMaxResolution << std::endl;
+    }
+
+    int buildingFieldResolution(float modelLength) const
+    {
+        float cellSize = std::max(metersToModelUnits(m_buildingSdfCellSizeMeters), 1e-6f);
+        int resolution = static_cast<int>(std::ceil(std::max(modelLength, cellSize) / cellSize)) + 1;
+        return std::clamp(resolution, m_buildingSdfMinResolution, m_buildingSdfMaxResolution);
     }
 
     void buildTypeASdfPrimitives()
