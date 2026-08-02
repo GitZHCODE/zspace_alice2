@@ -24,6 +24,7 @@ namespace alice2 {
         , m_viewportY(0)
         , m_viewportWidth(800)
         , m_viewportHeight(600)
+        , m_contentScale(1.0f)
         , m_currentColor(1.0f, 1.0f, 1.0f, 1.0f)
         , m_wireframeMode(false)
         , m_pointSize(1.0f)
@@ -56,7 +57,7 @@ namespace alice2 {
         }
 
         // Load default font
-        if (!m_fontRenderer->loadDefaultFont(16.0f)) {
+        if (!m_fontRenderer->loadDefaultFont(16.0f * m_contentScale)) {
             std::cerr << "Renderer: Warning - Failed to load default font" << std::endl;
             // Continue anyway - text rendering will just be disabled
         }
@@ -98,6 +99,17 @@ namespace alice2 {
         m_viewportWidth = width;
         m_viewportHeight = height;
         GLState::setViewport(x, y, width, height);
+    }
+
+    void Renderer::setContentScale(float scale) {
+        const float newScale = std::max(1.0f, scale);
+        if (std::abs(newScale - m_contentScale) < 0.01f) return;
+
+        m_contentScale = newScale;
+        if (m_initialized && m_fontRenderer && m_fontRenderer->isInitialized()
+            && !m_fontRenderer->loadDefaultFont(16.0f * m_contentScale)) {
+            std::cerr << "Renderer: Warning - Failed to reload scaled default font" << std::endl;
+        }
     }
 
     void Renderer::getViewport(int& x, int& y, int& width, int& height) const {
@@ -484,7 +496,7 @@ namespace alice2 {
             return;
         }
 
-        m_fontRenderer->drawString(text, x, y, m_currentColor);
+        m_fontRenderer->drawString(text, x * m_contentScale, y * m_contentScale, m_currentColor);
     }
 
     void Renderer::drawTextVectorExport(const std::string& text, const Vec3& position, float size) {

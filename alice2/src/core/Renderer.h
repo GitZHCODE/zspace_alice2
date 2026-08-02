@@ -48,6 +48,8 @@ namespace alice2 {
         // Viewport
         void setViewport(int x, int y, int width, int height);
         void getViewport(int& x, int& y, int& width, int& height) const;
+        void setContentScale(float scale);
+        float getContentScale() const { return m_contentScale; }
 
         // Camera setup
         void setCamera(Camera& camera);
@@ -136,6 +138,7 @@ namespace alice2 {
         
         // Viewport
         int m_viewportX, m_viewportY, m_viewportWidth, m_viewportHeight;
+        float m_contentScale;
         
         // Matrix stack
         std::stack<Mat4> m_matrixStack;

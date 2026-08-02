@@ -6,6 +6,7 @@
 #include <sstream>
 #include <fstream>
 #include <filesystem>
+#include <algorithm>
 #include <vector>
 #include <thread>
 #include <cstdio>
@@ -199,6 +200,9 @@ namespace alice2 {
         // Window size is in logical units on HiDPI Wayland displays; the
         // framebuffer is in physical pixels and must drive the viewport.
         glfwGetFramebufferSize(m_window, &m_windowWidth, &m_windowHeight);
+        float xscale, yscale;
+        glfwGetWindowContentScale(m_window, &xscale, &yscale);
+        m_renderer->setContentScale(std::max(xscale, yscale));
 
         // Enable vsync
         glfwSwapInterval(m_vsync ? 1 : 0);
@@ -222,6 +226,7 @@ namespace alice2 {
     void Application::setupCallbacks() {
         // Set GLFW callbacks
         glfwSetFramebufferSizeCallback(m_window, framebufferSizeCallback);
+        glfwSetWindowContentScaleCallback(m_window, windowContentScaleCallback);
         glfwSetKeyCallback(m_window, keyCallback);
         glfwSetMouseButtonCallback(m_window, mouseButtonCallback);
         glfwSetCursorPosCallback(m_window, cursorPosCallback);
@@ -345,6 +350,12 @@ namespace alice2 {
             s_instance->m_windowHeight = height;
             s_instance->m_camera->setAspectRatio((float)width / height);
             glViewport(0, 0, width, height);
+        }
+    }
+
+    void Application::windowContentScaleCallback(GLFWwindow* window, float xscale, float yscale) {
+        if (s_instance) {
+            s_instance->m_renderer->setContentScale(std::max(xscale, yscale));
         }
     }
 

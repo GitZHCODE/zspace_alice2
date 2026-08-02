@@ -116,6 +116,10 @@ namespace alice2 {
             return false;
         }
 
+        if (m_fontAtlas && m_fontAtlas->textureId != 0) {
+            glDeleteTextures(1, &m_fontAtlas->textureId);
+        }
+
         // Create new font atlas
         m_fontAtlas = std::make_unique<FontAtlas>();
         m_fontAtlas->fontSize = fontSize;

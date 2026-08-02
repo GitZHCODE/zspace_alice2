@@ -156,6 +156,10 @@ namespace alice2 {
     void SimpleUI::draw(Renderer& r) {
         // Ensure palette initialized
         updatePalette();
+        const float scale = r.getContentScale();
+        const auto scaleRect = [scale](const UIRect& rect) {
+            return UIRect{rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale};
+        };
 
         // Toggles
         for (const auto& t : m_toggles) {
@@ -164,8 +168,9 @@ namespace alice2 {
             const Color fill   = on ? m_palette.selectedFill   : m_palette.fill;
             const Color text   = m_palette.text;
 
-            drawRectFilled(r, t.rect, fill);
-            drawRect(r, t.rect, border, t.pressed ? 2.0f : 1.0f);
+            const UIRect rect = scaleRect(t.rect);
+            drawRectFilled(r, rect, fill);
+            drawRect(r, rect, border, (t.pressed ? 2.0f : 1.0f) * scale);
             drawLabel(r, t.label, t.rect.x + 8.0f, t.rect.y + t.rect.h - 6.0f, text);
         }
 
@@ -179,8 +184,9 @@ namespace alice2 {
                 const Color border = on ? m_palette.selectedBorder : m_palette.border;
                 const Color fill   = on ? m_palette.selectedFill   : m_palette.fill;
                 const Color text   = m_palette.text;
-                drawRectFilled(r, rc, fill);
-                drawRect(r, rc, border, 1.0f);
+                const UIRect scaledRect = scaleRect(rc);
+                drawRectFilled(r, scaledRect, fill);
+                drawRect(r, scaledRect, border, scale);
                 drawLabel(r, g.labels[i], rc.x + 8.0f, rc.y + rc.h - 6.0f, text);
             }
         }
@@ -188,17 +194,17 @@ namespace alice2 {
         // Sliders
         for (const auto& s : m_sliders) {
             // Track
-            Vec2 a{s.pos.x, s.pos.y};
-            Vec2 b{s.pos.x + s.width, s.pos.y};
+            Vec2 a{s.pos.x * scale, s.pos.y * scale};
+            Vec2 b{(s.pos.x + s.width) * scale, s.pos.y * scale};
             r.setColor(m_palette.sliderTrack);
-            r.setLineWidth(2.0f);
+            r.setLineWidth(2.0f * scale);
             r.draw2dLine(a, b);
 
             // Knob
             float t = 0.0f;
             if (s.bound) t = clampf((*s.bound - s.minV) / (s.maxV - s.minV + 1e-12f), 0.0f, 1.0f);
-            Vec2 k{ s.pos.x + t * s.width, s.pos.y };
-            r.draw2dPoint(k, m_palette.sliderKnob, 8.0f);
+            Vec2 k{ (s.pos.x + t * s.width) * scale, s.pos.y * scale };
+            r.draw2dPoint(k, m_palette.sliderKnob, 8.0f * scale);
 
             // Label and value (right side)
             r.setColor(m_palette.textSecondary);
