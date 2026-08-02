@@ -173,12 +173,6 @@ namespace alice2 {
         // Initialize GLFW
         glfwSetErrorCallback(errorCallback);
 
-#if defined(__linux__) && defined(GLFW_PLATFORM) && defined(GLFW_PLATFORM_X11)
-        if (std::getenv("WAYLAND_DISPLAY") && std::getenv("DISPLAY") && !std::getenv("GLFW_PLATFORM")) {
-            glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
-        }
-#endif
-
         if (!glfwInit()) {
             std::cerr << "Failed to initialize GLFW" << std::endl;
             return false;
@@ -202,6 +196,10 @@ namespace alice2 {
         // Make the window's context current
         glfwMakeContextCurrent(m_window);
 
+        // Window size is in logical units on HiDPI Wayland displays; the
+        // framebuffer is in physical pixels and must drive the viewport.
+        glfwGetFramebufferSize(m_window, &m_windowWidth, &m_windowHeight);
+
         // Enable vsync
         glfwSwapInterval(m_vsync ? 1 : 0);
 
@@ -209,13 +207,13 @@ namespace alice2 {
     }
 
     bool Application::initializeOpenGL() {
-        GLenum glewResult = glewInit();
-        if (glewResult != GLEW_OK) {
-            std::cerr << "GLEW initialization failed: " << glewGetErrorString(glewResult) << std::endl;
+        const GLubyte* glVersion = glGetString(GL_VERSION);
+        if (!glVersion) {
+            std::cerr << "OpenGL context did not provide a version string" << std::endl;
             return false;
         }
 
-        std::cout << "OpenGL Version: " << glGetString(GL_VERSION) << std::endl;
+        std::cout << "OpenGL Version: " << glVersion << std::endl;
         std::cout << "GLSL Version: " << glGetString(GL_SHADING_LANGUAGE_VERSION) << std::endl;
 
         return true;

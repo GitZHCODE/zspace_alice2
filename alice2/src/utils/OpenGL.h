@@ -3,7 +3,8 @@
 #ifndef ALICE2_OPENGL_H
 #define ALICE2_OPENGL_H
 
-#include <GL/glew.h>
+#include <GL/gl.h>
+#include <GL/glu.h>
 #include <GLFW/glfw3.h>
 #include <iostream>
 #include <string>

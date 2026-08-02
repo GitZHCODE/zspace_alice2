@@ -67,7 +67,6 @@ endif()
 set(ALICE2_HAS_SYSTEM_DEPS OFF)
 if(ALICE2_USE_SYSTEM_DEPS)
     find_package(glfw3 CONFIG QUIET)
-    find_package(GLEW QUIET)
     find_package(Eigen3 CONFIG QUIET)
     find_package(nlohmann_json CONFIG QUIET)
     find_path(STB_INCLUDE_DIR
@@ -75,7 +74,7 @@ if(ALICE2_USE_SYSTEM_DEPS)
         PATH_SUFFIXES stb
     )
 
-    if(TARGET glfw AND TARGET GLEW::GLEW AND TARGET Eigen3::Eigen AND TARGET nlohmann_json::nlohmann_json AND STB_INCLUDE_DIR)
+    if(TARGET glfw AND TARGET Eigen3::Eigen AND TARGET nlohmann_json::nlohmann_json AND STB_INCLUDE_DIR)
         set(ALICE2_HAS_SYSTEM_DEPS ON)
     else()
         if(MSVC)
@@ -89,10 +88,10 @@ endif()
 if(NOT ALICE2_HAS_SYSTEM_DEPS AND ALICE2_USE_SYSTEM_DEPS AND NOT MSVC)
     message(FATAL_ERROR
         "System dependencies are required for non-MSVC builds. "
-        "Install glfw, GLEW, Eigen3, nlohmann_json, and STB for your toolchain "
+        "Install glfw, Eigen3, nlohmann_json, and STB for your toolchain "
         "(for Windows/MSYS2 clang64: pacman -S --needed "
-        "mingw-w64-clang-x86_64-glfw mingw-w64-clang-x86_64-glew "
-        "mingw-w64-clang-x86_64-eigen3 mingw-w64-clang-x86_64-nlohmann-json "
+        "mingw-w64-clang-x86_64-glfw mingw-w64-clang-x86_64-eigen3 "
+        "mingw-w64-clang-x86_64-nlohmann-json "
         "mingw-w64-clang-x86_64-stb)."
     )
 endif()
@@ -104,7 +103,6 @@ if(NOT ALICE2_HAS_SYSTEM_DEPS)
 
         set(ASSET_URLS
             "https://github.com/GitZHCODE/zspace_alice2/releases/download/depends/eigen.zip"
-            "https://github.com/GitZHCODE/zspace_alice2/releases/download/depends/glew.zip"
             "https://github.com/GitZHCODE/zspace_alice2/releases/download/depends/glfw.zip"
             "${GL2PS_URL}"
             "https://github.com/GitZHCODE/zspace_alice2/releases/download/depends/nlohmann.zip"
@@ -121,23 +119,12 @@ endif()
 
 if(ALICE2_HAS_SYSTEM_DEPS)
     set(ALICE2_DEPENDENCY_MODE "system")
-    set(GLEW_INCLUDE_DIRS "")
     set(GLFW_INCLUDE_DIRS "")
     set(EIGEN_DIR "")
     set(NLOHMANN_JSON_INCLUDE_DIRS "")
     set(STB_INCLUDE_DIRS "${STB_INCLUDE_DIR}")
-    set(ALICE2_DEPENDENCY_TARGETS ${OPENGL_LIBRARIES} glfw GLEW::GLEW Eigen3::Eigen nlohmann_json::nlohmann_json)
+    set(ALICE2_DEPENDENCY_TARGETS ${OPENGL_LIBRARIES} glfw Eigen3::Eigen nlohmann_json::nlohmann_json)
 else()
-    set(GLEW_DIR "${ALICE2_DEPENDS_DIR}/glew")
-    set(GLEW_INCLUDE_DIRS "${GLEW_DIR}/include")
-    set(GLEW_LIBRARIES "${GLEW_DIR}/lib/glew32.lib")
-    if(NOT EXISTS ${GLEW_INCLUDE_DIRS}/GL/glew.h)
-        message(FATAL_ERROR "GLEW headers not found at ${GLEW_INCLUDE_DIRS}")
-    endif()
-    if(NOT EXISTS ${GLEW_LIBRARIES})
-        message(FATAL_ERROR "GLEW library not found at ${GLEW_LIBRARIES}")
-    endif()
-
     set(GLFW_DIR "${ALICE2_DEPENDS_DIR}/glfw")
     set(GLFW_INCLUDE_DIRS "${GLFW_DIR}/include")
     if(BUILD_SHARED_LIBS)
@@ -168,7 +155,7 @@ else()
         message(FATAL_ERROR "STB headers not found at ${STB_INCLUDE_DIRS}")
     endif()
 
-    set(ALICE2_DEPENDENCY_TARGETS ${OPENGL_LIBRARIES} ${GLEW_LIBRARIES} ${GLFW_LIBRARIES})
+    set(ALICE2_DEPENDENCY_TARGETS ${OPENGL_LIBRARIES} ${GLFW_LIBRARIES})
     set(ALICE2_DEPENDENCY_MODE "alice2/depends")
 endif()
 
@@ -310,16 +297,6 @@ endif()
 if(WIN32)
     target_compile_definitions(alice2 PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
-    set(GLEW_DLL_PATH "${ALICE2_DEPENDS_DIR}/glew/bin/glew32.dll")
-    if(EXISTS ${GLEW_DLL_PATH})
-        add_custom_command(TARGET alice2 POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    ${GLEW_DLL_PATH} $<TARGET_FILE_DIR:alice2>
-            COMMENT "Copying glew32.dll to output directory")
-    else()
-        message(WARNING "glew32.dll not found at ${GLEW_DLL_PATH}")
-    endif()
-
     set(GLFW_DLL_PATH "${ALICE2_DEPENDS_DIR}/glfw/bin/glfw3.dll")
     if(BUILD_SHARED_LIBS OR NOT DEFINED BUILD_SHARED_LIBS)
         if(EXISTS ${GLFW_DLL_PATH})
@@ -365,10 +342,6 @@ if(NOT ALICE2_HAS_SYSTEM_DEPS)
         DESTINATION include/dependencies/GLFW
         FILES_MATCHING PATTERN "*.h"
     )
-    install(DIRECTORY ${GLEW_INCLUDE_DIRS}/
-        DESTINATION include/dependencies
-        FILES_MATCHING PATTERN "*.h"
-    )
 endif()
 install(DIRECTORY ${GL2PS_INCLUDE_DIRS}/
     DESTINATION include/dependencies/gl2ps
@@ -376,9 +349,6 @@ install(DIRECTORY ${GL2PS_INCLUDE_DIRS}/
 )
 
 if(WIN32)
-    if(EXISTS ${GLEW_DLL_PATH})
-        install(FILES ${GLEW_DLL_PATH} DESTINATION bin)
-    endif()
     if(BUILD_SHARED_LIBS OR NOT DEFINED BUILD_SHARED_LIBS)
         if(EXISTS ${GLFW_DLL_PATH})
             install(FILES ${GLFW_DLL_PATH} DESTINATION bin)
@@ -399,7 +369,6 @@ if(ALICE2_ENABLE_CUDA)
 endif()
 message(STATUS "  OpenGL: ${OPENGL_LIBRARIES}")
 message(STATUS "  Dependency mode: ${ALICE2_DEPENDENCY_MODE}")
-message(STATUS "  GLEW: ${GLEW_LIBRARIES}")
 message(STATUS "  GLFW: ${GLFW_LIBRARIES}")
 message(STATUS "  Eigen: ${EIGEN_DIR}")
 message(STATUS "  nlohmann/json: ${NLOHMANN_JSON_INCLUDE_DIRS}")

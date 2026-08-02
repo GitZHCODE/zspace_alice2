@@ -34,12 +34,6 @@ namespace alice2 {
     bool FontRenderer::initialize() {
         if (m_initialized) return true;
 
-        // Check OpenGL extensions
-        if (!GLEW_VERSION_1_1) {
-            std::cerr << "FontRenderer: OpenGL 1.1 or higher required" << std::endl;
-            return false;
-        }
-
         m_initialized = true;
         return true;
     }
