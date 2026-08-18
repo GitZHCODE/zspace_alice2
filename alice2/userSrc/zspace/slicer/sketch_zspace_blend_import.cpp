@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -37,6 +38,12 @@ public:
         scene().setAxesLength(1.5f);
 
         loadMesh();
+
+        const char* autoRun = std::getenv("ALICE2_SLICER_AUTORUN");
+        if (autoRun && std::string(autoRun) == "1") {
+            std::cout << "[zSpaceBlendImport][autorun] running slices and SDF" << std::endl;
+            if (computeSlices()) computeSdfField();
+        }
     }
 
     void update(float) override {}

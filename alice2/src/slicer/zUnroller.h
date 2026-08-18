@@ -85,8 +85,8 @@ namespace alice2 {
     void computeDualGraph_BST(zSpace::zObjMesh& mesh, zSpace::zObjGraph& graph, zSpace::zItGraphVertexArray& bsfVertices, zSpace::zIntPairArray& bsfVertexPairs);
     zSpace::zIntPair getCommonEdge(zSpace::zItMeshFace& f1, zSpace::zItMeshFace& f2);
     void creatUnrollMesh(zSpace::zObjMesh& mesh, zSpace::zObjMesh& unrollMesh, zSpace::zObjGraph& dualGraph, zSpace::zInt2DArray& oriVertexUnrollVertexMap, std::unordered_map<zSpace::zIntPair, int, zPairHash>& oriFaceVertexUnrollVertex, zSpace::zItGraphVertexArray& bsfVertices, zSpace::zIntPairArray& bsfVertexPairs);
-    void unrollMesh(zSpace::zObjMesh& mesh, zSpace::zObjMesh& unrollMesh, zSpace::zObjGraph& dualGraph, zSpace::zInt2DArray& oriVertexUnrollVertexMap, std::unordered_map<zSpace::zIntPair, int, zPairHash>& oriFaceVertexUnrollVertex, zSpace::zIntPairArray& bsfVertexPairs);
-    void mergeMesh(zSpace::zObjMesh& mesh);
+    bool unrollMesh(zSpace::zObjMesh& mesh, zSpace::zObjMesh& unrollMesh, zSpace::zObjGraph& dualGraph, zSpace::zInt2DArray& oriVertexUnrollVertexMap, std::unordered_map<zSpace::zIntPair, int, zPairHash>& oriFaceVertexUnrollVertex, zSpace::zIntPairArray& bsfVertexPairs);
+    bool mergeMesh(zSpace::zObjMesh& sourceMesh, zSpace::zObjMesh& unrolledMesh, const zSpace::zInt2DArray& originalVertexUnrolledVertexMap);
     void createShapes(zSpace::zObjMesh& mesh, zSpace::zIntArray& medialIds, zSpace::zIntArray& featuredNumStrides, zSpace::zVector& norm, float spacing, int& numFrames, zSpace::zObjMesh& topMesh, zSpace::zObjMesh& bottomMesh);
     void blendShapes(zSpace::zObjMesh& shape0, zSpace::zObjMesh& shape1, int numFrames, zSpace::zObjMeshArray& meshes);
     void computeVLoops(zSpace::zObjMesh& mesh, zSpace::zIntArray& longitudeCornerVIds, std::vector<zSpace::zItMeshHalfEdgeArray>& loops, zSpace::zObjMesh& topMesh, zSpace::zObjMesh& bottomMesh);

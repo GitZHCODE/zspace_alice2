@@ -302,7 +302,8 @@ namespace alice2 {
         const float d21 = v2 * v1;
         const float denom = d00 * d11 - d01 * d01;
         if (std::abs(denom) <= std::numeric_limits<float>::epsilon()) {
-            baryCoordinates = zPoint(1, 0, 0);
+            const float nan = std::numeric_limits<float>::quiet_NaN();
+            baryCoordinates = zPoint(nan, nan, nan);
             return;
         }
         const float v = (d11 * d20 - d01 * d21) / denom;
@@ -447,6 +448,15 @@ namespace alice2 {
     bool barycentericProjection_triMesh(zObjGraph& graph, zObjMesh& inMesh, zObjMesh& projectionMesh, zVectorArray* mappedNormals)
     {
         zFnGraph fnGraph(graph);
+        zFnMesh fnInMesh(inMesh);
+        zFnMesh fnProjectionMesh(projectionMesh);
+        if (fnInMesh.numPolygons() != fnProjectionMesh.numPolygons()) {
+            std::cout << "[barycentericProjection_triMesh] ERROR face correspondence mismatch source="
+                << fnInMesh.numPolygons() << " projection=" << fnProjectionMesh.numPolygons()
+                << std::endl;
+            return false;
+        }
+
         zPointArray positions;
         fnGraph.getVertexPositions(positions);
         if (mappedNormals) mappedNormals->assign(positions.size(), zVector(0, 0, 1));
@@ -478,14 +488,11 @@ namespace alice2 {
                 }
 
                 for (int tri = 1; tri < static_cast<int>(faceVerts.size()) - 1; tri++) {
+                    if (!coreUtils().pointInTriangle(p, faceVerts[0], faceVerts[tri], faceVerts[tri + 1])) continue;
+
                     zPoint bary;
                     getBaryCentricCoordinates_triangle(p, faceVerts[0], faceVerts[tri], faceVerts[tri + 1], bary);
-
-                    const double tolerance = 1e-4;
-                    const bool isInside =
-                        bary.x >= -tolerance && bary.y >= -tolerance && bary.z >= -tolerance &&
-                        bary.x <= 1.0 + tolerance && bary.y <= 1.0 + tolerance && bary.z <= 1.0 + tolerance;
-                    if (!isInside) continue;
+                    if (!std::isfinite(bary.x) || !std::isfinite(bary.y) || !std::isfinite(bary.z)) continue;
 
                     getProjectionPoint_triangle(bary, projectionVerts[0], projectionVerts[tri], projectionVerts[tri + 1], p);
                     if (mappedNormals) {
@@ -515,7 +522,6 @@ namespace alice2 {
             zFnGraph failGraph(graph);
             zPoint minBB, maxBB;
             failGraph.getBounds(minBB, maxBB);
-            zFnMesh fnInMesh(inMesh);
             zPoint meshMinBB, meshMaxBB;
             fnInMesh.getBounds(meshMinBB, meshMaxBB);
             std::cout << "[barycentericProjection_triMesh] graph bounds min=("
@@ -630,6 +636,96 @@ namespace alice2 {
         fnGraph.getVertexPositions(positions);
         for (auto& p : positions) p += offset;
         fnGraph.setVertexPositions(positions);
+    }
+
+    bool placeUnrolledMeshInSDFField(zObjMesh& mesh, const zDomain<zPoint>& fieldBB, int sectionId)
+    {
+        zFnMesh fnMesh(mesh);
+        zPointArray positions;
+        fnMesh.getVertexPositions(positions);
+        if (positions.empty()) {
+            std::cout << "[computeSDF] section " << sectionId
+                << " ERROR cannot place empty unrolled mesh in SDF field"
+                << std::endl;
+            return false;
+        }
+
+        zPoint sourceMin = positions.front();
+        zPoint sourceMax = positions.front();
+        for (const zPoint& p : positions) {
+            sourceMin.x = std::min(sourceMin.x, p.x);
+            sourceMin.y = std::min(sourceMin.y, p.y);
+            sourceMax.x = std::max(sourceMax.x, p.x);
+            sourceMax.y = std::max(sourceMax.y, p.y);
+        }
+
+        const double sourceWidth = sourceMax.x - sourceMin.x;
+        const double sourceHeight = sourceMax.y - sourceMin.y;
+        const double fieldWidth = fieldBB.max.x - fieldBB.min.x;
+        const double fieldHeight = fieldBB.max.y - fieldBB.min.y;
+        constexpr double fitTolerance = 1e-6;
+
+        const bool directFit = sourceWidth <= fieldWidth + fitTolerance
+            && sourceHeight <= fieldHeight + fitTolerance;
+        const bool rotatedFit = sourceHeight <= fieldWidth + fitTolerance
+            && sourceWidth <= fieldHeight + fitTolerance;
+        const bool rotate = rotatedFit && !directFit;
+
+        const double placedWidth = rotate ? sourceHeight : sourceWidth;
+        const double placedHeight = rotate ? sourceWidth : sourceHeight;
+        if (placedWidth > fieldWidth + fitTolerance || placedHeight > fieldHeight + fitTolerance) {
+            std::cout << "[computeSDF] section " << sectionId
+                << " ERROR unrolled mesh does not fit configured SDF field"
+                << " directSize=(" << sourceWidth << "," << sourceHeight << ")"
+                << " bestSize=(" << placedWidth << "," << placedHeight << ")"
+                << " fieldSize=(" << fieldWidth << "," << fieldHeight << ")"
+                << std::endl;
+            return false;
+        }
+
+        if (rotate) {
+            for (zPoint& p : positions) {
+                const double oldX = p.x;
+                p.x = -p.y;
+                p.y = oldX;
+            }
+        }
+
+        zPoint placedMin = positions.front();
+        zPoint placedMax = positions.front();
+        for (const zPoint& p : positions) {
+            placedMin.x = std::min(placedMin.x, p.x);
+            placedMin.y = std::min(placedMin.y, p.y);
+            placedMax.x = std::max(placedMax.x, p.x);
+            placedMax.y = std::max(placedMax.y, p.y);
+        }
+
+        const double meshCenterX = (placedMin.x + placedMax.x) * 0.5;
+        const double meshCenterY = (placedMin.y + placedMax.y) * 0.5;
+        const double fieldCenterX = (fieldBB.min.x + fieldBB.max.x) * 0.5;
+        const double fieldCenterY = (fieldBB.min.y + fieldBB.max.y) * 0.5;
+        const double offsetX = fieldCenterX - meshCenterX;
+        const double offsetY = fieldCenterY - meshCenterY;
+        for (zPoint& p : positions) {
+            p.x += offsetX;
+            p.y += offsetY;
+            p.z = 0.0;
+        }
+        fnMesh.setVertexPositions(positions);
+
+        placedMin.x += offsetX;
+        placedMin.y += offsetY;
+        placedMax.x += offsetX;
+        placedMax.y += offsetY;
+        std::cout << "[computeSDF] section " << sectionId
+            << " placed unrolled mesh rotation=" << (rotate ? "90deg" : "none")
+            << " sourceSize=(" << sourceWidth << "," << sourceHeight << ")"
+            << " bounds min=(" << placedMin.x << "," << placedMin.y << ",0)"
+            << " max=(" << placedMax.x << "," << placedMax.y << ",0)"
+            << " fieldMargin=(" << (fieldWidth - placedWidth) * 0.5
+            << "," << (fieldHeight - placedHeight) * 0.5 << ")"
+            << std::endl;
+        return true;
     }
 
     void printGraphSDFDebug(const char* label, int sectionId, zObjGraph& graph, const zDomain<zPoint>& fieldBB)
@@ -2083,7 +2179,15 @@ namespace alice2 {
         zFnMesh fnMesh(mesh);
         zIntArray inEdgeDualEdge;
         zIntArray dualEdgeInEdge;
+        std::cout << "[computeDualGraph_BST] begin meshVertices=" << fnMesh.numVertices()
+            << " meshEdges=" << fnMesh.numEdges()
+            << " meshFaces=" << fnMesh.numPolygons()
+            << std::endl;
         fnMesh.getDualGraph(graph, inEdgeDualEdge, dualEdgeInEdge, true, false, false);
+        zFnGraph fnGraph(graph);
+        std::cout << "[computeDualGraph_BST] dual graph ready vertices=" << fnGraph.numVertices()
+            << " edges=" << fnGraph.numEdges()
+            << std::endl;
 
         int maxValence = -1;
         zItGraphVertex maxVertex;
@@ -2093,7 +2197,13 @@ namespace alice2 {
                 maxVertex = v;
             }
         }
-        if (maxValence >= 0) maxVertex.getBSF(bsfVertices, bsfVertexPairs);
+        if (maxValence >= 0) {
+            std::cout << "[computeDualGraph_BST] begin BSF root=" << maxVertex.getId()
+                << " valence=" << maxValence << std::endl;
+            maxVertex.getBSF(bsfVertices, bsfVertexPairs);
+            std::cout << "[computeDualGraph_BST] BSF ready vertices=" << bsfVertices.size()
+                << " pairs=" << bsfVertexPairs.size() << std::endl;
+        }
     }
 
     zIntPair getCommonEdge(zItMeshFace& f1, zItMeshFace& f2)
@@ -2113,10 +2223,14 @@ namespace alice2 {
     void creatUnrollMesh(zObjMesh& mesh, zObjMesh& unrollMeshObj, zObjGraph& dualGraph, zInt2DArray& oriVertexUnrollVertexMap, std::unordered_map<zIntPair, int, zPairHash>& oriFaceVertexUnrollVertex, zItGraphVertexArray& bsfVertices, zIntPairArray& bsfVertexPairs)
     {
         zFnMesh fnMesh(mesh);
+        std::cout << "[creatUnrollMesh] begin" << std::endl;
         computeDualGraph_BST(mesh, dualGraph, bsfVertices, bsfVertexPairs);
+        std::cout << "[creatUnrollMesh] duplicating face vertices" << std::endl;
 
         zPoint* vertexPositions = fnMesh.getRawVertexPositions();
+        zColor* vertexColors = fnMesh.getRawVertexColors();
         zPointArray positions;
+        zColorArray colors;
         zIntArray counts;
         zIntArray connects;
         oriVertexUnrollVertexMap.assign(fnMesh.numVertices(), zIntArray());
@@ -2131,6 +2245,7 @@ namespace alice2 {
                 oriVertexUnrollVertexMap[vertexId].push_back(newId);
                 oriFaceVertexUnrollVertex[zIntPair(f.getId(), vertexId)] = newId;
                 positions.push_back(vertexPositions[vertexId]);
+                colors.push_back(vertexColors ? vertexColors[vertexId] : zColor(1, 1, 1, 1));
             }
             counts.push_back(static_cast<int>(faceVerts.size()));
         }
@@ -2138,51 +2253,198 @@ namespace alice2 {
         zFnMesh fnUnroll(unrollMeshObj);
         fnUnroll.clear();
         fnUnroll.create(positions, counts, connects);
+        fnUnroll.setVertexColors(colors);
+        std::cout << "[creatUnrollMesh] ready vertices=" << fnUnroll.numVertices()
+            << " faces=" << fnUnroll.numPolygons() << std::endl;
     }
 
-    void unrollMesh(zObjMesh&, zObjMesh& unrollMeshObj, zObjGraph&, zInt2DArray&, std::unordered_map<zIntPair, int, zPairHash>&, zIntPairArray&)
+    bool unrollMesh(zObjMesh& mesh, zObjMesh& unrollMeshObj, zObjGraph&, zInt2DArray&, std::unordered_map<zIntPair, int, zPairHash>& oriFaceVertexUnrollVertex, zIntPairArray& bsfVertexPairs)
     {
+        zFnMesh fnMesh(mesh);
+        zPoint* vertexPositions = fnMesh.getRawVertexPositions();
         zFnMesh fnUnroll(unrollMeshObj);
-        zPointArray positions;
-        fnUnroll.getVertexPositions(positions);
-        if (positions.empty()) return;
+        zPoint* unrolledPositions = fnUnroll.getRawVertexPositions();
+        if (!vertexPositions || !unrolledPositions || bsfVertexPairs.empty()) return false;
 
-        zPoint minBB;
-        zPoint maxBB;
-        fnUnroll.getBounds(minBB, maxBB);
-        const double width = std::max(1e-6, static_cast<double>(maxBB.x - minBB.x));
-        const double height = std::max(1e-6, static_cast<double>(maxBB.y - minBB.y));
-        for (auto& p : positions) {
-            p.x = (p.x - minBB.x) / width;
-            p.y = (p.y - minBB.y) / height;
-            p.z = 0;
+        auto getUnrolledVertexId = [&](int faceId, int vertexId, int& unrolledVertexId) {
+            const auto found = oriFaceVertexUnrollVertex.find(zIntPair(faceId, vertexId));
+            if (found == oriFaceVertexUnrollVertex.end()) return false;
+            unrolledVertexId = found->second;
+            return unrolledVertexId >= 0 && unrolledVertexId < fnUnroll.numVertices();
+        };
+
+        for (int pairId = 0; pairId < static_cast<int>(bsfVertexPairs.size()); pairId++) {
+            const int parentFaceId = bsfVertexPairs[pairId].first;
+            const int childFaceId = bsfVertexPairs[pairId].second;
+            if (parentFaceId < 0 || childFaceId < 0
+                || parentFaceId >= fnMesh.numPolygons() || childFaceId >= fnMesh.numPolygons()) {
+                std::cout << "[unrollMesh] invalid BSF face pair " << parentFaceId << "->" << childFaceId << std::endl;
+                return false;
+            }
+
+            zItMeshFace parentFace(mesh, parentFaceId);
+            zItMeshFace childFace(mesh, childFaceId);
+            const zIntPair halfEdgePair = getCommonEdge(parentFace, childFace);
+            if (halfEdgePair.first < 0 || halfEdgePair.second < 0) {
+                std::cout << "[unrollMesh] faces " << parentFaceId << " and " << childFaceId
+                    << " do not share an edge" << std::endl;
+                return false;
+            }
+
+            zItMeshHalfEdge parentHalfEdge(mesh, halfEdgePair.first);
+            zItMeshHalfEdge childHalfEdge(mesh, halfEdgePair.second);
+            zPoint A = vertexPositions[childHalfEdge.getStartVertex().getId()];
+            zPoint B = vertexPositions[childHalfEdge.getVertex().getId()];
+
+            if (pairId == 0) {
+                const float edgeLength = parentHalfEdge.getLength();
+                if (edgeLength <= 1e-6f) {
+                    std::cout << "[unrollMesh] zero-length root edge" << std::endl;
+                    return false;
+                }
+
+                zPoint a(0, 0, 0);
+                zPoint b(0, edgeLength, 0);
+                int aId = -1;
+                int bId = -1;
+                if (!getUnrolledVertexId(parentFaceId, parentHalfEdge.getStartVertex().getId(), aId)
+                    || !getUnrolledVertexId(parentFaceId, parentHalfEdge.getVertex().getId(), bId)) {
+                    std::cout << "[unrollMesh] missing root face-vertex correspondence" << std::endl;
+                    return false;
+                }
+                unrolledPositions[aId] = a;
+                unrolledPositions[bId] = b;
+
+                zItMeshHalfEdge walker = parentHalfEdge;
+                const int vertexCount = parentFace.getNumVertices();
+                for (int vertex = 0; vertex < vertexCount; vertex++) {
+                    walker = walker.getNext();
+                    zPoint C = vertexPositions[walker.getVertex().getId()];
+                    zVector ca = C - A;
+                    zVector ba = B - A;
+                    const float denominator = edgeLength * edgeLength;
+                    const float s = (ba ^ ca).length() / denominator;
+                    const float c = (ba * ca) / denominator;
+
+                    zPoint c1;
+                    c1.x = a.x + c * (b.x - a.x) + s * (b.y - a.y);
+                    c1.y = a.y + c * (b.y - a.y) - s * (b.x - a.x);
+                    c1.z = 0;
+
+                    int cId = -1;
+                    if (getUnrolledVertexId(parentFaceId, walker.getVertex().getId(), cId)) unrolledPositions[cId] = c1;
+                }
+            }
+
+            int parentAId = -1;
+            int parentBId = -1;
+            if (!getUnrolledVertexId(parentFaceId, childHalfEdge.getStartVertex().getId(), parentAId)
+                || !getUnrolledVertexId(parentFaceId, childHalfEdge.getVertex().getId(), parentBId)) {
+                std::cout << "[unrollMesh] missing parent face-vertex correspondence for pair "
+                    << parentFaceId << "->" << childFaceId << std::endl;
+                return false;
+            }
+            zPoint a = unrolledPositions[parentAId];
+            zPoint b = unrolledPositions[parentBId];
+
+            int childAId = -1;
+            int childBId = -1;
+            if (!getUnrolledVertexId(childFaceId, childHalfEdge.getStartVertex().getId(), childAId)
+                || !getUnrolledVertexId(childFaceId, childHalfEdge.getVertex().getId(), childBId)) {
+                std::cout << "[unrollMesh] missing child face-vertex correspondence for pair "
+                    << parentFaceId << "->" << childFaceId << std::endl;
+                return false;
+            }
+            unrolledPositions[childAId] = a;
+            unrolledPositions[childBId] = b;
+
+            zItMeshHalfEdge walker = childHalfEdge;
+            const int vertexCount = childFace.getNumVertices();
+            const float edgeLength = childHalfEdge.getLength();
+            if (edgeLength <= 1e-6f) {
+                std::cout << "[unrollMesh] zero-length shared edge for pair "
+                    << parentFaceId << "->" << childFaceId << std::endl;
+                return false;
+            }
+
+            for (int vertex = 0; vertex < vertexCount; vertex++) {
+                walker = walker.getNext();
+                zPoint C = vertexPositions[walker.getVertex().getId()];
+                zVector ca = C - A;
+                zVector ba = B - A;
+                const float denominator = edgeLength * edgeLength;
+                const float s = (ba ^ ca).length() / denominator;
+                const float c = (ba * ca) / denominator;
+
+                zPoint c1;
+                c1.x = a.x + c * (b.x - a.x) - s * (b.y - a.y);
+                c1.y = a.y + c * (b.y - a.y) + s * (b.x - a.x);
+                c1.z = 0;
+
+                int cId = -1;
+                if (getUnrolledVertexId(childFaceId, walker.getVertex().getId(), cId)) unrolledPositions[cId] = c1;
+            }
         }
-        fnUnroll.setVertexPositions(positions);
+        return true;
     }
 
-    void mergeMesh(zObjMesh& mesh)
+    bool mergeMesh(zObjMesh& sourceMesh, zObjMesh& unrolledMesh, const zInt2DArray& originalVertexUnrolledVertexMap)
     {
-        zPointArray positions;
+        zFnMesh fnSource(sourceMesh);
+        zFnMesh fnUnrolled(unrolledMesh);
+        if (originalVertexUnrolledVertexMap.size() != static_cast<size_t>(fnSource.numVertices())) {
+            std::cout << "[mergeMesh] source/map vertex count mismatch source=" << fnSource.numVertices()
+                << " map=" << originalVertexUnrolledVertexMap.size() << std::endl;
+            return false;
+        }
+
+        zPointArray duplicatedPositions;
+        fnUnrolled.getVertexPositions(duplicatedPositions);
+        zPointArray positions(fnSource.numVertices(), zPoint());
+        zColorArray colors;
+        colors.assign(fnSource.numVertices(), zColor(1, 1, 1, 1));
         zIntArray counts;
         zIntArray connects;
+        zColor* sourceColors = fnSource.getRawVertexColors();
+        double maxDuplicateSpread = 0.0;
 
-        for (zItMeshFace f(mesh); !f.end(); f++) {
-            zPointArray facePositions;
-            f.getVertexPositions(facePositions);
-            for (auto& p : facePositions) {
-                int id = -1;
-                if (!coreUtils().checkRepeatVector(p, positions, id)) {
-                    id = static_cast<int>(positions.size());
-                    positions.push_back(p);
-                }
-                connects.push_back(id);
+        for (int originalVertexId = 0; originalVertexId < fnSource.numVertices(); originalVertexId++) {
+            const zIntArray& duplicates = originalVertexUnrolledVertexMap[originalVertexId];
+            if (duplicates.empty()) {
+                std::cout << "[mergeMesh] missing unrolled copy for source vertex " << originalVertexId << std::endl;
+                return false;
             }
-            counts.push_back(static_cast<int>(facePositions.size()));
+
+            const int firstDuplicateId = duplicates.front();
+            if (firstDuplicateId < 0 || firstDuplicateId >= static_cast<int>(duplicatedPositions.size())) {
+                std::cout << "[mergeMesh] invalid unrolled vertex id " << firstDuplicateId
+                    << " for source vertex " << originalVertexId << std::endl;
+                return false;
+            }
+            positions[originalVertexId] = duplicatedPositions[firstDuplicateId];
+            if (sourceColors) colors[originalVertexId] = sourceColors[originalVertexId];
+
+            for (int duplicateId : duplicates) {
+                if (duplicateId < 0 || duplicateId >= static_cast<int>(duplicatedPositions.size())) {
+                    std::cout << "[mergeMesh] invalid duplicate id " << duplicateId
+                        << " for source vertex " << originalVertexId << std::endl;
+                    return false;
+                }
+                zPoint reference = positions[originalVertexId];
+                zPoint duplicate = duplicatedPositions[duplicateId];
+                maxDuplicateSpread = std::max(maxDuplicateSpread, static_cast<double>((duplicate - reference).length()));
+            }
         }
 
-        zFnMesh fnMesh(mesh);
-        fnMesh.clear();
-        if (!positions.empty()) fnMesh.create(positions, counts, connects);
+        fnSource.getPolygonData(connects, counts);
+        fnUnrolled.clear();
+        fnUnrolled.create(positions, counts, connects);
+        fnUnrolled.setVertexColors(colors);
+        std::cout << "[mergeMesh] rebuilt from source topology vertices=" << fnUnrolled.numVertices()
+            << " faces=" << fnUnrolled.numPolygons()
+            << " maxDuplicateSpread=" << maxDuplicateSpread
+            << std::endl;
+        return true;
     }
 
     void createShapes(zObjMesh& mesh, zIntArray& medialIds, zIntArray& featuredNumStrides, zVector& norm, float, int& numFrames, zObjMesh& topMeshObj, zObjMesh& bottomMeshObj)
@@ -2856,85 +3118,80 @@ namespace alice2 {
         constexpr int fieldResX = SlicingParameters::sdfFieldResolutionX;
         constexpr int fieldResY = SlicingParameters::sdfFieldResolutionY;
         const zDomain<zPoint>& layerFieldBB = SlicingParameters::sdfFieldBounds;
-        auto flattenPlanarMeshToXY = [](zObjMesh& mesh) {
-            zFnMesh fnMesh(mesh);
-            zPointArray positions;
-            fnMesh.getVertexPositions(positions);
-            if (positions.size() < 3) {
-                std::cout << "[computeSDF] WARNING cannot plane-flatten mesh with fewer than 3 vertices." << std::endl;
-                return;
-            }
-
-            zPoint origin = positions[0];
-            zVector xAxis;
-            bool foundXAxis = false;
-            for (int v = 1; v < static_cast<int>(positions.size()); v++) {
-                xAxis = positions[v] - origin;
-                if (xAxis.length() > 1e-6) {
-                    xAxis.normalize();
-                    foundXAxis = true;
-                    break;
-                }
-            }
-
-            if (!foundXAxis) {
-                std::cout << "[computeSDF] WARNING cannot plane-flatten mesh: no valid x axis." << std::endl;
-                return;
-            }
-
-            zVector normal(0, 0, 0);
-            for (int aId = 1; aId < static_cast<int>(positions.size()) && normal.length() <= 1e-6; aId++) {
-                for (int bId = aId + 1; bId < static_cast<int>(positions.size()); bId++) {
-                    zVector a = positions[aId] - origin;
-                    zVector b = positions[bId] - origin;
-                    normal = a ^ b;
-                    if (normal.length() > 1e-6) break;
-                }
-            }
-
-            if (normal.length() <= 1e-6) {
-                std::cout << "[computeSDF] WARNING cannot plane-flatten mesh: no valid normal." << std::endl;
-                return;
-            }
-
-            normal.normalize();
-            zVector yAxis = normal ^ xAxis;
-            if (yAxis.length() <= 1e-6) {
-                std::cout << "[computeSDF] WARNING cannot plane-flatten mesh: no valid y axis." << std::endl;
-                return;
-            }
-            yAxis.normalize();
-
-            for (auto& p : positions) {
-                zVector d = p - origin;
-                p = zPoint(d * xAxis, d * yAxis, 0.0);
-            }
-
-            fnMesh.setVertexPositions(positions);
-            std::cout << "[computeSDF] plane-to-XY origin=(" << origin.x << "," << origin.y << "," << origin.z << ")"
-                << " xAxis=(" << xAxis.x << "," << xAxis.y << "," << xAxis.z << ")"
-                << " yAxis=(" << yAxis.x << "," << yAxis.y << "," << yAxis.z << ")"
-                << " normal=(" << normal.x << "," << normal.y << "," << normal.z << ")"
-                << std::endl;
-        };
 
         for (int i = 0; i < static_cast<int>(sectionGraphs.size()) && i < static_cast<int>(sectionMeshes.size()); i++) {
-            zPoint sectionOrigin;
-            zVector sectionXAxis;
-            zVector sectionYAxis;
-            zVector sectionNormal;
-            if (!computePlanarSectionFrame(sectionMeshes[i], sectionOrigin, sectionXAxis, sectionYAxis, sectionNormal)) {
+            zFnMesh fnSectionMesh(sectionMeshes[i]);
+            std::cout << "[computeSDF] section " << i << " begin"
+                << " vertices=" << fnSectionMesh.numVertices()
+                << " faces=" << fnSectionMesh.numPolygons()
+                << std::endl;
+            zObjMesh flattenedMesh;
+            zObjGraph dualGraph;
+            zInt2DArray originalVertexUnrolledVertexMap;
+            std::unordered_map<zIntPair, int, zPairHash> originalFaceVertexUnrolledVertex;
+            zItGraphVertexArray bsfVertices;
+            zIntPairArray bsfVertexPairs;
+            creatUnrollMesh(sectionMeshes[i], flattenedMesh, dualGraph,
+                originalVertexUnrolledVertexMap, originalFaceVertexUnrolledVertex,
+                bsfVertices, bsfVertexPairs);
+            if (fnSectionMesh.numPolygons() > 1
+                && static_cast<int>(bsfVertexPairs.size()) + 1 != fnSectionMesh.numPolygons()) {
                 std::cout << "[computeSDF] section " << i
-                    << " WARNING skipping SDF: failed to compute section frame"
+                    << " WARNING skipping SDF: incomplete dual-graph traversal faces="
+                    << fnSectionMesh.numPolygons() << " bsfPairs=" << bsfVertexPairs.size()
+                    << std::endl;
+                continue;
+            }
+            if (!unrollMesh(sectionMeshes[i], flattenedMesh, dualGraph,
+                originalVertexUnrolledVertexMap, originalFaceVertexUnrolledVertex,
+                bsfVertexPairs)) {
+                std::cout << "[computeSDF] section " << i
+                    << " WARNING skipping SDF: NatPower unroll failed"
+                    << std::endl;
+                continue;
+            }
+            std::cout << "[computeSDF] section " << i << " unroll complete; welding mesh" << std::endl;
+            if (!mergeMesh(sectionMeshes[i], flattenedMesh, originalVertexUnrolledVertexMap)) {
+                std::cout << "[computeSDF] section " << i
+                    << " WARNING skipping SDF: unrolled mesh rebuild failed"
+                    << std::endl;
+                continue;
+            }
+            std::cout << "[computeSDF] section " << i << " weld complete" << std::endl;
+
+            if (!placeUnrolledMeshInSDFField(flattenedMesh, layerFieldBB, i)) {
+                std::cout << "[computeSDF] section " << i
+                    << " WARNING skipping SDF: unrolled mesh cannot be placed in configured field"
                     << std::endl;
                 continue;
             }
 
-            zObjMesh flattenedMesh = sectionMeshes[i];
-            zPoint zeroFlatOrigin(0, 0, 0);
+            zFnMesh fnFlattenedMesh(flattenedMesh);
+            if (fnFlattenedMesh.numPolygons() != fnSectionMesh.numPolygons()) {
+                std::cout << "[computeSDF] section " << i
+                    << " WARNING skipping SDF: unrolled face correspondence mismatch source="
+                    << fnSectionMesh.numPolygons() << " unrolled=" << fnFlattenedMesh.numPolygons()
+                    << std::endl;
+                continue;
+            }
 
-            zObjGraph flatGraph = sectionGraphs[i];
-            transformGraphToSectionLocal(flatGraph, sectionOrigin, sectionXAxis, sectionYAxis, zeroFlatOrigin);
+            zPointArray unrolledPositions;
+            fnFlattenedMesh.getVertexPositions(unrolledPositions);
+            int invalidUnrolledVertices = 0;
+            for (const zPoint& p : unrolledPositions) {
+                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) || std::abs(p.z) > 1e-5) {
+                    invalidUnrolledVertices++;
+                }
+            }
+            if (invalidUnrolledVertices > 0) {
+                std::cout << "[computeSDF] section " << i
+                    << " WARNING skipping SDF: invalid unrolled vertices=" << invalidUnrolledVertices
+                    << std::endl;
+                continue;
+            }
+
+            zObjGraph flatGraph;
+            createBoundaryEdgeGraph(flattenedMesh, true, flatGraph);
             zFnGraph fnFlatGraph(flatGraph);
 
             if (fnFlatGraph.numVertices() == 0) {
@@ -2942,21 +3199,27 @@ namespace alice2 {
                 continue;
             }
 
-            zPointArray flatGraphPositions;
-            fnFlatGraph.getVertexPositions(flatGraphPositions);
-            const zPoint origin = flatGraphPositions[0];
-
-            transformMeshToSectionLocal(flattenedMesh, sectionOrigin, sectionXAxis, sectionYAxis, origin);
-            offsetGraphPositions(flatGraph, zVector(-origin.x, -origin.y, -origin.z));
+            const zPoint origin(0, 0, 0);
             if (debugData) {
-                debugData->sectionFrameOrigins[i] = sectionOrigin;
                 debugData->sectionFlatOrigins[i] = origin;
-                debugData->sectionFrameXAxes[i] = sectionXAxis;
-                debugData->sectionFrameYAxes[i] = sectionYAxis;
-                debugData->sectionFrameNormals[i] = sectionNormal;
+                zPoint sectionOrigin;
+                zVector sectionXAxis;
+                zVector sectionYAxis;
+                zVector sectionNormal;
+                if (computePlanarSectionFrame(sectionMeshes[i], sectionOrigin, sectionXAxis, sectionYAxis, sectionNormal)) {
+                    debugData->sectionFrameOrigins[i] = sectionOrigin;
+                    debugData->sectionFrameXAxes[i] = sectionXAxis;
+                    debugData->sectionFrameYAxes[i] = sectionYAxis;
+                    debugData->sectionFrameNormals[i] = sectionNormal;
+                }
             }
 
-            zFnMesh fnFlattenedMesh(flattenedMesh);
+            std::cout << "[computeSDF] section " << i
+                << " NatPower unroll sourceFaces=" << fnSectionMesh.numPolygons()
+                << " flatFaces=" << fnFlattenedMesh.numPolygons()
+                << " flatVertices=" << fnFlattenedMesh.numVertices()
+                << " bsfPairs=" << bsfVertexPairs.size()
+                << std::endl;
 
             printGraphSDFDebug("flatGraph before polygon SDF", i, flatGraph, layerFieldBB);
 
@@ -3027,16 +3290,20 @@ namespace alice2 {
                         averageBracingProjectionDistance
                     );
                     std::cout << "[computeSDF] section " << i
-                        << " projected bracing vertices to section mesh before XY transform"
+                        << " projected bracing vertices to section mesh before unroll transfer"
                         << " count=" << projectedBracingVertices
                         << " maxDistance=" << maxBracingProjectionDistance
                         << " averageDistance=" << averageBracingProjectionDistance
                         << std::endl;
-                    transformGraphToSectionLocal(flatBracingGraph, sectionOrigin, sectionXAxis, sectionYAxis, origin);
-                    {
+                    if (projectedBracingVertices != fnInputBracing.numVertices()
+                        || !barycentericProjection_triMesh(flatBracingGraph, sectionMeshes[i], flattenedMesh)) {
+                        std::cout << "[computeSDF] section " << i
+                            << " WARNING skipping SDF: bracing transfer to NatPower unroll failed"
+                            << std::endl;
+                        continue;
+                    }
+                    else {
                         zFnGraph fnFlatBracing(flatBracingGraph);
-                        // flattenedMesh has already been shifted to the same local origin as flatGraph.
-                        // Projected bracing vertices are therefore already in SDF-local XY space.
                         fnFlatBracing.setEdgeColor(zColor(0, 0.75, 1, 1));
                         fnFlatBracing.setEdgeWeight(4);
                         if (flatBracingGraphs) (*flatBracingGraphs)[i] = flatBracingGraph;
@@ -3357,6 +3624,8 @@ namespace alice2 {
         };
 
         zFloatArray validHeights;
+        bool hasPreviousSeamPoint = false;
+        zPoint previousSeamPoint;
         for (int graphId = 0; graphId < layerCount; graphId++) {
             if (graphId >= static_cast<int>(debugData.flatContourGraphs.size())) {
                 std::cout << "[computeSDFPostProcess] skipped graph " << graphId
@@ -3511,6 +3780,7 @@ namespace alice2 {
                 << " total=" << sampledPoints.size()
                 << std::endl;
 
+            zPointArray flatSampledPoints = sampledPoints;
             zIntArray edgeConnects;
             for (int i = 0; i + 1 < static_cast<int>(sampledPoints.size()); i++) {
                 edgeConnects.push_back(i);
@@ -3526,8 +3796,7 @@ namespace alice2 {
             fnToolpath.create(sampledPoints, edgeConnects);
             zFnGraph fnFlatToolpath(result.flatToolpathGraphs[graphId]);
             fnFlatToolpath.clear();
-            fnFlatToolpath.create(sampledPoints, edgeConnects);
-            result.flatToolpathTargetPoints[graphId] = sampledPoints;
+            fnFlatToolpath.create(flatSampledPoints, edgeConnects);
 
             zVectorArray mappedNormals;
             if (graphId < static_cast<int>(sectionMeshes.size())
@@ -3542,7 +3811,48 @@ namespace alice2 {
             }
             if (mappedNormals.size() != sampledPoints.size()) mappedNormals.assign(sampledPoints.size(), zVector(0, 0, 1));
 
+            int seamRotateIndex = 0;
+            if (closed && hasPreviousSeamPoint && sampledPoints.size() > 2) {
+                double closestDistance = std::numeric_limits<double>::max();
+                for (int sampleId = 0; sampleId < static_cast<int>(sampledPoints.size()); sampleId++) {
+                    const double distance = sampledPoints[sampleId].distanceTo(previousSeamPoint);
+                    if (distance < closestDistance) {
+                        closestDistance = distance;
+                        seamRotateIndex = sampleId;
+                    }
+                }
+
+                if (seamRotateIndex > 0) {
+                    auto rotateFromIndex = [&](auto& values) {
+                        if (seamRotateIndex <= 0 || seamRotateIndex >= static_cast<int>(values.size())) return;
+                        std::rotate(values.begin(), values.begin() + seamRotateIndex, values.end());
+                    };
+                    rotateFromIndex(sampledPoints);
+                    rotateFromIndex(flatSampledPoints);
+                    rotateFromIndex(sampledWidths);
+                    rotateFromIndex(sampledFeatureFlags);
+                    rotateFromIndex(mappedNormals);
+
+                    zFnGraph fnAlignedToolpath(result.toolpathGraphs[graphId]);
+                    fnAlignedToolpath.setVertexPositions(sampledPoints);
+                    zFnGraph fnAlignedFlatToolpath(result.flatToolpathGraphs[graphId]);
+                    fnAlignedFlatToolpath.setVertexPositions(flatSampledPoints);
+
+                    std::cout << "[computeSDFPostProcess] graph " << graphId
+                        << " aligned seam to previous layer"
+                        << " rotateIndex=" << seamRotateIndex
+                        << " distance=" << closestDistance
+                        << std::endl;
+                }
+            }
+
+            if (!sampledPoints.empty()) {
+                previousSeamPoint = sampledPoints[0];
+                hasPreviousSeamPoint = true;
+            }
+
             result.toolpathTargetPoints[graphId] = sampledPoints;
+            result.flatToolpathTargetPoints[graphId] = flatSampledPoints;
             result.toolpathPrintWidths[graphId] = sampledWidths;
             result.toolpathFeatureFlags[graphId] = sampledFeatureFlags;
             result.toolpathNormals[graphId] = mappedNormals;
