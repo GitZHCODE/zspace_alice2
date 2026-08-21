@@ -197,6 +197,18 @@ namespace alice2 {
         // Make the window's context current
         glfwMakeContextCurrent(m_window);
 
+#ifdef _WIN32
+        glewExperimental = GL_TRUE;
+        if (glewInit() != GLEW_OK) {
+            std::cerr << "Failed to initialize GLEW" << std::endl;
+            glfwDestroyWindow(m_window);
+            m_window = nullptr;
+            glfwTerminate();
+            return false;
+        }
+        glGetError(); // GLEW may emit GL_INVALID_ENUM while probing extensions.
+#endif
+
         // Window size is in logical units on HiDPI Wayland displays; the
         // framebuffer is in physical pixels and must drive the viewport.
         glfwGetFramebufferSize(m_window, &m_windowWidth, &m_windowHeight);

@@ -36,6 +36,7 @@ set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_deps/CMakeTargets")
 
 set(ALICE2_DEPENDS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/depends")
 set(GL2PS_URL "https://github.com/GitZHCODE/zspace_alice2/releases/download/depends/gl2ps-1.4.2.zip")
+set(LIBIGL_URL "https://github.com/libigl/libigl/archive/refs/tags/v2.5.0.zip")
 
 function(alice2_download_dependency url)
     get_filename_component(name "${url}" NAME)
@@ -65,10 +66,12 @@ if(ALICE2_ENABLE_CUDA)
 endif()
 
 set(ALICE2_HAS_SYSTEM_DEPS OFF)
+set(ALICE2_HAS_SYSTEM_LIBIGL OFF)
 if(ALICE2_USE_SYSTEM_DEPS)
     find_package(glfw3 CONFIG QUIET)
     find_package(Eigen3 CONFIG QUIET)
     find_package(nlohmann_json CONFIG QUIET)
+    find_package(igl CONFIG QUIET)
     find_path(STB_INCLUDE_DIR
         NAMES stb_image_write.h stb_truetype.h
         PATH_SUFFIXES stb
@@ -82,6 +85,10 @@ if(ALICE2_USE_SYSTEM_DEPS)
         else()
             message(STATUS "System dependencies incomplete")
         endif()
+    endif()
+
+    if(TARGET igl::core)
+        set(ALICE2_HAS_SYSTEM_LIBIGL ON)
     endif()
 endif()
 
@@ -115,6 +122,39 @@ if(NOT ALICE2_HAS_SYSTEM_DEPS)
     endif()
 else()
     file(MAKE_DIRECTORY "${ALICE2_DEPENDS_DIR}")
+endif()
+
+if(ALICE2_HAS_SYSTEM_LIBIGL)
+    set(LIBIGL_INCLUDE_DIRS "")
+    set(ALICE2_LIBIGL_TARGETS igl::core)
+else()
+    set(LIBIGL_DIR "${ALICE2_DEPENDS_DIR}/libigl")
+    if(NOT EXISTS "${LIBIGL_DIR}/include/igl/igl_inline.h")
+        alice2_download_dependency("${LIBIGL_URL}")
+        if(EXISTS "${ALICE2_DEPENDS_DIR}/libigl-2.5.0")
+            file(RENAME "${ALICE2_DEPENDS_DIR}/libigl-2.5.0" "${LIBIGL_DIR}")
+        endif()
+    endif()
+    if(NOT EXISTS "${LIBIGL_DIR}/include/igl/igl_inline.h")
+        message(FATAL_ERROR "libigl headers not found at ${LIBIGL_DIR}/include")
+    endif()
+    set(LIBIGL_INCLUDE_DIRS "${LIBIGL_DIR}/include")
+    set(ALICE2_LIBIGL_TARGETS "")
+endif()
+
+if(WIN32)
+    set(GLEW_DIR "${ALICE2_DEPENDS_DIR}/glew")
+    set(GLEW_INCLUDE_DIRS "${GLEW_DIR}/include")
+    set(GLEW_LIBRARIES "${GLEW_DIR}/lib/glew32s.lib")
+    if(NOT EXISTS "${GLEW_INCLUDE_DIRS}/GL/glew.h")
+        message(FATAL_ERROR "GLEW headers not found at ${GLEW_INCLUDE_DIRS}")
+    endif()
+    if(NOT EXISTS "${GLEW_LIBRARIES}")
+        message(FATAL_ERROR "GLEW static library not found at ${GLEW_LIBRARIES}")
+    endif()
+else()
+    set(GLEW_INCLUDE_DIRS "")
+    set(GLEW_LIBRARIES "")
 endif()
 
 if(ALICE2_HAS_SYSTEM_DEPS)
@@ -188,6 +228,7 @@ include_directories(
     ${GLFW_INCLUDE_DIRS}
     ${EIGEN_DIR}
     ${NLOHMANN_JSON_INCLUDE_DIRS}
+    ${LIBIGL_INCLUDE_DIRS}
     ${GL2PS_INCLUDE_DIRS}
     ${STB_INCLUDE_DIRS}
 )
@@ -274,6 +315,8 @@ endif()
 
 target_link_libraries(alice2
     ${ALICE2_DEPENDENCY_TARGETS}
+    ${ALICE2_LIBIGL_TARGETS}
+    ${GLEW_LIBRARIES}
 )
 if(ALICE2_ENABLE_CUDA)
     target_link_libraries(alice2 CUDA::cublas CUDA::cudart)
@@ -295,7 +338,7 @@ else()
 endif()
 
 if(WIN32)
-    target_compile_definitions(alice2 PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_definitions(alice2 PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX GLEW_STATIC)
 
     set(GLFW_DLL_PATH "${ALICE2_DEPENDS_DIR}/glfw/bin/glfw3.dll")
     if(BUILD_SHARED_LIBS OR NOT DEFINED BUILD_SHARED_LIBS)
@@ -372,5 +415,6 @@ message(STATUS "  Dependency mode: ${ALICE2_DEPENDENCY_MODE}")
 message(STATUS "  GLFW: ${GLFW_LIBRARIES}")
 message(STATUS "  Eigen: ${EIGEN_DIR}")
 message(STATUS "  nlohmann/json: ${NLOHMANN_JSON_INCLUDE_DIRS}")
+message(STATUS "  libigl: ${LIBIGL_INCLUDE_DIRS}")
 message(STATUS "  STB: ${STB_INCLUDE_DIRS}")
 message(STATUS "  gl2ps: ${GL2PS_INCLUDE_DIRS} (SVG export)")
