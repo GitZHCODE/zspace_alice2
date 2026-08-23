@@ -192,7 +192,7 @@ private:
         }
         MeshObject output("miq_remesh");
         output.setMeshData(m_miqResult.quadMesh);
-        output.writeToObj("remesh.obj");
+        output.writeToObj("data/remesh.obj");
         m_miqStatus = "Exported MIQ remesh to remesh.obj";
     }
 
@@ -317,7 +317,7 @@ private:
         if (!segments.empty()) renderer.drawLines(segments.data(), static_cast<int>(segments.size()), color, width);
     }
 
-    std::string m_objPath{"slab_long.obj"};
+    std::string m_objPath{"data/slab_long.obj"};
     std::shared_ptr<MeshObject> m_mesh;
     StressAnalyzer m_analyzer;
     MiqFieldRemesher m_miqRemesher;

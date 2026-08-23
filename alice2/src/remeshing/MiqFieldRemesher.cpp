@@ -394,7 +394,16 @@ bool buildQuadMesh(const MeshData& mesh, MiqRemeshResult& result, std::string& d
         ids.reserve(polygon.size());
         for (const UvSurfacePoint& point : polygon) ids.push_back(appendBoundaryVertex(point, normalSample.normal));
         if (ids.size() < 3) continue;
-        const Vec3 polygonNormal = (polygon[1].position - polygon[0].position).cross(polygon[2].position - polygon[0].position);
+        // Do not use only the first triangle here: consecutive boundary hits may be collinear.
+        Vec3 polygonNormal{0.0f, 0.0f, 0.0f};
+        for (int i = 0; i < static_cast<int>(polygon.size()); ++i) {
+            const Vec3& a = polygon[i].position;
+            const Vec3& b = polygon[(i + 1) % static_cast<int>(polygon.size())].position;
+            polygonNormal.x += (a.y - b.y) * (a.z + b.z);
+            polygonNormal.y += (a.z - b.z) * (a.x + b.x);
+            polygonNormal.z += (a.x - b.x) * (a.y + b.y);
+        }
+        if (polygonNormal.lengthSquared() <= kEpsilon * kEpsilon) continue;
         if (polygonNormal.dot(normalSample.normal) < 0.0f) std::reverse(ids.begin(), ids.end());
         quadMesh->faces.emplace_back(ids, normalSample.normal, Color(0.90f, 0.48f, 0.05f, 1.0f));
         ++result.boundaryFaceCount;
