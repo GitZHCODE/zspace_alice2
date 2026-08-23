@@ -52,9 +52,10 @@ public:
 
         drawActiveField(renderer);
         if (m_drawMiqGrid) drawMiqGrid(renderer);
+        if (m_drawQuadMesh) drawQuadMesh(renderer);
 
         renderer.setColor(Color(0.05f, 0.05f, 0.05f, 1.0f));
-        renderer.drawString("m stress/curvature | c stress colour | x crosses | o/p cross size | q MIQ grid | r reload", 10.0f, 30.0f);
+        renderer.drawString("m stress/curvature | c stress colour | x crosses | o/p cross size | q grid | w quads | e export | r reload", 10.0f, 30.0f);
         renderer.drawString(m_status, 10.0f, 52.0f);
         renderer.drawString(m_miqStatus, 10.0f, 74.0f);
         if (m_ui) m_ui->draw(renderer);
@@ -67,6 +68,8 @@ public:
             case 'o': case 'O': m_crossScale *= 1.2f; return true;
             case 'p': case 'P': m_crossScale /= 1.2f; return true;
             case 'q': case 'Q': m_drawMiqGrid = !m_drawMiqGrid; return true;
+            case 'w': case 'W': m_drawQuadMesh = !m_drawQuadMesh; return true;
+            case 'e': case 'E': exportRemesh(); return true;
             case 'm': case 'M':
                 m_fieldSource = m_fieldSource == FieldSource::Stress ? FieldSource::Curvature : FieldSource::Stress;
                 runMiq();
@@ -182,6 +185,17 @@ private:
         std::printf("[StressMiq] %s\n", m_miqStatus.c_str());
     }
 
+    void exportRemesh() {
+        if (!m_miqResult.success || !m_miqResult.quadMesh || m_miqResult.quadMesh->faces.empty()) {
+            m_miqStatus = "No MIQ remesh available to export";
+            return;
+        }
+        MeshObject output("miq_remesh");
+        output.setMeshData(m_miqResult.quadMesh);
+        output.writeToObj("remesh.obj");
+        m_miqStatus = "Exported MIQ remesh to remesh.obj";
+    }
+
     void buildCurvatureField() {
         m_curvatureField.clear();
         const auto data = m_mesh ? m_mesh->getMeshData() : nullptr;
@@ -272,6 +286,26 @@ private:
         drawLineSet(renderer, m_miqResult.gridLines.v, Color(0.95f, 0.52f, 0.02f, 1.0f), 1.6f);
     }
 
+    void drawQuadMesh(Renderer& renderer) const {
+        const auto& quadMesh = m_miqResult.quadMesh;
+        if (!quadMesh || quadMesh->faces.empty()) return;
+        std::vector<Vec3> quadSegments;
+        std::vector<Vec3> boundarySegments;
+        for (const MeshFace& face : quadMesh->faces) {
+            const bool boundaryFace = face.color.r > 0.7f && face.color.g < 0.6f;
+            std::vector<Vec3>& segments = boundaryFace ? boundarySegments : quadSegments;
+            for (int i = 0; i < static_cast<int>(face.vertices.size()); ++i) {
+                const int a = face.vertices[i];
+                const int b = face.vertices[(i + 1) % static_cast<int>(face.vertices.size())];
+                if (a < 0 || b < 0 || a >= static_cast<int>(quadMesh->vertices.size()) || b >= static_cast<int>(quadMesh->vertices.size())) continue;
+                segments.push_back(quadMesh->vertices[a].position);
+                segments.push_back(quadMesh->vertices[b].position);
+            }
+        }
+        if (!quadSegments.empty()) renderer.drawLines(quadSegments.data(), static_cast<int>(quadSegments.size()), Color(0.04f, 0.40f, 0.12f, 1.0f), 2.2f);
+        if (!boundarySegments.empty()) renderer.drawLines(boundarySegments.data(), static_cast<int>(boundarySegments.size()), Color(0.95f, 0.45f, 0.02f, 1.0f), 1.6f);
+    }
+
     void drawLineSet(Renderer& renderer, const std::vector<std::vector<Vec3>>& lines, const Color& color, float width) const {
         std::vector<Vec3> segments;
         for (const auto& line : lines) {
@@ -299,6 +333,7 @@ private:
     bool m_drawStress{true};
     bool m_drawCrosses{true};
     bool m_drawMiqGrid{true};
+    bool m_drawQuadMesh{true};
     FieldSource m_fieldSource{FieldSource::Stress};
     float m_crossScale{0.055f};
 };

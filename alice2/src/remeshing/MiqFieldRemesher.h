@@ -7,6 +7,7 @@
 #include "../objects/MeshObject.h"
 
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -29,11 +30,15 @@ namespace alice2 {
         std::vector<Vec2> uv;
         std::vector<std::array<int, 3>> uvFaces;
         MiqGridLines gridLines;
+        std::shared_ptr<MeshData> quadMesh;
         int seamVertexCount{0};
+        int quadCount{0};
+        int boundaryFaceCount{0};
+        int boundaryCellCount{0};
     };
 
-    // Generic adapter for a coherent per-face tangent cross field. The first
-    // experiment exposes MIQ's integer-grid isolines, not an all-quad mesh.
+    // Generic adapter for a coherent per-face tangent cross field. It returns
+    // complete MIQ integer cells as quads plus chart-boundary cell polygons.
     class MiqFieldRemesher {
     public:
         MiqRemeshResult parameterize(const MeshData& mesh,

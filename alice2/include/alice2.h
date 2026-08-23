@@ -43,7 +43,6 @@
 
 // Remesher
 #include "../src/remeshing/MiqFieldRemesher.h"
-#include "../src/remeshing/StressAlignedRemesher.h"
 
 // Convenience namespace
 namespace alice2 {

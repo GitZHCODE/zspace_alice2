@@ -157,6 +157,266 @@ void buildGridLines(const MeshData& mesh, MiqRemeshResult& result) {
         appendIsoSegments(p, uv, 1, result.gridLines.v);
     }
 }
+
+struct SurfacePoint {
+    Vec3 position;
+    Vec3 normal;
+};
+
+struct UvSurfacePoint {
+    Vec2 uv;
+    Vec3 position;
+};
+
+struct UvBoundarySegment {
+    UvSurfacePoint a;
+    UvSurfacePoint b;
+};
+
+bool barycentricUv(const Vec2& point, const Vec2& a, const Vec2& b, const Vec2& c, float& u, float& v, float& w) {
+    const float denominator = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if (std::abs(denominator) <= kEpsilon) return false;
+    u = ((b.y - c.y) * (point.x - c.x) + (c.x - b.x) * (point.y - c.y)) / denominator;
+    v = ((c.y - a.y) * (point.x - c.x) + (a.x - c.x) * (point.y - c.y)) / denominator;
+    w = 1.0f - u - v;
+    return u >= -1e-4f && v >= -1e-4f && w >= -1e-4f;
+}
+
+bool locateUvPoint(const MeshData& mesh, const MiqRemeshResult& result, const Vec2& point, SurfacePoint& sample) {
+    const int faceCount = std::min(static_cast<int>(mesh.faces.size()), static_cast<int>(result.uvFaces.size()));
+    for (int fi = 0; fi < faceCount; ++fi) {
+        const MeshFace& sourceFace = mesh.faces[fi];
+        const std::array<int, 3>& uvFace = result.uvFaces[fi];
+        if (sourceFace.vertices.size() != 3) continue;
+        const Vec2& a = result.uv[uvFace[0]];
+        const Vec2& b = result.uv[uvFace[1]];
+        const Vec2& c = result.uv[uvFace[2]];
+        float u = 0.0f, v = 0.0f, w = 0.0f;
+        if (!barycentricUv(point, a, b, c, u, v, w)) continue;
+        const Vec3& pa = mesh.vertices[sourceFace.vertices[0]].position;
+        const Vec3& pb = mesh.vertices[sourceFace.vertices[1]].position;
+        const Vec3& pc = mesh.vertices[sourceFace.vertices[2]].position;
+        sample.position = pa * u + pb * v + pc * w;
+        sample.normal = mesh.calculateFaceNormal(sourceFace).normalized();
+        return true;
+    }
+    return false;
+}
+
+std::vector<UvBoundarySegment> collectUvBoundarySegments(const MeshData& mesh, const MiqRemeshResult& result) {
+    struct Use { int face; int edge; };
+    std::map<std::pair<int, int>, std::vector<Use>> uses;
+    const int faceCount = std::min(static_cast<int>(mesh.faces.size()), static_cast<int>(result.uvFaces.size()));
+    for (int fi = 0; fi < faceCount; ++fi) {
+        if (mesh.faces[fi].vertices.size() != 3) continue;
+        const auto& uvFace = result.uvFaces[fi];
+        for (int edge = 0; edge < 3; ++edge)
+            uses[sortedEdge(uvFace[edge], uvFace[(edge + 1) % 3])].push_back({fi, edge});
+    }
+
+    std::vector<UvBoundarySegment> boundary;
+    for (const auto& [edge, edgeUses] : uses) {
+        if (edgeUses.size() != 1) continue;
+        const Use use = edgeUses.front();
+        const MeshFace& face = mesh.faces[use.face];
+        const auto& uvFace = result.uvFaces[use.face];
+        const int next = (use.edge + 1) % 3;
+        boundary.push_back({{result.uv[uvFace[use.edge]], mesh.vertices[face.vertices[use.edge]].position},
+                            {result.uv[uvFace[next]], mesh.vertices[face.vertices[next]].position}});
+    }
+    return boundary;
+}
+
+bool clipBoundarySegmentToCell(const UvBoundarySegment& segment, int u, int v,
+                               UvSurfacePoint& start, UvSurfacePoint& end) {
+    const float minU = static_cast<float>(u), maxU = minU + 1.0f;
+    const float minV = static_cast<float>(v), maxV = minV + 1.0f;
+    const Vec2 delta{segment.b.uv.x - segment.a.uv.x, segment.b.uv.y - segment.a.uv.y};
+    std::vector<float> hits;
+    const auto inside = [=](const Vec2& point) {
+        return point.x >= minU - kEpsilon && point.x <= maxU + kEpsilon &&
+               point.y >= minV - kEpsilon && point.y <= maxV + kEpsilon;
+    };
+    const auto addHit = [&](float t) {
+        if (t < -kEpsilon || t > 1.0f + kEpsilon) return;
+        const float clamped = std::clamp(t, 0.0f, 1.0f);
+        const Vec2 point{segment.a.uv.x + delta.x * clamped, segment.a.uv.y + delta.y * clamped};
+        if (!inside(point)) return;
+        for (float existing : hits) if (std::abs(existing - clamped) <= 1e-5f) return;
+        hits.push_back(clamped);
+    };
+    if (inside(segment.a.uv)) addHit(0.0f);
+    if (inside(segment.b.uv)) addHit(1.0f);
+    if (std::abs(delta.x) > kEpsilon) { addHit((minU - segment.a.uv.x) / delta.x); addHit((maxU - segment.a.uv.x) / delta.x); }
+    if (std::abs(delta.y) > kEpsilon) { addHit((minV - segment.a.uv.y) / delta.y); addHit((maxV - segment.a.uv.y) / delta.y); }
+    if (hits.size() < 2) return false;
+    std::sort(hits.begin(), hits.end());
+    const auto sample = [&](float t) {
+        return UvSurfacePoint{{segment.a.uv.x + delta.x * t, segment.a.uv.y + delta.y * t},
+                              segment.a.position + (segment.b.position - segment.a.position) * t};
+    };
+    start = sample(hits.front());
+    end = sample(hits.back());
+    return (start.position - end.position).lengthSquared() > kEpsilon * kEpsilon;
+}
+
+bool buildQuadMesh(const MeshData& mesh, MiqRemeshResult& result, std::string& diagnostic) {
+    if (result.uv.empty() || result.uvFaces.empty()) return false;
+    float minU = result.uv.front().x, maxU = minU, minV = result.uv.front().y, maxV = minV;
+    for (const Vec2& uv : result.uv) {
+        minU = std::min(minU, uv.x); maxU = std::max(maxU, uv.x);
+        minV = std::min(minV, uv.y); maxV = std::max(maxV, uv.y);
+    }
+    const int firstU = static_cast<int>(std::floor(minU));
+    const int lastU = static_cast<int>(std::ceil(maxU));
+    const int firstV = static_cast<int>(std::floor(minV));
+    const int lastV = static_cast<int>(std::ceil(maxV));
+    const long long candidateCount = static_cast<long long>(lastU - firstU) * static_cast<long long>(lastV - firstV);
+    constexpr long long kMaxCandidateCells = 250000;
+    if (candidateCount <= 0 || candidateCount > kMaxCandidateCells) {
+        diagnostic = "MIQ UV grid has an unsupported candidate-cell count";
+        return false;
+    }
+
+    auto quadMesh = std::make_shared<MeshData>();
+    std::map<std::pair<int, int>, int> gridVertexIds;
+    std::set<std::pair<int, int>> completeCells;
+    auto appendVertex = [&](int u, int v, const SurfacePoint& sample) {
+        const std::pair<int, int> key{u, v};
+        const auto existing = gridVertexIds.find(key);
+        if (existing != gridVertexIds.end()) return existing->second;
+        const int id = static_cast<int>(quadMesh->vertices.size());
+        quadMesh->vertices.emplace_back(sample.position, sample.normal, Color(0.16f, 0.72f, 0.26f, 1.0f));
+        gridVertexIds.emplace(key, id);
+        return id;
+    };
+
+    for (int v = firstV; v < lastV; ++v) {
+        for (int u = firstU; u < lastU; ++u) {
+            const Vec2 uv[4]{{static_cast<float>(u), static_cast<float>(v)},
+                              {static_cast<float>(u + 1), static_cast<float>(v)},
+                              {static_cast<float>(u + 1), static_cast<float>(v + 1)},
+                              {static_cast<float>(u), static_cast<float>(v + 1)}};
+            SurfacePoint corners[4];
+            SurfacePoint center;
+            bool complete = locateUvPoint(mesh, result, Vec2{static_cast<float>(u) + 0.5f, static_cast<float>(v) + 0.5f}, center);
+            for (int corner = 0; corner < 4 && complete; ++corner) complete = locateUvPoint(mesh, result, uv[corner], corners[corner]);
+            if (!complete) {
+                continue;
+            }
+
+            int ids[4]{appendVertex(u, v, corners[0]), appendVertex(u + 1, v, corners[1]),
+                       appendVertex(u + 1, v + 1, corners[2]), appendVertex(u, v + 1, corners[3])};
+            const Vec3 cellNormal = (corners[1].position - corners[0].position).cross(corners[2].position - corners[0].position);
+            if (cellNormal.dot(center.normal) < 0.0f) std::swap(ids[1], ids[3]);
+            quadMesh->faces.emplace_back(std::vector<int>{ids[0], ids[1], ids[2], ids[3]}, center.normal, Color(0.16f, 0.72f, 0.26f, 1.0f));
+            completeCells.insert({u, v});
+        }
+    }
+    result.quadCount = static_cast<int>(quadMesh->faces.size());
+
+    std::set<std::pair<int, int>> boundaryCells;
+    std::map<std::pair<long long, long long>, int> boundaryVertexIds;
+    constexpr double kUvKeyScale = 1000000.0;
+    const auto appendBoundaryVertex = [&](const UvSurfacePoint& point, const Vec3& normal) {
+        const std::pair<long long, long long> key{static_cast<long long>(std::llround(point.uv.x * kUvKeyScale)),
+                                                  static_cast<long long>(std::llround(point.uv.y * kUvKeyScale))};
+        const int integerU = static_cast<int>(std::lround(point.uv.x));
+        const int integerV = static_cast<int>(std::lround(point.uv.y));
+        if (std::abs(point.uv.x - static_cast<float>(integerU)) <= 1e-5f &&
+            std::abs(point.uv.y - static_cast<float>(integerV)) <= 1e-5f) {
+            const auto gridVertex = gridVertexIds.find({integerU, integerV});
+            if (gridVertex != gridVertexIds.end()) return gridVertex->second;
+        }
+        const auto existing = boundaryVertexIds.find(key);
+        if (existing != boundaryVertexIds.end()) return existing->second;
+        const int id = static_cast<int>(quadMesh->vertices.size());
+        quadMesh->vertices.emplace_back(point.position, normal, Color(0.90f, 0.48f, 0.05f, 1.0f));
+        boundaryVertexIds.emplace(key, id);
+        return id;
+    };
+
+    const std::vector<UvBoundarySegment> chartBoundary = collectUvBoundarySegments(mesh, result);
+    std::map<std::pair<int, int>, std::vector<int>> boundarySegmentsByCell;
+    for (int index = 0; index < static_cast<int>(chartBoundary.size()); ++index) {
+        const UvBoundarySegment& segment = chartBoundary[index];
+        const int segmentFirstU = static_cast<int>(std::floor(std::min(segment.a.uv.x, segment.b.uv.x) - kEpsilon));
+        const int segmentLastU = static_cast<int>(std::ceil(std::max(segment.a.uv.x, segment.b.uv.x) + kEpsilon));
+        const int segmentFirstV = static_cast<int>(std::floor(std::min(segment.a.uv.y, segment.b.uv.y) - kEpsilon));
+        const int segmentLastV = static_cast<int>(std::ceil(std::max(segment.a.uv.y, segment.b.uv.y) + kEpsilon));
+        for (int v = segmentFirstV; v < segmentLastV; ++v)
+            for (int u = segmentFirstU; u < segmentLastU; ++u)
+                boundarySegmentsByCell[{u, v}].push_back(index);
+    }
+
+    for (const auto& [cell, segmentIndices] : boundarySegmentsByCell) {
+        const int u = cell.first, v = cell.second;
+        if (completeCells.contains(cell)) continue;
+        std::map<std::pair<long long, long long>, UvSurfacePoint> polygonPoints;
+        const auto addPoint = [&](const UvSurfacePoint& point) {
+            const std::pair<long long, long long> key{static_cast<long long>(std::llround(point.uv.x * kUvKeyScale)),
+                                                      static_cast<long long>(std::llround(point.uv.y * kUvKeyScale))};
+            polygonPoints.try_emplace(key, point);
+        };
+        // Grid corners inside the chart connect the boundary-isoline hits to one cell polygon.
+        for (const Vec2 corner : {Vec2{static_cast<float>(u), static_cast<float>(v)},
+                                  Vec2{static_cast<float>(u + 1), static_cast<float>(v)},
+                                  Vec2{static_cast<float>(u + 1), static_cast<float>(v + 1)},
+                                  Vec2{static_cast<float>(u), static_cast<float>(v + 1)}}) {
+            SurfacePoint sample;
+            if (locateUvPoint(mesh, result, corner, sample)) addPoint({corner, sample.position});
+        }
+        for (int index : segmentIndices) {
+            UvSurfacePoint start, end;
+            if (!clipBoundarySegmentToCell(chartBoundary[index], u, v, start, end)) continue;
+            // These include original chart vertices as well as the U/V integer-isoline intersections.
+            addPoint(start);
+            addPoint(end);
+        }
+        if (polygonPoints.size() < 3) continue;
+
+        std::vector<UvSurfacePoint> polygon;
+        polygon.reserve(polygonPoints.size());
+        Vec2 centroid{0.0f, 0.0f};
+        for (const auto& [key, point] : polygonPoints) { polygon.push_back(point); centroid.x += point.uv.x; centroid.y += point.uv.y; }
+        centroid.x /= static_cast<float>(polygon.size());
+        centroid.y /= static_cast<float>(polygon.size());
+        std::sort(polygon.begin(), polygon.end(), [&centroid](const UvSurfacePoint& a, const UvSurfacePoint& b) {
+            return std::atan2(a.uv.y - centroid.y, a.uv.x - centroid.x) < std::atan2(b.uv.y - centroid.y, b.uv.x - centroid.x);
+        });
+
+        SurfacePoint normalSample{};
+        if (!locateUvPoint(mesh, result, centroid, normalSample)) {
+            for (const UvSurfacePoint& point : polygon) if (locateUvPoint(mesh, result, point.uv, normalSample)) break;
+        }
+        if (normalSample.normal.lengthSquared() <= kEpsilon * kEpsilon) continue;
+        std::vector<int> ids;
+        ids.reserve(polygon.size());
+        for (const UvSurfacePoint& point : polygon) ids.push_back(appendBoundaryVertex(point, normalSample.normal));
+        if (ids.size() < 3) continue;
+        const Vec3 polygonNormal = (polygon[1].position - polygon[0].position).cross(polygon[2].position - polygon[0].position);
+        if (polygonNormal.dot(normalSample.normal) < 0.0f) std::reverse(ids.begin(), ids.end());
+        quadMesh->faces.emplace_back(ids, normalSample.normal, Color(0.90f, 0.48f, 0.05f, 1.0f));
+        ++result.boundaryFaceCount;
+        boundaryCells.insert(cell);
+    }
+    result.boundaryCellCount = static_cast<int>(boundaryCells.size());
+
+    std::set<std::pair<int, int>> edgeIds;
+    for (const MeshFace& face : quadMesh->faces) {
+        for (int i = 0; i < static_cast<int>(face.vertices.size()); ++i) {
+            const int a = face.vertices[i];
+            const int b = face.vertices[(i + 1) % static_cast<int>(face.vertices.size())];
+            edgeIds.insert(sortedEdge(a, b));
+        }
+    }
+    quadMesh->edges.reserve(edgeIds.size());
+    for (const auto& [a, b] : edgeIds) quadMesh->edges.emplace_back(a, b, Color(0.08f, 0.38f, 0.12f, 1.0f));
+    quadMesh->calculateNormals();
+    quadMesh->triangulationDirty = true;
+    result.quadMesh = std::move(quadMesh);
+    return true;
+}
 } // namespace
 
 MiqRemeshResult MiqFieldRemesher::parameterize(const MeshData& mesh, const TensorField& field, const MiqRemeshOptions& options) const {
@@ -203,9 +463,15 @@ MiqRemeshResult MiqFieldRemesher::parameterize(const MeshData& mesh, const Tenso
     }
     result.seamVertexCount = std::max(0, static_cast<int>(usedUv.size()) - static_cast<int>(mesh.vertices.size()));
     buildGridLines(mesh, result);
+    std::string quadDiagnostic;
+    if (!buildQuadMesh(mesh, result, quadDiagnostic)) {
+        result.diagnostic = quadDiagnostic;
+        return result;
+    }
     result.success = true;
     std::ostringstream summary;
-    summary << "MIQ UV " << result.uv.size() << " | seams " << result.seamVertexCount << " | u/v segments " << result.gridLines.u.size() << "/" << result.gridLines.v.size();
+    summary << "MIQ UV " << result.uv.size() << " | seams " << result.seamVertexCount
+            << " | quads " << result.quadCount << " | boundary faces " << result.boundaryFaceCount;
     result.diagnostic = summary.str();
     return result;
 #endif
