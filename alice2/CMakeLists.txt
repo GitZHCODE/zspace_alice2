@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 project(alice2 VERSION 1.0.0 LANGUAGES C CXX)
 
 option(ALICE2_ENABLE_CUDA "Enable CUDA build of alice2" OFF)
+option(ALICE2_ENABLE_MIQ_REMESH "Enable the GPL-licensed libigl/CoMiSo MIQ remeshing experiment" ON)
 option(ALICE2_USE_SYSTEM_DEPS "Prefer system-installed CMake packages for third-party dependencies" ON)
 set(ALICE2_BUILD_MODE "default" CACHE STRING "Select alice2 build mode (default or test)")
 set_property(CACHE ALICE2_BUILD_MODE PROPERTY STRINGS default test)
@@ -142,6 +143,34 @@ else()
     set(ALICE2_LIBIGL_TARGETS "")
 endif()
 
+# MIQ is provided by libigl's GPL/copyleft CoMiSo module. Keep it explicit so
+# core libigl users do not acquire the dependency accidentally.
+set(ALICE2_MIQ_TARGET "")
+if(ALICE2_ENABLE_MIQ_REMESH)
+    if(ALICE2_HAS_SYSTEM_LIBIGL)
+        if(NOT TARGET igl_copyleft::comiso)
+            message(FATAL_ERROR
+                "ALICE2_ENABLE_MIQ_REMESH requires a system libigl with igl_copyleft::comiso. "
+                "Configure with -DALICE2_ENABLE_MIQ_REMESH=OFF to omit this experiment.")
+        endif()
+    else()
+        set(LIBIGL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(LIBIGL_BUILD_TUTORIALS OFF CACHE BOOL "" FORCE)
+        set(LIBIGL_COPYLEFT_CORE ON CACHE BOOL "" FORCE)
+        set(LIBIGL_COPYLEFT_COMISO ON CACHE BOOL "" FORCE)
+        add_subdirectory("${LIBIGL_DIR}" "${CMAKE_BINARY_DIR}/libigl-miq" EXCLUDE_FROM_ALL)
+    endif()
+    if(NOT TARGET igl_copyleft::comiso)
+        message(FATAL_ERROR "libigl MIQ support was requested but igl_copyleft::comiso was not created")
+    endif()
+    # CoMiSo's bundled GMM 4.2 still uses the C++17-removed `register`
+    # keyword. Clang promotes that diagnostic to an error in C++20 mode.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND TARGET CoMISo)
+        target_compile_options(CoMISo PRIVATE -Wno-register)
+    endif()
+    set(ALICE2_MIQ_TARGET igl_copyleft::comiso)
+endif()
+
 if(WIN32)
     set(GLEW_DIR "${ALICE2_DEPENDS_DIR}/glew")
     set(GLEW_INCLUDE_DIRS "${GLEW_DIR}/include")
@@ -247,6 +276,15 @@ file(GLOB_RECURSE ALICE2_CORE_SOURCES
 set(ALICE2_SOURCES ${ALICE2_CORE_SOURCES})
 list(APPEND ALICE2_SOURCES ${GL2PS_SOURCE})
 
+if(ALICE2_ENABLE_MIQ_REMESH AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # libigl's header-only MIQ implementation includes the same legacy GMM
+    # headers while compiling this adapter.
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/remeshing/MiqFieldRemesher.cpp"
+        PROPERTIES COMPILE_OPTIONS "-Wno-register"
+    )
+endif()
+
 if(ALICE2_USING_TEST_MODE)
     file(GLOB_RECURSE ALICE2_TEST_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp"
@@ -313,9 +351,16 @@ else()
     target_compile_definitions(alice2 PRIVATE ALICE2_WITH_CUDA=0)
 endif()
 
+if(ALICE2_ENABLE_MIQ_REMESH)
+    target_compile_definitions(alice2 PRIVATE ALICE2_WITH_MIQ=1)
+else()
+    target_compile_definitions(alice2 PRIVATE ALICE2_WITH_MIQ=0)
+endif()
+
 target_link_libraries(alice2
     ${ALICE2_DEPENDENCY_TARGETS}
     ${ALICE2_LIBIGL_TARGETS}
+    ${ALICE2_MIQ_TARGET}
     ${GLEW_LIBRARIES}
 )
 if(ALICE2_ENABLE_CUDA)
