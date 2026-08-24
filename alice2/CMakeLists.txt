@@ -4,8 +4,10 @@ project(alice2 VERSION 3.0.0 LANGUAGES C CXX)
 
 option(ALICE2_ENABLE_CUDA "Enable CUDA build of alice2" OFF)
 option(ALICE2_WITH_ZSPACE_CORE "Enable zSpace integration" ON)
+option(ALICE2_WITH_ZSPACE_TOOLSETS "Enable zSpace toolsets integration" OFF)
 option(ALICE2_USE_ZSPACE_SOURCE "Build zSpace from a local source checkout" OFF)
 set(ZSPACE_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../zspace_core" CACHE PATH "Path to local zspace_core checkout")
+set(ZSPACE_TOOLSETS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../zspace_toolsets" CACHE PATH "Path to local zspace_toolsets checkout")
 set(ZSPACE_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sdk/zspace" CACHE PATH "Path to installed zSpace binary SDK")
 set(ALICE2_BUILD_MODE "default" CACHE STRING "Select alice2 build mode (default or test)")
 set_property(CACHE ALICE2_BUILD_MODE PROPERTY STRINGS default test)
@@ -48,6 +50,7 @@ if(ALICE2_WITH_ZSPACE_CORE)
         set(ZSPACE_BUILD_TESTS OFF CACHE BOOL "Build zSpace tests" FORCE)
         set(ZSPACE_BUILD_SHARED ON CACHE BOOL "Build zSpace DLLs" FORCE)
         set(ZSPACE_WITH_OPENGL OFF CACHE BOOL "Disable zSpace display OpenGL for alice2 integration" FORCE)
+        set(ZSPACE_IO_WITH_TINYUSDZ OFF CACHE BOOL "Disable TinyUSDZ download for alice2 source builds" FORCE)
 
         add_subdirectory("${ZSPACE_CORE_DIR}" "${CMAKE_BINARY_DIR}/zspace_core_build")
 
@@ -173,6 +176,25 @@ if(NOT EXISTS ${NLOHMANN_JSON_INCLUDE_DIRS}/nlohmann/json.hpp)
     message(FATAL_ERROR "nlohmann/json headers not found at ${NLOHMANN_JSON_INCLUDE_DIRS}")
 endif()
 
+if(ALICE2_WITH_ZSPACE_TOOLSETS)
+    if(NOT ALICE2_WITH_ZSPACE_CORE)
+        message(FATAL_ERROR "ALICE2_WITH_ZSPACE_TOOLSETS requires ALICE2_WITH_ZSPACE_CORE=ON")
+    endif()
+    if(NOT EXISTS "${ZSPACE_TOOLSETS_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "ALICE2_WITH_ZSPACE_TOOLSETS=ON requires ZSPACE_TOOLSETS_DIR to point to a zspace_toolsets checkout")
+    endif()
+
+    set(ZSPACE_TOOLSETS_BUILD_SHARED ON CACHE BOOL "Build zSpace toolsets DLL" FORCE)
+    set(ZSPACE_TOOLSETS_BUILD_TESTS OFF CACHE BOOL "Disable zSpace toolsets tests inside alice2" FORCE)
+    set(ZSPACE_TOOLSETS_USE_ZSPACE_SOURCE OFF CACHE BOOL "Reuse zSpace targets already provided by alice2" FORCE)
+    add_subdirectory("${ZSPACE_TOOLSETS_DIR}" "${CMAKE_BINARY_DIR}/zspace_toolsets_build")
+
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/_deps/lib)
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/_deps/lib)
+endif()
+set(ALICE2_ACTIVE_JSON_INCLUDE_DIRS "${NLOHMANN_JSON_INCLUDE_DIRS}")
+
 set(GL2PS_URL "https://github.com/GitZHCODE/zspace_alice2/releases/download/depends/gl2ps-1.4.2.zip")
 set(GL2PS_DIR "${ALICE2_DEPENDS_DIR}/gl2ps-1.4.2")
 if(NOT EXISTS "${GL2PS_DIR}/gl2ps.h")
@@ -220,10 +242,10 @@ include_directories(
     ${GLEW_INCLUDE_DIRS}
     ${GLFW_INCLUDE_DIRS}
     ${EIGEN_DIR}
-    ${NLOHMANN_JSON_INCLUDE_DIRS}
     ${GL2PS_INCLUDE_DIRS}
 )
 if(ALICE2_WITH_ZSPACE_CORE AND ALICE2_USE_ZSPACE_SOURCE)
+    set(ALICE2_ACTIVE_JSON_INCLUDE_DIRS "${ZSPACE_CORE_DIR}/third_party/depends")
     include_directories(BEFORE
         "${ZSPACE_CORE_DIR}"
         "${ZSPACE_CORE_DIR}/include"
@@ -231,12 +253,14 @@ if(ALICE2_WITH_ZSPACE_CORE AND ALICE2_USE_ZSPACE_SOURCE)
         "${ZSPACE_CORE_DIR}/third_party/depends"
     )
 elseif(ALICE2_USING_ZSPACE_SDK)
+    set(ALICE2_ACTIVE_JSON_INCLUDE_DIRS "${ZSPACE_SDK_DIR}/include/depends")
     get_target_property(ZSPACE_SDK_INCLUDE_DIRS zspace::core INTERFACE_INCLUDE_DIRECTORIES)
     include_directories(BEFORE
         "${ZSPACE_SDK_DIR}/include/depends"
         ${ZSPACE_SDK_INCLUDE_DIRS}
     )
 endif()
+include_directories(${ALICE2_ACTIVE_JSON_INCLUDE_DIRS})
 if(ALICE2_USING_TEST_MODE)
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/tests)
 else()
@@ -345,6 +369,12 @@ if(ALICE2_WITH_ZSPACE_CORE)
     )
     target_compile_definitions(alice2 PRIVATE ALICE2_WITH_ZSPACE_CORE=1)
 endif()
+if(ALICE2_WITH_ZSPACE_TOOLSETS)
+    target_link_libraries(alice2
+        zspace::toolsets
+    )
+    target_compile_definitions(alice2 PRIVATE ALICE2_WITH_ZSPACE_TOOLSETS=1)
+endif()
 if(ALICE2_ENABLE_CUDA)
     target_link_libraries(alice2 CUDA::cublas CUDA::cudart)
 endif()
@@ -413,6 +443,12 @@ if(WIN32)
             endif()
         endforeach()
     endif()
+    if(ALICE2_WITH_ZSPACE_TOOLSETS AND TARGET zspace::toolsets)
+        add_custom_command(TARGET alice2 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_FILE:zspace::toolsets> $<TARGET_FILE_DIR:alice2>
+            COMMENT "Copying zspace::toolsets DLL to alice2 output directory")
+    endif()
 endif()
 
 set(ALICE2_INSTALL_RUNTIME_DESTINATION "bin")
@@ -472,6 +508,9 @@ if(WIN32)
             endif()
         endforeach()
     endif()
+    if(ALICE2_WITH_ZSPACE_TOOLSETS AND TARGET zspace::toolsets)
+        install(FILES $<TARGET_FILE:zspace::toolsets> DESTINATION ${ALICE2_INSTALL_RUNTIME_DESTINATION})
+    endif()
 endif()
 
 install(FILES CMakeLists.txt DESTINATION .)
@@ -482,6 +521,7 @@ message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  CUDA enabled: ${ALICE2_ENABLE_CUDA}")
 message(STATUS "  zspace_core enabled: ${ALICE2_WITH_ZSPACE_CORE}")
+message(STATUS "  zspace_toolsets enabled: ${ALICE2_WITH_ZSPACE_TOOLSETS}")
 if(ALICE2_WITH_ZSPACE_CORE)
     if(ALICE2_USE_ZSPACE_SOURCE)
         message(STATUS "  zSpace mode: source (${ZSPACE_CORE_DIR})")
@@ -497,5 +537,5 @@ message(STATUS "  OpenGL: ${OPENGL_LIBRARIES}")
 message(STATUS "  GLEW: ${GLEW_LIBRARIES}")
 message(STATUS "  GLFW: ${GLFW_LIBRARIES} (precompiled)")
 message(STATUS "  Eigen: ${EIGEN_DIR} (header-only)")
-message(STATUS "  nlohmann/json: ${NLOHMANN_JSON_INCLUDE_DIRS} (header-only)")
+message(STATUS "  nlohmann/json: ${ALICE2_ACTIVE_JSON_INCLUDE_DIRS} (header-only)")
 message(STATUS "  gl2ps: ${GL2PS_INCLUDE_DIRS} (SVG export)")

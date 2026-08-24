@@ -2,20 +2,18 @@
 setlocal
 
 REM Usage:
-REM   build.bat        -> normal build in "build"
-REM   build.bat cuda   -> CUDA build in "build_cuda"
-REM   build.bat test   -> test build in "build_tests"
+REM   build.bat        -> normal build in "build_zspace_v3"
+REM   build.bat cuda   -> CUDA build in "build_zspace_v3"
+REM   build.bat test   -> test build in "build_zspace_v3"
 
 set "CONFIG=Release"
-set "BUILD_DIR=build"
+set "BUILD_DIR=build_zspace_v3"
 set "EXTRA_FLAGS="
 
 if /I "%~1"=="cuda" (
-    set BUILD_DIR=build_cuda
     set EXTRA_FLAGS=-DALICE2_ENABLE_CUDA=ON
 )
 if /I "%~1"=="test" (
-    set BUILD_DIR=build_tests
     set EXTRA_FLAGS=-DALICE2_BUILD_MODE=test
 )
 

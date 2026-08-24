@@ -14,9 +14,8 @@ The local VLM interface is Ollama.
 
 ## Participating Agents
 
-- `zspace_agent`: zSpace mesh loading, face traversal, offset geometry, and later SDF-style field logic.
-- `alice2_agent`: sketch lifecycle, fixed camera, screenshot capture, display conventions, and run behavior.
-- `code_agent`: C++ sketch structure, iteration parameters, logging helpers, and orchestration scripts.
+- `zspace-core` skill: zSpace mesh loading, face traversal, offset geometry, and later SDF-style field logic.
+- `alice2_sketch_agent`: sketch lifecycle, fixed camera, screenshot capture, display conventions, run behavior, C++ sketch structure, iteration parameters, logging helpers, and orchestration scripts.
 - `build_agent`: build and runtime checks using `alice2\build_with_zspace.bat`.
 - `document_agent`: maintain the markdown iteration log when the loop runs.
 

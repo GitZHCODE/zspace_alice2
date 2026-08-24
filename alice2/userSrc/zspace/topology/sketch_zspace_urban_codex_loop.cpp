@@ -8,7 +8,9 @@
 #include <sketches/SketchRegistry.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -31,6 +33,7 @@ public:
         scene().setBackgroundColor(Color(1.0f, 1.0f, 1.0f, 1.0f));
         scene().setShowGrid(false);
         scene().setShowAxes(false);
+        configureAutomationFromEnvironment();
 
         m_ui = std::make_unique<SimpleUI>(input());
         m_ui->setTheme(SimpleUI::UITheme::Dark);
@@ -77,17 +80,23 @@ public:
         if (!m_loaded) return;
 
         zSpace::zFnMesh fn(m_mesh);
-        if (m_drawBaseMesh) {
-            drawNeutralBaseMesh(renderer, fn);
-        }
-        if (m_drawHeightFieldMap) {
+
+        if (m_captureMode == CaptureMode::Gradient) {
             drawHeightFieldMap(renderer, fn);
         }
-        drawStreetSdfGeometry(renderer);
-        drawBuildingIsoMeshes(renderer);
-        drawEffectiveTypologyGraphs(renderer);
+        else {
+            if (m_drawBaseMesh) {
+                drawNeutralBaseMesh(renderer, fn);
+            }
+            if (m_drawHeightFieldMap) {
+                drawHeightFieldMap(renderer, fn);
+            }
+            drawStreetSdfGeometry(renderer);
+            drawBuildingIsoMeshes(renderer);
+            drawEffectiveTypologyGraphs(renderer);
+        }
 
-        if (m_ui) {
+        if (m_ui && m_drawUi) {
             m_ui->draw(renderer);
         }
     }
@@ -116,6 +125,11 @@ public:
     }
 
 private:
+    enum class CaptureMode {
+        Figure,
+        Gradient
+    };
+
     zSpace::zObjectMesh m_mesh;
     std::string m_meshPath = "data/input_grid_01.obj";
     std::unique_ptr<SimpleUI> m_ui;
@@ -126,6 +140,8 @@ private:
     bool m_drawBaseMesh = true;
     bool m_drawHeightFieldMap = false;
     bool m_drawStreetFieldMesh = false;
+    bool m_drawUi = true;
+    CaptureMode m_captureMode = CaptureMode::Figure;
     int m_frameCount = 0;
 
     zSpace::zPoint m_boundsMin;
@@ -145,6 +161,10 @@ private:
     float m_lastBuiltP = -1.0f;
     float m_modelUnitsPerMeter = 1.0f;
     float m_globalParameterScale = 0.1f;
+    bool m_equalStreetWidths = true;
+    bool m_forceAllBuildingPlots = true;
+    bool m_forceAllTypeD = true;
+    bool m_heightGradientEnabled = false;
     int m_streetFieldResolution = 320;
     float m_buildingSdfCellSizeMeters = 1.5f;
     float m_buildingSdfCellSizeModelUnits = 0.0f;
@@ -227,6 +247,33 @@ private:
         std::vector<Vec3> polygonVertices;
         std::vector<TypeASetbackPlane> setbackPlanes;
     };
+
+    void configureAutomationFromEnvironment()
+    {
+        const char* autoCapture = std::getenv("URBAN_CODEX_AUTOCAPTURE");
+        m_autoCapture = autoCapture && std::string(autoCapture) == "1";
+        if (!m_autoCapture) return;
+
+        m_drawUi = false;
+        const char* captureMode = std::getenv("URBAN_CODEX_CAPTURE_MODE");
+        std::string mode = captureMode ? std::string(captureMode) : "figure";
+        std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+
+        if (mode == "gradient") {
+            m_captureMode = CaptureMode::Gradient;
+            m_drawBaseMesh = false;
+            m_drawHeightFieldMap = true;
+            m_drawStreetFieldMesh = false;
+        }
+        else {
+            m_captureMode = CaptureMode::Figure;
+            m_drawBaseMesh = true;
+            m_drawHeightFieldMap = false;
+            m_drawStreetFieldMesh = false;
+        }
+    }
 
     class plot {
     public:
@@ -1027,7 +1074,7 @@ private:
             plotData.id = static_cast<int>(m_plots.size());
             plotData.faceIndex = i;
             plotData.center = toVec3(face.getCenter());
-            plotData.plotUse = randomPlotUse(plotData.id);
+            plotData.plotUse = m_forceAllBuildingPlots ? PlotUse::Building : randomPlotUse(plotData.id);
             m_plotCenterMin.x = std::min(m_plotCenterMin.x, plotData.center.x);
             m_plotCenterMin.y = std::min(m_plotCenterMin.y, plotData.center.y);
             m_plotCenterMax.x = std::max(m_plotCenterMax.x, plotData.center.x);
@@ -1325,6 +1372,20 @@ private:
 
     ShapeParams computeTypologyGene(const plot& plotData) const
     {
+        if (m_forceAllTypeD) {
+            ShapeParams params;
+            params.typeAWeight = 0.0f;
+            params.typeBWeight = 0.0f;
+            params.typeCWeight = 0.0f;
+            params.typeDWeight = 1.0f;
+            params.buildingWidthMeters = std::clamp(
+                (m_typeAMinWidthMeters + m_typeAMaxWidthMeters) * 0.5f,
+                m_typeAMinWidthMeters,
+                m_typeAMaxWidthMeters
+            );
+            return params;
+        }
+
         if (m_typologyAnchors.empty()) {
             return fallbackShapeParams(plotData.id);
         }
@@ -2012,11 +2073,13 @@ private:
 
     float secondaryStreetWidth() const
     {
+        if (m_equalStreetWidths) return primaryStreetWidth();
         return primaryStreetWidth() * (2.0f / 3.0f);
     }
 
     float tertiaryStreetWidth() const
     {
+        if (m_equalStreetWidths) return primaryStreetWidth();
         return primaryStreetWidth() * (1.0f / 3.0f);
     }
 
@@ -2186,7 +2249,7 @@ private:
             if (positions.size() < 3) continue;
 
             Vec3 faceCenter = toVec3(face.getCenter());
-            float value = attractorHeightValue(faceCenter);
+            float value = m_heightGradientEnabled ? attractorHeightValue(faceCenter) : 0.0f;
             Color faceColor = lerpColor(
                 Color(0.0f, 0.0f, 1.0f, 1.0f),
                 Color(1.0f, 0.0f, 1.0f, 1.0f),

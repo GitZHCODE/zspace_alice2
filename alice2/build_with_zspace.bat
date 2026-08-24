@@ -2,7 +2,7 @@
 setlocal
 
 set "CONFIG=Release"
-set "BUILD_DIR=build_zspace"
+set "BUILD_DIR=build_zspace_v3"
 set "ZSPACE_SDK_DIR=%~1"
 set "CMAKE_EXE=cmake"
 set "BUILD_TOOL_ARGS=/m /clp:ErrorsOnly"

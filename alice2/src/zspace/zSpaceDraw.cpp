@@ -5,6 +5,7 @@
 #include "../core/Renderer.h"
 #include <zspace/interface.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -91,11 +92,29 @@ namespace {
         }
 
         if (display.showEdges) {
+            zSpace::zFnMesh fn(mesh);
+            zSpace::zColorArray meshEdgeColors;
+            zSpace::zDoubleArray meshEdgeWeights;
+            fn.getEdgeColors(meshEdgeColors);
+            fn.getEdgeWeights(meshEdgeWeights);
+
             for (zSpace::zItMeshEdge edge(mesh); !edge.end(); edge++) {
                 zSpace::zPointArray edgePositions;
                 edge.getVertexPositions(edgePositions);
                 if (edgePositions.size() == 2) {
-                    renderer.drawLine(toVec3(edgePositions[0]), toVec3(edgePositions[1]), display.edgeColor, display.edgeWidth);
+                    const int edgeId = edge.getId();
+                    Color edgeColor = display.edgeColor;
+                    float edgeWidth = display.edgeWidth;
+
+                    if (edgeId >= 0 && edgeId < static_cast<int>(meshEdgeColors.size())) {
+                        edgeColor = toColor(meshEdgeColors[edgeId]);
+                    }
+
+                    if (edgeId >= 0 && edgeId < static_cast<int>(meshEdgeWeights.size())) {
+                        edgeWidth = std::max(0.1f, static_cast<float>(meshEdgeWeights[edgeId]));
+                    }
+
+                    renderer.drawLine(toVec3(edgePositions[0]), toVec3(edgePositions[1]), edgeColor, edgeWidth);
                 }
             }
         }

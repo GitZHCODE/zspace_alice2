@@ -64,6 +64,6 @@ Keep broader agent workflow instructions in `agents/`, but keep sketch documenta
 
 ## Collaboration
 
-- Ask `zspace_agent` for accurate zSpace API descriptions.
-- Ask `alice2_agent` for sketch lifecycle and display details.
+- Use the `zspace-core` skill for accurate zSpace API descriptions.
+- Use `alice2_sketch_agent.md` for sketch lifecycle and display details.
 - Include only build status reported by `build_agent`.
