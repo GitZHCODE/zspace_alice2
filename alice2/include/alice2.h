@@ -42,6 +42,7 @@
 #include "../src/analysis/StressAnalyzer.h"
 
 // Remesher
+#include "../src/remeshing/Dev2PqRemesher.h"
 #include "../src/remeshing/MiqFieldRemesher.h"
 
 // Convenience namespace
