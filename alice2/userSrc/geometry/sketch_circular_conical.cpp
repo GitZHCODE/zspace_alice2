@@ -290,7 +290,7 @@ private:
         }
 
         if (m_curvatureView == CurvatureView::Principal) {
-            m_principalCurvature = m_mesh->principleCurvature(true);
+            m_principalCurvature = m_mesh->principalCurvature(true);
             m_report = "Principal curvature | k1 min: " + std::to_string(m_principalCurvature.minK1) +
                        " max: " + std::to_string(m_principalCurvature.maxK1) +
                        " | k2 min: " + std::to_string(m_principalCurvature.minK2) +

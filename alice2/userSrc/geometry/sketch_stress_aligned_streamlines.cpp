@@ -200,7 +200,7 @@ private:
         m_curvatureField.clear();
         const auto data = m_mesh ? m_mesh->getMeshData() : nullptr;
         if (!data || data->faces.empty()) return;
-        const auto curvature = m_mesh->principleCurvature(false);
+        const auto curvature = m_mesh->principalCurvature(false);
         if (curvature.principalDirections.size() != data->vertices.size()) return;
 
         m_curvatureField.resize(data->faces.size());

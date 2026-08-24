@@ -208,7 +208,7 @@ namespace alice2 {
         MeshScalarAnalysisResult meanCurvature(bool updateMeshColors = false,
                                                std::optional<float> remapMin = std::nullopt,
                                                std::optional<float> remapMax = std::nullopt);
-        MeshPrincipalCurvatureResult principleCurvature(bool updateMeshColors = false,
+        MeshPrincipalCurvatureResult principalCurvature(bool updateMeshColors = false,
                                                         std::optional<float> remapMin = std::nullopt,
                                                         std::optional<float> remapMax = std::nullopt);
 

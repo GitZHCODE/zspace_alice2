@@ -977,7 +977,7 @@ namespace alice2 {
         return result;
     }
 
-    MeshObject::MeshPrincipalCurvatureResult MeshObject::principleCurvature(bool updateMeshColors,
+    MeshObject::MeshPrincipalCurvatureResult MeshObject::principalCurvature(bool updateMeshColors,
                                                                            std::optional<float> remapMin,
                                                                            std::optional<float> remapMax) {
         MeshPrincipalCurvatureResult result;
