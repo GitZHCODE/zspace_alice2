@@ -35,6 +35,7 @@
 #include "../src/objects/MeshObject.h"
 #include "../src/solvers/ProjectionSolver.h"
 #include "../src/solvers/ProjectionConstraints.h"
+#include "../src/tna/TnaSolver.h"
 #include "../src/computeGeom/TensorField.h"
 
 // Analyser

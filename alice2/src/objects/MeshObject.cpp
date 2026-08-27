@@ -1755,6 +1755,7 @@ namespace alice2 {
             throw std::runtime_error("Failed to open OBJ file: " + filename);
 
         std::vector<Vec3> positions;
+        std::vector<Color> colors;
         std::vector<Vec3> normals;
         std::vector<std::vector<int>> facePosIdx;
         auto parseObjIndex = [](const std::string &value, int count) -> int
@@ -1778,10 +1779,17 @@ namespace alice2 {
 
             if (tag == "v")
             {
-                // vertex position
+                // OBJ also permits the extended `v x y z r g b` convention
+                // used by Maya and several modelling tools for vertex colors.
                 Vec3 p;
                 iss >> p.x >> p.y >> p.z;
                 positions.push_back(p);
+                float red = 1.0f, green = 1.0f, blue = 1.0f;
+                if (iss >> red >> green >> blue) {
+                    colors.emplace_back(red, green, blue, 1.0f);
+                } else {
+                    colors.emplace_back(1.0f, 1.0f, 1.0f, 1.0f);
+                }
             }
             else if (tag == "vn")
             {
@@ -1819,7 +1827,7 @@ namespace alice2 {
         for (size_t i = 0; i < positions.size(); ++i)
         {
             Vec3 n = (i < normals.size() ? normals[i] : Vec3(0, 0, 1));
-            m_meshData->vertices.emplace_back(positions[i], n);
+            m_meshData->vertices.emplace_back(positions[i], n, colors[i]);
         }
 
         // faces: ignore normal‐index array (we assume one normal per vertex)
