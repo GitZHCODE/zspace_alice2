@@ -9,7 +9,6 @@
 #include <cmath>
 #include <map>
 #include <numbers>
-#include <numeric>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -62,9 +61,25 @@ float reciprocalAngleDegrees(const Vec3& formVector, const Vec3& forceVector) {
     return std::acos(cosine) * 180.0f / std::numbers::pi_v<float>;
 }
 
-bool validVertex(const MeshData& mesh, int vertex);
-std::vector<Vec3> rotateForceCounterClockwise(const MeshData& forceDiagram);
-void rotateForceClockwise(MeshData& forceDiagram, const std::vector<Vec3>& rotated);
+bool validVertex(const MeshData& mesh, int vertex) {
+    return vertex >= 0 && vertex < static_cast<int>(mesh.vertices.size());
+}
+
+std::vector<Vec3> rotateForceCounterClockwise(const MeshData& forceDiagram) {
+    std::vector<Vec3> rotated;
+    rotated.reserve(forceDiagram.vertices.size());
+    for (const MeshVertex& vertex : forceDiagram.vertices) {
+        rotated.emplace_back(-vertex.position.y, vertex.position.x, 0.0f);
+    }
+    return rotated;
+}
+
+void rotateForceClockwise(MeshData& forceDiagram, const std::vector<Vec3>& rotated) {
+    for (int vertex = 0; vertex < static_cast<int>(forceDiagram.vertices.size()) &&
+                          vertex < static_cast<int>(rotated.size()); ++vertex) {
+        forceDiagram.vertices[vertex].position = Vec3(rotated[vertex].y, -rotated[vertex].x, 0.0f);
+    }
+}
 
 // RhinoVAULT does not display the raw geometric dual produced from face
 // centroids. After building its dual topology it integrates a force diagram
@@ -194,37 +209,41 @@ bool initialiseForceFromUnitDensities(MeshData& forceDiagram,
     return true;
 }
 
-bool validVertex(const MeshData& mesh, int vertex) {
-    return vertex >= 0 && vertex < static_cast<int>(mesh.vertices.size());
-}
-
 std::pair<int, int> undirectedEdgeKey(int first, int second) {
     return first < second ? std::make_pair(first, second) : std::make_pair(second, first);
 }
 
-void updateHorizontalAngles(TnaHorizontalEquilibrium& state) {
-    state.edgeAnglesDegrees.clear();
-    state.edgeAnglesDegrees.reserve(state.forceDiagram.edges.size());
-    state.maximumAngleDeviation = 0.0f;
-    for (int edgeIndex = 0; edgeIndex < static_cast<int>(state.forceDiagram.edges.size()); ++edgeIndex) {
-        const MeshEdge& forceEdge = state.forceDiagram.edges[edgeIndex];
-        const TnaEdge formEdge = edgeIndex < static_cast<int>(state.reciprocalFormEdges.size())
-                                     ? state.reciprocalFormEdges[edgeIndex]
+std::vector<float> reciprocalAngles(const MeshData& formDiagram,
+                                    const MeshData& forceDiagram,
+                                    const std::vector<TnaEdge>& formEdges) {
+    std::vector<float> angles;
+    angles.reserve(forceDiagram.edges.size());
+    for (int edgeIndex = 0; edgeIndex < static_cast<int>(forceDiagram.edges.size()); ++edgeIndex) {
+        const MeshEdge& forceEdge = forceDiagram.edges[edgeIndex];
+        const TnaEdge formEdge = edgeIndex < static_cast<int>(formEdges.size())
+                                     ? formEdges[edgeIndex]
                                      : TnaEdge{};
-        if (!validVertex(state.forceDiagram, forceEdge.vertexA) ||
-            !validVertex(state.forceDiagram, forceEdge.vertexB) ||
-            !validVertex(state.formDiagram, formEdge.vertexA) ||
-            !validVertex(state.formDiagram, formEdge.vertexB)) {
-            state.edgeAnglesDegrees.push_back(0.0f);
-            state.maximumAngleDeviation = std::max(state.maximumAngleDeviation, 90.0f);
+        if (!validVertex(forceDiagram, forceEdge.vertexA) ||
+            !validVertex(forceDiagram, forceEdge.vertexB) ||
+            !validVertex(formDiagram, formEdge.vertexA) ||
+            !validVertex(formDiagram, formEdge.vertexB)) {
+            angles.push_back(0.0f);
             continue;
         }
-        const Vec3 formVector = state.formDiagram.vertices[formEdge.vertexB].position -
-                                state.formDiagram.vertices[formEdge.vertexA].position;
-        const Vec3 forceVector = state.forceDiagram.vertices[forceEdge.vertexB].position -
-                                 state.forceDiagram.vertices[forceEdge.vertexA].position;
-        const float angle = reciprocalAngleDegrees(formVector, forceVector);
-        state.edgeAnglesDegrees.push_back(angle);
+        const Vec3 formVector = formDiagram.vertices[formEdge.vertexB].position -
+                                formDiagram.vertices[formEdge.vertexA].position;
+        const Vec3 forceVector = forceDiagram.vertices[forceEdge.vertexB].position -
+                                 forceDiagram.vertices[forceEdge.vertexA].position;
+        angles.push_back(reciprocalAngleDegrees(formVector, forceVector));
+    }
+    return angles;
+}
+
+void updateHorizontalAngles(TnaHorizontalEquilibrium& state) {
+    state.edgeAnglesDegrees = reciprocalAngles(state.formDiagram, state.forceDiagram,
+                                                state.reciprocalFormEdges);
+    state.maximumAngleDeviation = 0.0f;
+    for (const float angle : state.edgeAnglesDegrees) {
         state.maximumAngleDeviation = std::max(state.maximumAngleDeviation, std::abs(90.0f - angle));
     }
 }
@@ -477,7 +496,6 @@ TnaForceDiagram TnaSolver::makeForceDiagram(const TnaFormDiagram& form) const {
     struct TopologyEdge {
         std::shared_ptr<HeMeshHalfedge> first;
         std::shared_ptr<HeMeshHalfedge> second;
-        int id{-1};
     };
     std::map<std::pair<int, int>, TopologyEdge> topologyEdges;
     for (const auto& edge : topology.getEdges()) {
@@ -487,7 +505,7 @@ TnaForceDiagram TnaSolver::makeForceDiagram(const TnaFormDiagram& form) const {
         const auto secondVertex = first->getVertex();
         if (!firstVertex || !secondVertex) continue;
         topologyEdges.emplace(undirectedEdgeKey(firstVertex->getId(), secondVertex->getId()),
-                              TopologyEdge{first, second, edge->getId()});
+                              TopologyEdge{first, second});
     }
 
     int missingReciprocalEdges = 0;
@@ -526,29 +544,15 @@ TnaForceDiagram TnaSolver::makeForceDiagram(const TnaFormDiagram& form) const {
             continue;
         }
         result.mesh.edges.emplace_back(first->second, second->second, Color(0.86f, 0.18f, 0.05f, 1.0f));
-        result.forceEdgeFormEdges.push_back(foundTopology->second.id);
         result.reciprocalFormEdges.push_back(formEdge);
-        const Vec3 formVector = formB->getPosition() - formA->getPosition();
-        const Vec3 forceVector = result.mesh.vertices[second->second].position -
-                                 result.mesh.vertices[first->second].position;
-        result.edgeAnglesDegrees.push_back(reciprocalAngleDegrees(formVector, forceVector));
     }
 
     const bool forceInitialised = missingReciprocalEdges == 0 &&
                                   initialiseForceFromUnitDensities(result.mesh, formDiagram,
                                                                    result.reciprocalFormEdges);
     if (forceInitialised) {
-        result.edgeAnglesDegrees.clear();
-        result.edgeAnglesDegrees.reserve(result.mesh.edges.size());
-        for (int edgeIndex = 0; edgeIndex < static_cast<int>(result.mesh.edges.size()); ++edgeIndex) {
-            const MeshEdge& forceEdge = result.mesh.edges[edgeIndex];
-            const TnaEdge& formEdge = result.reciprocalFormEdges[edgeIndex];
-            const Vec3 formVector = formDiagram.vertices[formEdge.vertexB].position -
-                                    formDiagram.vertices[formEdge.vertexA].position;
-            const Vec3 forceVector = result.mesh.vertices[forceEdge.vertexB].position -
-                                     result.mesh.vertices[forceEdge.vertexA].position;
-            result.edgeAnglesDegrees.push_back(reciprocalAngleDegrees(formVector, forceVector));
-        }
+        result.edgeAnglesDegrees = reciprocalAngles(formDiagram, result.mesh,
+                                                     result.reciprocalFormEdges);
     }
 
     result.mesh.triangulationDirty = true;
@@ -639,22 +643,6 @@ void paralleliseEdges(std::vector<Vec3>& coordinates,
     }
 }
 
-std::vector<Vec3> rotateForceCounterClockwise(const MeshData& forceDiagram) {
-    std::vector<Vec3> rotated;
-    rotated.reserve(forceDiagram.vertices.size());
-    for (const MeshVertex& vertex : forceDiagram.vertices) {
-        rotated.emplace_back(-vertex.position.y, vertex.position.x, 0.0f);
-    }
-    return rotated;
-}
-
-void rotateForceClockwise(MeshData& forceDiagram, const std::vector<Vec3>& rotated) {
-    for (int vertex = 0; vertex < static_cast<int>(forceDiagram.vertices.size()) &&
-                          vertex < static_cast<int>(rotated.size()); ++vertex) {
-        forceDiagram.vertices[vertex].position = Vec3(rotated[vertex].y, -rotated[vertex].x, 0.0f);
-    }
-}
-
 std::vector<Vec3> makeHorizontalTargets(const TnaHorizontalEquilibrium& state,
                                         float alpha) {
     std::vector<Vec3> targets(state.forceDiagram.edges.size(), Vec3(0.0f, 0.0f, 0.0f));
@@ -725,12 +713,29 @@ bool TnaSolver::resetHorizontalEquilibrium(const MeshData& formDiagram,
     return true;
 }
 
+bool TnaSolver::continueHorizontalEquilibrium(int additionalIterations) {
+    if (!m_horizontal.success) return false;
+
+    const bool completedBatch = m_horizontal.converged;
+    const int currentLimit = std::max({m_horizontal.iterationLimit,
+                                       m_horizontal.formIterations,
+                                       m_horizontal.forceIterations});
+    m_horizontal.iterationLimit = currentLimit + std::max(1, additionalIterations);
+    // A new batch follows the same COMPAS ordering: extend the form pass
+    // first, then extend the force pass. The diagrams themselves remain in
+    // their current solved positions.
+    if (completedBatch) m_horizontal.solvingForceDiagram = false;
+    m_horizontal.converged = false;
+    m_horizontal.satisfiesAngleTarget = false;
+    return true;
+}
+
 bool TnaSolver::solveVerticalEquilibrium(const TnaVerticalSettings& settings) {
     m_vertical = {};
     TnaVerticalEquilibrium& result = m_vertical;
     const TnaHorizontalEquilibrium& horizontal = m_horizontal;
-    if (!horizontal.success || !horizontal.converged) {
-        result.diagnostic = "Complete horizontal equilibrium before solving vertical equilibrium";
+    if (!horizontal.success || !horizontal.converged || !horizontal.satisfiesAngleTarget) {
+        result.diagnostic = "Horizontal equilibrium must meet the target angle before vertical equilibrium";
         return false;
     }
     if (horizontal.formDiagram.vertices.empty() || horizontal.reciprocalFormEdges.empty() ||
@@ -897,11 +902,28 @@ bool TnaSolver::solveVerticalEquilibrium(const TnaVerticalSettings& settings) {
 
 void TnaSolver::stepHorizontalEquilibrium(const TnaHorizontalSettings& settings) {
     TnaHorizontalEquilibrium& state = m_horizontal;
-    if (!state.success || state.converged) return;
+    if (!state.success) return;
 
-    const float alpha = std::clamp(settings.formWeight, 0.0f, 1.0f);
+    const float requestedAlpha = std::clamp(settings.formWeight, 0.0f, 1.0f);
+    const int requestedIterations = std::max(1, settings.maximumIterations);
+    if (state.iterationLimit == 0) state.iterationLimit = requestedIterations;
+    const int maximumIterations = state.iterationLimit;
     // horizontal_nodal creates targets once, before either diagram moves.
-    // A slider change therefore starts a different problem and needs reset.
+    // The only reset path in the sketch is OBJ reload, so retain that target
+    // field if controls change after a solve has begun.
+    const float alpha = state.targetFormWeight >= 0.0f ? state.targetFormWeight : requestedAlpha;
+    if (state.targetFormWeight >= 0.0f && std::abs(state.targetFormWeight - requestedAlpha) > 1e-6f) {
+        state.diagnostic = "Form weight is fixed for the current solve; press r to reload and use a new weight";
+        return;
+    }
+    const bool formCompleteAtLimit = alpha >= 1.0f || state.formIterations >= maximumIterations;
+    const bool forceCompleteAtLimit = alpha <= 0.0f || state.forceIterations >= maximumIterations;
+    if (state.converged) {
+        if (formCompleteAtLimit && forceCompleteAtLimit) return;
+        state.converged = false;
+        state.satisfiesAngleTarget = false;
+    }
+
     if (state.targetFormWeight < 0.0f) {
         if (!settings.edgeConstraints.empty() &&
             settings.edgeConstraints.size() != state.forceDiagram.edges.size()) {
@@ -916,10 +938,6 @@ void TnaSolver::stepHorizontalEquilibrium(const TnaHorizontalSettings& settings)
         state.forceScale = std::max(settings.forceScale, 1e-6f);
         state.horizontalTargets = makeHorizontalTargets(state, alpha);
         state.targetFormWeight = alpha;
-    } else if (std::abs(state.targetFormWeight - alpha) > 1e-6f) {
-        state.converged = true;
-        state.diagnostic = "Form weight changed during horizontal solve; press h to restart with the new weight";
-        return;
     }
     const std::vector<Vec3>& targets = state.horizontalTargets;
 
@@ -952,7 +970,6 @@ void TnaSolver::stepHorizontalEquilibrium(const TnaHorizontalSettings& settings)
     for (const int vertex : state.fixedForceVertices) {
         if (validVertex(state.forceDiagram, vertex)) fixedForce[vertex] = true;
     }
-    const int maximumIterations = std::max(1, settings.maximumIterations);
     bool performedIteration = false;
     if (!state.solvingForceDiagram && alpha < 1.0f && state.formIterations < maximumIterations) {
         std::vector<Vec3> formCoordinates;
@@ -982,7 +999,6 @@ void TnaSolver::stepHorizontalEquilibrium(const TnaHorizontalSettings& settings)
         performedIteration = true;
     }
 
-    if (performedIteration) ++state.iteration;
     updateHorizontalAngles(state);
     state.formDiagram.calculateNormals();
     state.formDiagram.triangulationDirty = true;
@@ -1007,17 +1023,18 @@ void TnaSolver::stepHorizontalEquilibrium(const TnaHorizontalSettings& settings)
     const bool forceComplete = alpha <= 0.0f || state.forceIterations >= maximumIterations;
     if (formComplete && forceComplete) {
         state.converged = true;
+        state.satisfiesAngleTarget =
+            state.maximumAngleDeviation <= std::max(0.0f, settings.angleToleranceDegrees);
     }
 
     std::ostringstream status;
-    status << "TNA horizontal equilibrium " << (state.converged ? "complete" : "running")
+    const char* phase = !state.converged ? "running"
+                      : state.satisfiesAngleTarget ? "solved"
+                                                   : "iteration limit reached";
+    status << "TNA horizontal equilibrium " << phase
            << ": form " << state.formIterations << "/" << (alpha < 1.0f ? maximumIterations : 0)
            << ", force " << state.forceIterations << "/" << (alpha > 0.0f ? maximumIterations : 0)
-           << ", max angle deviation "
-           << state.maximumAngleDeviation << " deg"
-           << (state.maximumAngleDeviation <= std::max(0.0f, settings.angleToleranceDegrees)
-                   ? " (within tolerance)"
-                   : " (outside tolerance)");
+           << ", max angle deviation " << state.maximumAngleDeviation << " deg";
     state.diagnostic = status.str();
 }
 

@@ -37,7 +37,7 @@ struct TnaFormDiagram {
     int skippedDegenerateGroups{0};
 };
 
-// Stage 2 of TNA: a direct, unadjusted dual of the completed form topology.
+// Stage 2 of TNA: the reciprocal dual of the completed form topology.
 struct TnaForceDiagram {
     bool success{false};
     std::string diagnostic;
@@ -45,8 +45,6 @@ struct TnaForceDiagram {
     MeshData mesh;
     // Maps force vertex ID to its source form-face ID.
     std::vector<int> forceVertexFormFaces;
-    // Maps force edge ID to its source form-edge ID.
-    std::vector<int> forceEdgeFormEdges;
     // Form endpoints corresponding to each force edge. This avoids relying on
     // the implementation-specific ordering of the form mesh edge list.
     std::vector<TnaEdge> reciprocalFormEdges;
@@ -91,7 +89,10 @@ struct TnaHorizontalSettings {
 
 struct TnaHorizontalEquilibrium {
     bool success{false};
+    // The configured form/force passes have completed.
     bool converged{false};
+    // The completed reciprocal pair meets angleToleranceDegrees.
+    bool satisfiesAngleTarget{false};
     std::string diagnostic;
 
     MeshData formDiagram;
@@ -109,9 +110,11 @@ struct TnaHorizontalEquilibrium {
     float forceScale{1.0f};
     int formIterations{0};
     int forceIterations{0};
+    // Cumulative iteration limit. Each press of the sketch's h key extends
+    // this limit by one user-selected batch.
+    int iterationLimit{0};
     // COMPAS completes the form pass before starting the force pass.
     bool solvingForceDiagram{false};
-    int iteration{0};
     float maximumAngleDeviation{0.0f};
 };
 
@@ -160,6 +163,7 @@ public:
     bool resetHorizontalEquilibrium(const MeshData& formDiagram,
                                     const TnaForceDiagram& forceDiagram,
                                     const std::vector<int>& fixedFormVertices);
+    bool continueHorizontalEquilibrium(int additionalIterations);
     void stepHorizontalEquilibrium(const TnaHorizontalSettings& settings);
     const TnaHorizontalEquilibrium& horizontalEquilibrium() const { return m_horizontal; }
 

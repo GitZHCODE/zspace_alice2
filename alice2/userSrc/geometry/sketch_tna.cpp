@@ -28,10 +28,12 @@ public:
         scene().setShowAxes(false);
         scene().setAxesLength(1.2f);
         m_ui = std::make_unique<SimpleUI>(input());
+        m_ui->setTheme(SimpleUI::UITheme::Dark);
         m_ui->addSlider("Form weight", Vec2{10.0f, 92.0f}, 190.0f, 0.0f, 1.0f, m_formWeight);
-        m_ui->addSlider("H angle tolerance", Vec2{10.0f, 120.0f}, 190.0f, 0.1f, 10.0f, m_horizontalAngleTolerance);
-        m_ui->addSlider("V nodal load", Vec2{10.0f, 148.0f}, 190.0f, -0.01f, 0.01f, m_verticalLoad);
-        m_ui->addSlider("V self-weight density", Vec2{10.0f, 176.0f}, 190.0f, 0.0f, 10.0f, m_selfWeightDensity);
+        m_ui->addSlider("H max iterations", Vec2{10.0f, 120.0f}, 190.0f, 1.0f, 500.0f, m_horizontalMaximumIterations);
+        m_ui->addSlider("H target angle", Vec2{10.0f, 148.0f}, 190.0f, 0.0f, 10.0f, m_horizontalTargetAngle);
+        m_ui->addSlider("V nodal load", Vec2{10.0f, 176.0f}, 190.0f, -0.01f, 0.01f, m_verticalLoad);
+        m_ui->addSlider("V self-weight density", Vec2{10.0f, 204.0f}, 190.0f, 0.0f, 10.0f, m_selfWeightDensity);
         reload();
     }
 
@@ -58,7 +60,6 @@ public:
         renderer.setColor(Color(0.06f, 0.06f, 0.06f, 1.0f));
         renderer.drawString("r reload OBJ | h horizontal | v vertical | i toggle original | a toggle angles", 10.0f, 30.0f);
         renderer.drawString(m_status, 10.0f, 52.0f);
-        renderer.drawString("blue: form | coloured: force dual (0 blue, 90 red) | black: supports", 10.0f, 74.0f);
         if (m_ui) m_ui->draw(renderer);
     }
 
@@ -139,6 +140,13 @@ private:
     }
 
     void startHorizontalEquilibrium() {
+        if (m_solver.horizontalEquilibrium().success) {
+            // Keep the target field and positions, and append one batch of
+            // iterations from the current state.
+            m_horizontalRunning = m_solver.continueHorizontalEquilibrium(
+                std::max(1, static_cast<int>(std::lround(m_horizontalMaximumIterations))));
+            return;
+        }
         if (!m_initialFormMesh || !m_forceResult.success) {
             m_status = "No valid form/force pair available for horizontal equilibrium";
             return;
@@ -158,7 +166,7 @@ private:
     TnaHorizontalSettings horizontalSettings() const {
         TnaHorizontalSettings settings;
         settings.formWeight = m_formWeight;
-        settings.angleToleranceDegrees = m_horizontalAngleTolerance;
+        settings.angleToleranceDegrees = m_horizontalTargetAngle;
         settings.maximumIterations = std::max(1, static_cast<int>(std::lround(m_horizontalMaximumIterations)));
         settings.forceScale = m_horizontalForceScale;
 
@@ -331,18 +339,20 @@ private:
                      Color(0.90f, 0.06f, 0.03f, 1.0f), (t - 2.0f / 3.0f) * 3.0f);
     }
 
+    const std::vector<float>& forceAngles() const {
+        const TnaHorizontalEquilibrium& horizontal = m_solver.horizontalEquilibrium();
+        return horizontal.success ? horizontal.edgeAnglesDegrees : m_forceResult.edgeAnglesDegrees;
+    }
+
     void drawForceDiagram(Renderer& renderer) const {
         if (!m_forceMesh) return;
         const Vec3 offset = forceDiagramOffset();
+        const std::vector<float>& angles = forceAngles();
         for (int edgeIndex = 0; edgeIndex < static_cast<int>(m_forceMesh->edges.size()); ++edgeIndex) {
             const MeshEdge& edge = m_forceMesh->edges[edgeIndex];
             if (edge.vertexA < 0 || edge.vertexB < 0 ||
                 edge.vertexA >= static_cast<int>(m_forceMesh->vertices.size()) ||
                 edge.vertexB >= static_cast<int>(m_forceMesh->vertices.size())) continue;
-            const TnaHorizontalEquilibrium& horizontal = m_solver.horizontalEquilibrium();
-            const std::vector<float>& angles = horizontal.success
-                                                    ? horizontal.edgeAnglesDegrees
-                                                    : m_forceResult.edgeAnglesDegrees;
             const Color color = edgeIndex < static_cast<int>(angles.size())
                                     ? forceAngleColor(std::abs(90.0f - angles[edgeIndex]))
                                     : Color(0.40f, 0.40f, 0.40f, 1.0f);
@@ -352,10 +362,6 @@ private:
         }
 
         if (!m_showForceAngles) return;
-        const TnaHorizontalEquilibrium& horizontal = m_solver.horizontalEquilibrium();
-        const std::vector<float>& angles = horizontal.success
-                                                ? horizontal.edgeAnglesDegrees
-                                                : m_forceResult.edgeAnglesDegrees;
         for (int edgeIndex = 0; edgeIndex < static_cast<int>(m_forceMesh->edges.size()) &&
                                 edgeIndex < static_cast<int>(angles.size()); ++edgeIndex) {
             const MeshEdge& edge = m_forceMesh->edges[edgeIndex];
@@ -383,8 +389,8 @@ private:
     TnaFormDiagram m_result;
     TnaForceDiagram m_forceResult;
     std::string m_status{"Loading TNA mesh"};
-    float m_formWeight{1.0f};
-    float m_horizontalAngleTolerance{3.0f};
+    float m_formWeight{0.5f};
+    float m_horizontalTargetAngle{3.0f};
 
     // Horizontal controls not shown as sliders. Edit these values directly
     // to reproduce COMPAS per-edge constraints. A zero length ratio means
@@ -401,8 +407,8 @@ private:
     float m_horizontalForceMaximum{1e7f};
 
     // Vertical controls not shown as sliders.
-    float m_verticalLoad{-0.002f};
-    float m_selfWeightDensity{0.0f};
+    float m_verticalLoad{0.001f};
+    float m_selfWeightDensity{1.0f};
     float m_verticalThickness{1.0f};
     float m_verticalForceScale{1.0f};
     float m_verticalResidualTolerance{1e-3f};
