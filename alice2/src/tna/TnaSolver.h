@@ -28,12 +28,31 @@ struct TnaFormDiagram {
     int skippedDegenerateGroups{0};
 };
 
+// Stage 2 of TNA: a direct, unadjusted dual of the completed form topology.
+// It is intentionally not yet reciprocal; stage 3 will move this diagram and
+// the form diagram towards horizontal equilibrium.
+struct TnaForceDiagram {
+    bool success{false};
+    std::string diagnostic;
+
+    MeshData mesh;
+    // Maps force vertex ID to its source form-face ID.
+    std::vector<int> forceVertexFormFaces;
+    // Maps force edge ID to its source form-edge ID.
+    std::vector<int> forceEdgeFormEdges;
+    // Undirected angle between each force edge and its corresponding form
+    // edge, in degrees. Reciprocal diagrams target 90 degrees.
+    std::vector<float> edgeAnglesDegrees;
+};
+
 class TnaSolver {
 public:
     // Builds the topological form diagram only. Horizontal and vertical
     // equilibrium will be added as separate stages after topology is tested.
     TnaFormDiagram makeFormDiagram(const MeshData& input,
                                    const std::vector<int>& supportVertices = {}) const;
+
+    TnaForceDiagram makeForceDiagram(const MeshData& formDiagram) const;
 };
 
 } // namespace alice2

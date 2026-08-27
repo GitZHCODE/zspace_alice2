@@ -3,6 +3,8 @@
 #include "../computeGeom/ComputeMesh.h"
 
 #include <algorithm>
+#include <cmath>
+#include <numbers>
 #include <sstream>
 #include <unordered_set>
 
@@ -34,6 +36,23 @@ std::vector<int> walkBoundaryLoop(const std::shared_ptr<HeMeshHalfedge>& first) 
     } while (current && current != first);
 
     return current == first ? vertices : std::vector<int>{};
+}
+
+Vec3 faceCentroid(const MeshData& mesh, const MeshFace& face) {
+    Vec3 centroid(0.0f, 0.0f, 0.0f);
+    if (face.vertices.empty()) return centroid;
+    for (const int vertex : face.vertices) centroid = centroid + mesh.vertices[vertex].position;
+    return centroid * (1.0f / static_cast<float>(face.vertices.size()));
+}
+
+float reciprocalAngleDegrees(const Vec3& formVector, const Vec3& forceVector) {
+    const float formLength = formVector.length();
+    const float forceLength = forceVector.length();
+    if (formLength <= 1e-6f || forceLength <= 1e-6f) return 0.0f;
+    const float cosine = std::clamp(std::abs(formVector.dot(forceVector)) /
+                                        (formLength * forceLength),
+                                    0.0f, 1.0f);
+    return std::acos(cosine) * 180.0f / std::numbers::pi_v<float>;
 }
 
 } // namespace
@@ -144,6 +163,67 @@ TnaFormDiagram TnaSolver::makeFormDiagram(const MeshData& input,
     }
     result.diagnostic = status.str();
     result.success = true;
+    return result;
+}
+
+TnaForceDiagram TnaSolver::makeForceDiagram(const MeshData& formDiagram) const {
+    TnaForceDiagram result;
+    if (formDiagram.vertices.empty() || formDiagram.faces.empty()) {
+        result.diagnostic = "TNA force diagram needs a form mesh with vertices and faces";
+        return result;
+    }
+
+    ComputeMesh topology("tna_force_topology", formDiagram, true);
+    if (topology.getFaces().size() != formDiagram.faces.size()) {
+        result.diagnostic = "Could not construct form half-edge topology for the force dual";
+        return result;
+    }
+
+    // A dual vertex sits at every form-face centroid, including the exterior
+    // n-gons created in stage 1.
+    result.mesh.vertices.reserve(formDiagram.faces.size());
+    result.forceVertexFormFaces.reserve(formDiagram.faces.size());
+    for (const auto& face : topology.getFaces()) {
+        const int formFace = face->getId();
+        if (formFace < 0 || formFace >= static_cast<int>(formDiagram.faces.size())) continue;
+        result.mesh.vertices.emplace_back(faceCentroid(formDiagram, formDiagram.faces[formFace]),
+                                          Vec3(0.0f, 0.0f, 1.0f),
+                                          Color(0.86f, 0.18f, 0.05f, 1.0f));
+        result.forceVertexFormFaces.push_back(formFace);
+    }
+
+    // Every form edge shared by exactly two faces becomes a dual force edge.
+    // The closing chord of an exterior n-gon has only one incident face and
+    // is intentionally absent from this straightforward dual.
+    for (const auto& edge : topology.getEdges()) {
+        const std::vector<std::shared_ptr<HeMeshFace>> faces = edge->getFaces();
+        if (faces.size() != 2) continue;
+        const int firstFace = faces[0]->getId();
+        const int secondFace = faces[1]->getId();
+        if (firstFace < 0 || secondFace < 0 ||
+            firstFace >= static_cast<int>(result.mesh.vertices.size()) ||
+            secondFace >= static_cast<int>(result.mesh.vertices.size())) continue;
+
+        result.mesh.edges.emplace_back(firstFace, secondFace, Color(0.86f, 0.18f, 0.05f, 1.0f));
+        result.forceEdgeFormEdges.push_back(edge->getId());
+
+        const auto [formA, formB] = edge->getVertices();
+        if (!formA || !formB) {
+            result.edgeAnglesDegrees.push_back(0.0f);
+            continue;
+        }
+        const Vec3 formVector = formB->getPosition() - formA->getPosition();
+        const Vec3 forceVector = result.mesh.vertices[secondFace].position -
+                                 result.mesh.vertices[firstFace].position;
+        result.edgeAnglesDegrees.push_back(reciprocalAngleDegrees(formVector, forceVector));
+    }
+
+    result.mesh.triangulationDirty = true;
+    std::ostringstream status;
+    status << "Force diagram: " << result.mesh.vertices.size() << " dual vertices, "
+           << result.mesh.edges.size() << " dual edges";
+    result.diagnostic = status.str();
+    result.success = !result.mesh.vertices.empty();
     return result;
 }
 
