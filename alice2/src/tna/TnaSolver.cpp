@@ -575,6 +575,19 @@ TnaForceDiagram TnaSolver::makeForceDiagram(const TnaFormDiagram& form) const {
 
 namespace {
 
+// Horizontal equilibrium with fixed edge lengths l_e and target directions
+// t_e is the least-squares problem
+//
+//     min_x  sum_(e=(i,j)) || (x_j - x_i) - l_e t_e ||^2 .
+//
+// Its normal equations have a graph-Laplacian left-hand side. Rather than
+// assembling Lx=b, each Jacobi iteration applies the row update directly:
+//
+//     x_i^(k+1) = (1 / deg(i)) sum_(e=(i,j)) (x_j^k - s_ie l_e t_e),
+//
+// where s_ie is +1 when the edge is oriented i -> j and -1 otherwise. All
+// x_j values come from the frozen previous iterate, so this is Jacobi rather
+// than in-place Gauss-Seidel relaxation.
 void paralleliseEdges(std::vector<Vec3>& coordinates,
                       const std::vector<TnaEdge>& edges,
                       const std::vector<Vec3>& targets,
@@ -667,8 +680,12 @@ std::vector<Vec3> makeHorizontalTargets(const TnaHorizontalEquilibrium& state,
 
         // The force edge was explicitly ordered from the form edge's left
         // face to its right face, just as ForceDiagram.ordered_edges(form).
-        // Do not normalise the blended result: COMPAS uses its magnitude in
-        // the projection update as well as its direction.
+        // In the rotated force coordinate system, the shared target is
+        //
+        //     t_e = alpha * u_form + (1 - alpha) * u_force .
+        //
+        // Do not normalise the blend: COMPAS uses its magnitude as part of
+        // the Jacobi projection, particularly for intermediate weights.
         targets[edgeIndex] = formDirection.normalized() * alpha +
                              forceDirection.normalized() * (1.0f - alpha);
     }
@@ -1015,6 +1032,10 @@ void TnaSolver::stepHorizontalEquilibrium(const TnaHorizontalSettings& settings)
                                    state.edgeConstraints[edgeIndex].isTension
                                ? -1.0f
                                : 1.0f;
+        // After rotating the force diagram back, reciprocal edge lengths
+        // provide the horizontal force density used by vertical equilibrium:
+        //
+        //     q_e = sign_e * scale * l_force,e / l_form,e .
         state.forceDensities.push_back(formLength > 1e-6f
                                            ? sign * state.forceScale * forceLength / formLength
                                            : 0.0f);
