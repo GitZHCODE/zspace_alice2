@@ -228,6 +228,32 @@ namespace alice2 {
             return result;
         }
 
+        std::vector<std::vector<int>> buildKRingNeighbors(const std::vector<std::vector<int>>& adjacency,
+                                                           int ring) {
+            const int vertexCount = static_cast<int>(adjacency.size());
+            const int effectiveRing = std::max(1, ring);
+            std::vector<std::vector<int>> neighborhoods(vertexCount);
+            for (int source = 0; source < vertexCount; ++source) {
+                std::vector<int> distance(vertexCount, -1);
+                std::vector<int> queue;
+                queue.reserve(vertexCount);
+                queue.push_back(source);
+                distance[source] = 0;
+
+                for (size_t head = 0; head < queue.size(); ++head) {
+                    const int current = queue[head];
+                    if (distance[current] >= effectiveRing) continue;
+                    for (int neighbor : adjacency[current]) {
+                        if (neighbor < 0 || neighbor >= vertexCount || distance[neighbor] >= 0) continue;
+                        distance[neighbor] = distance[current] + 1;
+                        queue.push_back(neighbor);
+                        neighborhoods[source].push_back(neighbor);
+                    }
+                }
+            }
+            return neighborhoods;
+        }
+
         bool solve3x3(float a[3][3], float b[3], float x[3]) {
             for (int pivot = 0; pivot < 3; ++pivot) {
                 int best = pivot;
@@ -977,9 +1003,10 @@ namespace alice2 {
         return result;
     }
 
-    MeshObject::MeshPrincipalCurvatureResult MeshObject::principleCurvature(bool updateMeshColors,
+    MeshObject::MeshPrincipalCurvatureResult MeshObject::principalCurvature(bool updateMeshColors,
                                                                            std::optional<float> remapMin,
-                                                                           std::optional<float> remapMax) {
+                                                                           std::optional<float> remapMax,
+                                                                           int ring) {
         MeshPrincipalCurvatureResult result;
         if (!m_meshData || m_meshData->vertices.empty()) {
             return result;
@@ -988,6 +1015,7 @@ namespace alice2 {
         m_meshData->calculateNormals();
         const CurvatureData curvature = computeCurvatureData(*m_meshData);
         const size_t vertexCount = m_meshData->vertices.size();
+        const auto fittingNeighbors = buildKRingNeighbors(curvature.neighbors, ring);
 
         result.k1.assign(vertexCount, 0.0f);
         result.k2.assign(vertexCount, 0.0f);
@@ -1013,7 +1041,7 @@ namespace alice2 {
             float atb[3] = {0.0f, 0.0f, 0.0f};
 
             int equationCount = 0;
-            for (int neighborIndex : curvature.neighbors[i]) {
+            for (int neighborIndex : fittingNeighbors[i]) {
                 if (neighborIndex < 0 || neighborIndex >= static_cast<int>(vertexCount)) continue;
 
                 Vec3 edge = m_meshData->vertices[neighborIndex].position - vertex.position;
@@ -1099,6 +1127,13 @@ namespace alice2 {
         }
 
         return result;
+    }
+
+    MeshObject::MeshPrincipalCurvatureResult MeshObject::principalCurvature(int ring,
+                                                                            bool updateMeshColors,
+                                                                            std::optional<float> remapMin,
+                                                                            std::optional<float> remapMax) {
+        return principalCurvature(updateMeshColors, remapMin, remapMax, ring);
     }
 
     void MeshObject::renderSceneModeOverride(Renderer& renderer, Camera& camera) {
@@ -1720,6 +1755,7 @@ namespace alice2 {
             throw std::runtime_error("Failed to open OBJ file: " + filename);
 
         std::vector<Vec3> positions;
+        std::vector<Color> colors;
         std::vector<Vec3> normals;
         std::vector<std::vector<int>> facePosIdx;
         auto parseObjIndex = [](const std::string &value, int count) -> int
@@ -1743,10 +1779,17 @@ namespace alice2 {
 
             if (tag == "v")
             {
-                // vertex position
+                // OBJ also permits the extended `v x y z r g b` convention
+                // used by Maya and several modelling tools for vertex colors.
                 Vec3 p;
                 iss >> p.x >> p.y >> p.z;
                 positions.push_back(p);
+                float red = 1.0f, green = 1.0f, blue = 1.0f;
+                if (iss >> red >> green >> blue) {
+                    colors.emplace_back(red, green, blue, 1.0f);
+                } else {
+                    colors.emplace_back(1.0f, 1.0f, 1.0f, 1.0f);
+                }
             }
             else if (tag == "vn")
             {
@@ -1784,7 +1827,7 @@ namespace alice2 {
         for (size_t i = 0; i < positions.size(); ++i)
         {
             Vec3 n = (i < normals.size() ? normals[i] : Vec3(0, 0, 1));
-            m_meshData->vertices.emplace_back(positions[i], n);
+            m_meshData->vertices.emplace_back(positions[i], n, colors[i]);
         }
 
         // faces: ignore normal‐index array (we assume one normal per vertex)

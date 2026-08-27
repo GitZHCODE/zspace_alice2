@@ -122,7 +122,7 @@ private:
         auto data = m_mesh ? m_mesh->getMeshData() : nullptr;
         if (!data || data->faces.empty()) return;
 
-        const auto curvature = m_mesh->principleCurvature(false);
+        const auto curvature = m_mesh->principalCurvature(3, false);
         if (curvature.principalDirections.size() != data->vertices.size() ||
             curvature.otherDirections.size() != data->vertices.size()) {
             m_status = "Curvature calculation did not return a direction per vertex";

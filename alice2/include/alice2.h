@@ -35,6 +35,7 @@
 #include "../src/objects/MeshObject.h"
 #include "../src/solvers/ProjectionSolver.h"
 #include "../src/solvers/ProjectionConstraints.h"
+#include "../src/tna/TnaSolver.h"
 #include "../src/computeGeom/TensorField.h"
 
 // Analyser
@@ -42,6 +43,7 @@
 #include "../src/analysis/StressAnalyzer.h"
 
 // Remesher
+#include "../src/remeshing/Dev2PqRemesher.h"
 #include "../src/remeshing/MiqFieldRemesher.h"
 
 // Convenience namespace

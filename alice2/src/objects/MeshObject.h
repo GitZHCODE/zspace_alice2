@@ -208,7 +208,14 @@ namespace alice2 {
         MeshScalarAnalysisResult meanCurvature(bool updateMeshColors = false,
                                                std::optional<float> remapMin = std::nullopt,
                                                std::optional<float> remapMax = std::nullopt);
-        MeshPrincipalCurvatureResult principleCurvature(bool updateMeshColors = false,
+        MeshPrincipalCurvatureResult principalCurvature(bool updateMeshColors = false,
+                                                        std::optional<float> remapMin = std::nullopt,
+                                                        std::optional<float> remapMax = std::nullopt,
+                                                        int ring = 1);
+        // Convenience overload for curvature queries that only need to set the
+        // fitting neighbourhood. ring=1 reproduces the original one-ring fit.
+        MeshPrincipalCurvatureResult principalCurvature(int ring,
+                                                        bool updateMeshColors = false,
                                                         std::optional<float> remapMin = std::nullopt,
                                                         std::optional<float> remapMax = std::nullopt);
 
