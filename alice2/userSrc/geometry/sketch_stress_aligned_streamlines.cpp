@@ -1,4 +1,4 @@
-// #define __MAIN__
+#define __MAIN__
 
 #ifdef __MAIN__
 
@@ -200,7 +200,7 @@ private:
         m_curvatureField.clear();
         const auto data = m_mesh ? m_mesh->getMeshData() : nullptr;
         if (!data || data->faces.empty()) return;
-        const auto curvature = m_mesh->principalCurvature(8, false);
+        const auto curvature = m_mesh->principalCurvature(2, false);
         if (curvature.principalDirections.size() != data->vertices.size()) return;
 
         m_curvatureField.resize(data->faces.size());
@@ -317,7 +317,7 @@ private:
         if (!segments.empty()) renderer.drawLines(segments.data(), static_cast<int>(segments.size()), color, width);
     }
 
-    std::string m_objPath{"data/slab_long.obj"};
+    std::string m_objPath{"data/bridge.obj"};
     std::shared_ptr<MeshObject> m_mesh;
     StressAnalyzer m_analyzer;
     MiqFieldRemesher m_miqRemesher;
