@@ -10,6 +10,11 @@
 
 namespace alice2 {
 
+struct TnaEdge {
+    int vertexA{-1};
+    int vertexB{-1};
+};
+
 // Stage 1 of TNA: the planar input mesh with one exterior polygon appended
 // for every support-delimited boundary chain. The recorded chains will later
 // provide the exterior faces needed by the dual force diagram.
@@ -24,13 +29,15 @@ struct TnaFormDiagram {
     // One chain per support-to-support boundary walk, inclusive of both
     // support endpoints. A boundary loop without supports is one group.
     std::vector<std::vector<int>> boundaryGroups;
+    // Original form edges participating in equilibrium. The closing chord of
+    // every appended outside face is intentionally excluded.
+    std::vector<TnaEdge> activeFormEdges;
+    std::vector<int> exteriorFormFaces;
     int appendedBoundaryFaces{0};
     int skippedDegenerateGroups{0};
 };
 
 // Stage 2 of TNA: a direct, unadjusted dual of the completed form topology.
-// It is intentionally not yet reciprocal; stage 3 will move this diagram and
-// the form diagram towards horizontal equilibrium.
 struct TnaForceDiagram {
     bool success{false};
     std::string diagnostic;
@@ -40,19 +47,128 @@ struct TnaForceDiagram {
     std::vector<int> forceVertexFormFaces;
     // Maps force edge ID to its source form-edge ID.
     std::vector<int> forceEdgeFormEdges;
+    // Form endpoints corresponding to each force edge. This avoids relying on
+    // the implementation-specific ordering of the form mesh edge list.
+    std::vector<TnaEdge> reciprocalFormEdges;
+    // Optional force-diagram constraints. COMPAS leaves this empty unless a
+    // caller explicitly adds force constraints.
+    std::vector<int> fixedForceVertices;
     // Undirected angle between each force edge and its corresponding form
-    // edge, in degrees. Reciprocal diagrams target 90 degrees.
+    // edge, in degrees. Displayed reciprocal diagrams target 90 degrees.
     std::vector<float> edgeAnglesDegrees;
+};
+
+struct TnaHorizontalSettings {
+    // COMPAS-TNA alpha remapped to [0, 1]. 0 uses force-edge directions as
+    // targets, 1 uses form-edge directions, and intermediate values blend
+    // the two unit directions before parallelisation.
+    float formWeight{1.0f};
+    // Reciprocity diagnostic threshold. Like COMPAS horizontal_nodal, the
+    // solve still completes its configured iteration count.
+    float angleToleranceDegrees{3.0f};
+    // This is kmax in COMPAS-TNA. Each applicable diagram receives this
+    // many Jacobi parallelisation iterations.
+    int maximumIterations{100};
+    // COMPAS ForceDiagram.attributes["scale"]. It converts force-diagram
+    // edge length into horizontal force for q = scale * l_force / l_form.
+    float forceScale{1.0f};
+
+    struct EdgeConstraint {
+        // FormDiagram edge defaults in COMPAS-TNA.
+        float formLengthMinimum{0.0f};
+        float formLengthMaximum{1e7f};
+        float horizontalForceMinimum{0.0f};
+        float horizontalForceMaximum{1e7f};
+        // ForceDiagram edge defaults in COMPAS-TNA.
+        float forceLengthMinimum{0.0f};
+        float forceLengthMaximum{1e7f};
+        bool isTension{false};
+    };
+    // One item per ordered reciprocal pair. Empty means the COMPAS defaults
+    // above are applied to every pair.
+    std::vector<EdgeConstraint> edgeConstraints;
+};
+
+struct TnaHorizontalEquilibrium {
+    bool success{false};
+    bool converged{false};
+    std::string diagnostic;
+
+    MeshData formDiagram;
+    MeshData forceDiagram;
+    std::vector<TnaEdge> reciprocalFormEdges;
+    std::vector<int> fixedFormVertices;
+    std::vector<int> fixedForceVertices;
+    std::vector<float> edgeAnglesDegrees;
+    std::vector<float> forceDensities;
+    // The COMPAS horizontal solver forms these weighted directions once,
+    // then parallelises both diagrams towards the same targets.
+    std::vector<Vec3> horizontalTargets;
+    std::vector<TnaHorizontalSettings::EdgeConstraint> edgeConstraints;
+    float targetFormWeight{-1.0f};
+    float forceScale{1.0f};
+    int formIterations{0};
+    int forceIterations{0};
+    // COMPAS completes the form pass before starting the force pass.
+    bool solvingForceDiagram{false};
+    int iteration{0};
+    float maximumAngleDeviation{0.0f};
+};
+
+struct TnaVerticalSettings {
+    // Matches COMPAS vertical_from_q. q is already derived from the solved
+    // form/force pair and is multiplied by this horizontal-force scale.
+    float forceScale{1.0f};
+    // Extra vertical load at every vertex when nodalLoads is empty. The sign
+    // follows the input coordinate convention.
+    float nodalLoad{0.0f};
+    std::vector<float> nodalLoads;
+    // COMPAS self-weight is tributaryArea * thickness * density. Supply a
+    // zero density to solve only the specified nodal loads.
+    float density{1.0f};
+    float thickness{1.0f};
+    std::vector<float> thicknesses;
+    // Original vertex Z values. Only entries at support vertices are used;
+    // this keeps the supports at their pre-flattening elevations.
+    std::vector<float> supportHeights;
+    // Added outside faces are topology-only and must not contribute load.
+    std::vector<int> unloadedFaces;
+    int maximumIterations{100};
+    float residualTolerance{1e-3f};
+};
+
+struct TnaVerticalEquilibrium {
+    bool success{false};
+    bool converged{false};
+    std::string diagnostic;
+
+    MeshData formDiagram;
+    std::vector<float> forceDensities;
+    std::vector<float> verticalLoads;
+    std::vector<float> verticalReactions;
+    int iteration{0};
+    float residual{0.0f};
 };
 
 class TnaSolver {
 public:
-    // Builds the topological form diagram only. Horizontal and vertical
-    // equilibrium will be added as separate stages after topology is tested.
     TnaFormDiagram makeFormDiagram(const MeshData& input,
                                    const std::vector<int>& supportVertices = {}) const;
 
-    TnaForceDiagram makeForceDiagram(const MeshData& formDiagram) const;
+    TnaForceDiagram makeForceDiagram(const TnaFormDiagram& formDiagram) const;
+
+    bool resetHorizontalEquilibrium(const MeshData& formDiagram,
+                                    const TnaForceDiagram& forceDiagram,
+                                    const std::vector<int>& fixedFormVertices);
+    void stepHorizontalEquilibrium(const TnaHorizontalSettings& settings);
+    const TnaHorizontalEquilibrium& horizontalEquilibrium() const { return m_horizontal; }
+
+    bool solveVerticalEquilibrium(const TnaVerticalSettings& settings);
+    const TnaVerticalEquilibrium& verticalEquilibrium() const { return m_vertical; }
+
+private:
+    TnaHorizontalEquilibrium m_horizontal;
+    TnaVerticalEquilibrium m_vertical;
 };
 
 } // namespace alice2

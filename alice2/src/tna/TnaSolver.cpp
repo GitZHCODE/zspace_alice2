@@ -2,10 +2,17 @@
 
 #include "../computeGeom/ComputeMesh.h"
 
+#include <Eigen/Sparse>
+#include <Eigen/SparseCholesky>
+
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <numbers>
+#include <numeric>
+#include <set>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace alice2 {
@@ -53,6 +60,209 @@ float reciprocalAngleDegrees(const Vec3& formVector, const Vec3& forceVector) {
                                         (formLength * forceLength),
                                     0.0f, 1.0f);
     return std::acos(cosine) * 180.0f / std::numbers::pi_v<float>;
+}
+
+bool validVertex(const MeshData& mesh, int vertex);
+std::vector<Vec3> rotateForceCounterClockwise(const MeshData& forceDiagram);
+void rotateForceClockwise(MeshData& forceDiagram, const std::vector<Vec3>& rotated);
+
+// RhinoVAULT does not display the raw geometric dual produced from face
+// centroids. After building its dual topology it integrates a force diagram
+// from the form with the current q values (one by default). In the rotated
+// force coordinate system this is the least-squares system
+//
+//     C_force * xy_force = q * C_form * xy_form .
+//
+// The translation of every connected force component is indeterminate, so
+// retain one initial vertex per component as an anchor. This is equivalent to
+// RhinoVAULT's single known vertex for its usual connected force diagram and
+// also keeps the construction usable for meshes with multiple components.
+bool initialiseForceFromUnitDensities(MeshData& forceDiagram,
+                                      const MeshData& formDiagram,
+                                      const std::vector<TnaEdge>& formEdges) {
+    if (forceDiagram.vertices.empty() || forceDiagram.edges.empty() ||
+        forceDiagram.edges.size() != formEdges.size()) return false;
+
+    const int vertexCount = static_cast<int>(forceDiagram.vertices.size());
+    const int edgeCount = static_cast<int>(forceDiagram.edges.size());
+    std::vector<std::vector<int>> adjacency(vertexCount);
+    std::vector<Eigen::Triplet<double>> laplacianEntries;
+    laplacianEntries.reserve(edgeCount * 4);
+    Eigen::VectorXd rhsX = Eigen::VectorXd::Zero(vertexCount);
+    Eigen::VectorXd rhsY = Eigen::VectorXd::Zero(vertexCount);
+
+    for (int edgeIndex = 0; edgeIndex < edgeCount; ++edgeIndex) {
+        const MeshEdge& forceEdge = forceDiagram.edges[edgeIndex];
+        const TnaEdge& formEdge = formEdges[edgeIndex];
+        if (!validVertex(forceDiagram, forceEdge.vertexA) ||
+            !validVertex(forceDiagram, forceEdge.vertexB) ||
+            !validVertex(formDiagram, formEdge.vertexA) ||
+            !validVertex(formDiagram, formEdge.vertexB)) return false;
+
+        const int first = forceEdge.vertexA;
+        const int second = forceEdge.vertexB;
+        const Vec3 formVector = formDiagram.vertices[formEdge.vertexB].position -
+                                formDiagram.vertices[formEdge.vertexA].position;
+        // C^T (C_form * xy_form), for an oriented force edge first -> second.
+        rhsX[first] -= formVector.x;
+        rhsX[second] += formVector.x;
+        rhsY[first] -= formVector.y;
+        rhsY[second] += formVector.y;
+        laplacianEntries.emplace_back(first, first, 1.0);
+        laplacianEntries.emplace_back(second, second, 1.0);
+        laplacianEntries.emplace_back(first, second, -1.0);
+        laplacianEntries.emplace_back(second, first, -1.0);
+        adjacency[first].push_back(second);
+        adjacency[second].push_back(first);
+    }
+
+    Eigen::SparseMatrix<double> laplacian(vertexCount, vertexCount);
+    laplacian.setFromTriplets(laplacianEntries.begin(), laplacianEntries.end());
+
+    // Work in the same +90-degree coordinate system as horizontal_nodal.
+    std::vector<Vec3> rotated = rotateForceCounterClockwise(forceDiagram);
+    std::vector<bool> visited(vertexCount, false);
+    std::vector<int> anchors;
+    for (int start = 0; start < vertexCount; ++start) {
+        if (visited[start]) continue;
+        anchors.push_back(start);
+        std::vector<int> pending{start};
+        visited[start] = true;
+        while (!pending.empty()) {
+            const int vertex = pending.back();
+            pending.pop_back();
+            for (const int neighbour : adjacency[vertex]) {
+                if (!visited[neighbour]) {
+                    visited[neighbour] = true;
+                    pending.push_back(neighbour);
+                }
+            }
+        }
+    }
+
+    std::vector<bool> known(vertexCount, false);
+    for (const int anchor : anchors) known[anchor] = true;
+    std::vector<int> freeIndex(vertexCount, -1);
+    int freeCount = 0;
+    for (int vertex = 0; vertex < vertexCount; ++vertex) {
+        if (!known[vertex]) freeIndex[vertex] = freeCount++;
+    }
+    if (freeCount == 0) return true;
+
+    std::vector<Eigen::Triplet<double>> reducedEntries;
+    reducedEntries.reserve(laplacian.nonZeros());
+    Eigen::VectorXd reducedX = Eigen::VectorXd::Zero(freeCount);
+    Eigen::VectorXd reducedY = Eigen::VectorXd::Zero(freeCount);
+    for (int row = 0; row < vertexCount; ++row) {
+        if (!known[row]) {
+            reducedX[freeIndex[row]] = rhsX[row];
+            reducedY[freeIndex[row]] = rhsY[row];
+        }
+    }
+    for (int outer = 0; outer < laplacian.outerSize(); ++outer) {
+        for (Eigen::SparseMatrix<double>::InnerIterator entry(laplacian, outer); entry; ++entry) {
+            const int row = entry.row();
+            const int column = entry.col();
+            if (known[row]) continue;
+            const int reducedRow = freeIndex[row];
+            if (known[column]) {
+                reducedX[reducedRow] -= entry.value() * rotated[column].x;
+                reducedY[reducedRow] -= entry.value() * rotated[column].y;
+            } else {
+                reducedEntries.emplace_back(reducedRow, freeIndex[column], entry.value());
+            }
+        }
+    }
+
+    Eigen::SparseMatrix<double> reduced(freeCount, freeCount);
+    reduced.setFromTriplets(reducedEntries.begin(), reducedEntries.end());
+    Eigen::SimplicialLLT<Eigen::SparseMatrix<double>> solver;
+    solver.compute(reduced);
+    if (solver.info() != Eigen::Success) return false;
+    const Eigen::VectorXd solvedX = solver.solve(reducedX);
+    const Eigen::VectorXd solvedY = solver.solve(reducedY);
+    if (solver.info() != Eigen::Success) return false;
+    for (int vertex = 0; vertex < vertexCount; ++vertex) {
+        if (!known[vertex]) {
+            rotated[vertex].x = static_cast<float>(solvedX[freeIndex[vertex]]);
+            rotated[vertex].y = static_cast<float>(solvedY[freeIndex[vertex]]);
+        }
+    }
+    rotateForceClockwise(forceDiagram, rotated);
+    forceDiagram.calculateNormals();
+    forceDiagram.triangulationDirty = true;
+    return true;
+}
+
+bool validVertex(const MeshData& mesh, int vertex) {
+    return vertex >= 0 && vertex < static_cast<int>(mesh.vertices.size());
+}
+
+std::pair<int, int> undirectedEdgeKey(int first, int second) {
+    return first < second ? std::make_pair(first, second) : std::make_pair(second, first);
+}
+
+void updateHorizontalAngles(TnaHorizontalEquilibrium& state) {
+    state.edgeAnglesDegrees.clear();
+    state.edgeAnglesDegrees.reserve(state.forceDiagram.edges.size());
+    state.maximumAngleDeviation = 0.0f;
+    for (int edgeIndex = 0; edgeIndex < static_cast<int>(state.forceDiagram.edges.size()); ++edgeIndex) {
+        const MeshEdge& forceEdge = state.forceDiagram.edges[edgeIndex];
+        const TnaEdge formEdge = edgeIndex < static_cast<int>(state.reciprocalFormEdges.size())
+                                     ? state.reciprocalFormEdges[edgeIndex]
+                                     : TnaEdge{};
+        if (!validVertex(state.forceDiagram, forceEdge.vertexA) ||
+            !validVertex(state.forceDiagram, forceEdge.vertexB) ||
+            !validVertex(state.formDiagram, formEdge.vertexA) ||
+            !validVertex(state.formDiagram, formEdge.vertexB)) {
+            state.edgeAnglesDegrees.push_back(0.0f);
+            state.maximumAngleDeviation = std::max(state.maximumAngleDeviation, 90.0f);
+            continue;
+        }
+        const Vec3 formVector = state.formDiagram.vertices[formEdge.vertexB].position -
+                                state.formDiagram.vertices[formEdge.vertexA].position;
+        const Vec3 forceVector = state.forceDiagram.vertices[forceEdge.vertexB].position -
+                                 state.forceDiagram.vertices[forceEdge.vertexA].position;
+        const float angle = reciprocalAngleDegrees(formVector, forceVector);
+        state.edgeAnglesDegrees.push_back(angle);
+        state.maximumAngleDeviation = std::max(state.maximumAngleDeviation, std::abs(90.0f - angle));
+    }
+}
+
+std::vector<float> tributaryAreas(const MeshData& mesh,
+                                  const std::unordered_set<int>& unloadedFaces) {
+    std::vector<float> areas(mesh.vertices.size(), 0.0f);
+    for (int faceIndex = 0; faceIndex < static_cast<int>(mesh.faces.size()); ++faceIndex) {
+        if (unloadedFaces.contains(faceIndex)) continue;
+        const MeshFace& face = mesh.faces[faceIndex];
+        if (face.vertices.size() < 3) continue;
+
+        Vec3 centroid(0.0f, 0.0f, 0.0f);
+        bool valid = true;
+        for (const int vertex : face.vertices) {
+            if (!validVertex(mesh, vertex)) {
+                valid = false;
+                break;
+            }
+            centroid += mesh.vertices[vertex].position;
+        }
+        if (!valid) continue;
+        centroid /= static_cast<float>(face.vertices.size());
+
+        // Same vertex tributary-area construction as COMPAS LoadUpdater:
+        // each adjacent face-side contributes one quarter of its centroid fan
+        // triangle area to the endpoint vertex.
+        for (int local = 0; local < static_cast<int>(face.vertices.size()); ++local) {
+            const int vertex = face.vertices[local];
+            const int previous = face.vertices[(local - 1 + static_cast<int>(face.vertices.size())) %
+                                               static_cast<int>(face.vertices.size())];
+            const int next = face.vertices[(local + 1) % static_cast<int>(face.vertices.size())];
+            const Vec3& position = mesh.vertices[vertex].position;
+            areas[vertex] += 0.25f * (mesh.vertices[next].position - position).cross(centroid - position).length();
+            areas[vertex] += 0.25f * (mesh.vertices[previous].position - position).cross(centroid - position).length();
+        }
+    }
+    return areas;
 }
 
 } // namespace
@@ -113,6 +323,30 @@ TnaFormDiagram TnaSolver::makeFormDiagram(const MeshData& input,
     result.supportVertices.assign(supportSet.begin(), supportSet.end());
     std::sort(result.supportVertices.begin(), result.supportVertices.end());
 
+    // update_boundaries in COMPAS marks a boundary edge joining two supports
+    // as non-active before adding the exterior faces. It has no reciprocal
+    // force edge and must not be treated as part of the equilibrium form.
+    std::set<std::pair<int, int>> supportedBoundaryEdges;
+    for (const auto& start : boundaryStarts) {
+        const std::vector<int> loop = walkBoundaryLoop(start);
+        for (int i = 0; i < static_cast<int>(loop.size()); ++i) {
+            const int first = loop[i];
+            const int second = loop[(i + 1) % loop.size()];
+            if (supportSet.contains(first) && supportSet.contains(second)) {
+                supportedBoundaryEdges.insert(undirectedEdgeKey(first, second));
+            }
+        }
+    }
+
+    std::set<std::pair<int, int>> activeInputEdges;
+    for (const MeshFace& face : input.faces) {
+        for (int i = 0; i < static_cast<int>(face.vertices.size()); ++i) {
+            const std::pair<int, int> edge = undirectedEdgeKey(face.vertices[i],
+                                                                 face.vertices[(i + 1) % face.vertices.size()]);
+            if (!supportedBoundaryEdges.contains(edge)) activeInputEdges.insert(edge);
+        }
+    }
+
     result.mesh = input;
     for (const auto& start : boundaryStarts) {
         const std::vector<int> loop = walkBoundaryLoop(start);
@@ -125,8 +359,10 @@ TnaFormDiagram TnaSolver::makeFormDiagram(const MeshData& input,
             // An opening with no supports still needs one exterior face for
             // the later dual construction.
             result.boundaryGroups.push_back(loop);
-            if (appendBoundaryFace(result.mesh, loop)) ++result.appendedBoundaryFaces;
-            else ++result.skippedDegenerateGroups;
+            if (appendBoundaryFace(result.mesh, loop)) {
+                result.exteriorFormFaces.push_back(static_cast<int>(result.mesh.faces.size()) - 1);
+                ++result.appendedBoundaryFaces;
+            } else ++result.skippedDegenerateGroups;
             continue;
         }
 
@@ -139,8 +375,10 @@ TnaFormDiagram TnaSolver::makeFormDiagram(const MeshData& input,
                 if (i == last) break;
             }
             result.boundaryGroups.push_back(group);
-            if (appendBoundaryFace(result.mesh, group)) ++result.appendedBoundaryFaces;
-            else ++result.skippedDegenerateGroups;
+            if (appendBoundaryFace(result.mesh, group)) {
+                result.exteriorFormFaces.push_back(static_cast<int>(result.mesh.faces.size()) - 1);
+                ++result.appendedBoundaryFaces;
+            } else ++result.skippedDegenerateGroups;
         }
     }
 
@@ -152,6 +390,11 @@ TnaFormDiagram TnaSolver::makeFormDiagram(const MeshData& input,
     formObject.getMeshData()->calculateNormals();
     formObject.getMeshData()->triangulationDirty = true;
     result.mesh = *formObject.getMeshData();
+    for (const MeshEdge& edge : result.mesh.edges) {
+        if (activeInputEdges.contains(undirectedEdgeKey(edge.vertexA, edge.vertexB))) {
+            result.activeFormEdges.push_back({edge.vertexA, edge.vertexB});
+        }
+    }
 
     std::ostringstream status;
     status << "Form diagram: " << result.mesh.vertices.size() << " vertices, "
@@ -166,10 +409,15 @@ TnaFormDiagram TnaSolver::makeFormDiagram(const MeshData& input,
     return result;
 }
 
-TnaForceDiagram TnaSolver::makeForceDiagram(const MeshData& formDiagram) const {
+TnaForceDiagram TnaSolver::makeForceDiagram(const TnaFormDiagram& form) const {
     TnaForceDiagram result;
+    const MeshData& formDiagram = form.mesh;
     if (formDiagram.vertices.empty() || formDiagram.faces.empty()) {
         result.diagnostic = "TNA force diagram needs a form mesh with vertices and faces";
+        return result;
+    }
+    if (form.activeFormEdges.empty()) {
+        result.diagnostic = "TNA force diagram needs active form edges";
         return result;
     }
 
@@ -179,52 +427,598 @@ TnaForceDiagram TnaSolver::makeForceDiagram(const MeshData& formDiagram) const {
         return result;
     }
 
-    // A dual vertex sits at every form-face centroid, including the exterior
-    // n-gons created in stage 1.
-    result.mesh.vertices.reserve(formDiagram.faces.size());
-    result.forceVertexFormFaces.reserve(formDiagram.faces.size());
-    for (const auto& face : topology.getFaces()) {
-        const int formFace = face->getId();
-        if (formFace < 0 || formFace >= static_cast<int>(formDiagram.faces.size())) continue;
-        result.mesh.vertices.emplace_back(faceCentroid(formDiagram, formDiagram.faces[formFace]),
-                                          Vec3(0.0f, 0.0f, 1.0f),
-                                          Color(0.86f, 0.18f, 0.05f, 1.0f));
-        result.forceVertexFormFaces.push_back(formFace);
+    // This matches FormDiagram.dual_diagram: only faces around inner free
+    // form vertices belong to the force diagram. Added outside faces appear
+    // only when a free boundary-chain vertex makes them part of such a cycle.
+    std::vector<bool> boundary(formDiagram.vertices.size(), false);
+    for (const auto& edge : topology.getEdges()) {
+        if (!edge->onBoundary()) continue;
+        const auto [first, second] = edge->getVertices();
+        if (first) boundary[first->getId()] = true;
+        if (second) boundary[second->getId()] = true;
+    }
+    std::vector<bool> support(formDiagram.vertices.size(), false);
+    for (const int vertex : form.supportVertices) {
+        if (validVertex(formDiagram, vertex)) support[vertex] = true;
+    }
+    std::vector<bool> inner(formDiagram.vertices.size(), false);
+    for (int vertex = 0; vertex < static_cast<int>(formDiagram.vertices.size()); ++vertex) {
+        inner[vertex] = !boundary[vertex] && !support[vertex];
     }
 
-    // Every form edge shared by exactly two faces becomes a dual force edge.
-    // The closing chord of an exterior n-gon has only one incident face and
-    // is intentionally absent from this straightforward dual.
+    std::unordered_map<int, int> formFaceToForceVertex;
+    for (const auto& vertex : topology.getVertices()) {
+        const int formVertex = vertex->getId();
+        if (!inner[formVertex]) continue;
+        std::vector<int> forceFace;
+        for (const auto& halfedge : vertex->getHalfedges()) {
+            if (!halfedge || !halfedge->getFace()) continue;
+            const int formFace = halfedge->getFace()->getId();
+            auto found = formFaceToForceVertex.find(formFace);
+            if (found == formFaceToForceVertex.end()) {
+                const int forceVertex = static_cast<int>(result.mesh.vertices.size());
+                formFaceToForceVertex.emplace(formFace, forceVertex);
+                result.mesh.vertices.emplace_back(faceCentroid(formDiagram, formDiagram.faces[formFace]),
+                                                  Vec3(0.0f, 0.0f, 1.0f),
+                                                  Color(0.86f, 0.18f, 0.05f, 1.0f));
+                result.forceVertexFormFaces.push_back(formFace);
+                forceFace.push_back(forceVertex);
+            } else {
+                forceFace.push_back(found->second);
+            }
+        }
+        if (forceFace.size() >= 3) result.mesh.faces.emplace_back(forceFace);
+    }
+
+    // ForceDiagram.ordered_edges(form) in COMPAS keys each force edge by the
+    // two form faces on either side of one *oriented* active form edge. Keep
+    // precisely that ordering here. It is essential for a weighted target to
+    // have the same direction in both diagrams.
+    struct TopologyEdge {
+        std::shared_ptr<HeMeshHalfedge> first;
+        std::shared_ptr<HeMeshHalfedge> second;
+        int id{-1};
+    };
+    std::map<std::pair<int, int>, TopologyEdge> topologyEdges;
     for (const auto& edge : topology.getEdges()) {
-        const std::vector<std::shared_ptr<HeMeshFace>> faces = edge->getFaces();
-        if (faces.size() != 2) continue;
-        const int firstFace = faces[0]->getId();
-        const int secondFace = faces[1]->getId();
-        if (firstFace < 0 || secondFace < 0 ||
-            firstFace >= static_cast<int>(result.mesh.vertices.size()) ||
-            secondFace >= static_cast<int>(result.mesh.vertices.size())) continue;
+        const auto [first, second] = edge->getHalfedges();
+        if (!first || !second) continue;
+        const auto firstVertex = first->getStartVertex();
+        const auto secondVertex = first->getVertex();
+        if (!firstVertex || !secondVertex) continue;
+        topologyEdges.emplace(undirectedEdgeKey(firstVertex->getId(), secondVertex->getId()),
+                              TopologyEdge{first, second, edge->getId()});
+    }
 
-        result.mesh.edges.emplace_back(firstFace, secondFace, Color(0.86f, 0.18f, 0.05f, 1.0f));
-        result.forceEdgeFormEdges.push_back(edge->getId());
-
-        const auto [formA, formB] = edge->getVertices();
-        if (!formA || !formB) {
-            result.edgeAnglesDegrees.push_back(0.0f);
+    int missingReciprocalEdges = 0;
+    for (const TnaEdge& formEdge : form.activeFormEdges) {
+        const auto foundTopology = topologyEdges.find(undirectedEdgeKey(formEdge.vertexA, formEdge.vertexB));
+        if (foundTopology == topologyEdges.end()) {
+            ++missingReciprocalEdges;
             continue;
         }
+
+        std::shared_ptr<HeMeshHalfedge> formHalfedge = foundTopology->second.first;
+        std::shared_ptr<HeMeshHalfedge> oppositeHalfedge = foundTopology->second.second;
+        const auto halfedgeStart = formHalfedge->getStartVertex();
+        const auto halfedgeEnd = formHalfedge->getVertex();
+        if (!halfedgeStart || !halfedgeEnd ||
+            (halfedgeStart->getId() != formEdge.vertexA || halfedgeEnd->getId() != formEdge.vertexB)) {
+            std::swap(formHalfedge, oppositeHalfedge);
+        }
+        if (!formHalfedge || !oppositeHalfedge || !formHalfedge->getFace() || !oppositeHalfedge->getFace()) {
+            ++missingReciprocalEdges;
+            continue;
+        }
+
+        const auto formA = formHalfedge->getStartVertex();
+        const auto formB = formHalfedge->getVertex();
+        if (!formA || !formB || formA->getId() != formEdge.vertexA || formB->getId() != formEdge.vertexB) {
+            ++missingReciprocalEdges;
+            continue;
+        }
+        const int firstFace = formHalfedge->getFace()->getId();
+        const int secondFace = oppositeHalfedge->getFace()->getId();
+        const auto first = formFaceToForceVertex.find(firstFace);
+        const auto second = formFaceToForceVertex.find(secondFace);
+        if (first == formFaceToForceVertex.end() || second == formFaceToForceVertex.end()) {
+            ++missingReciprocalEdges;
+            continue;
+        }
+        result.mesh.edges.emplace_back(first->second, second->second, Color(0.86f, 0.18f, 0.05f, 1.0f));
+        result.forceEdgeFormEdges.push_back(foundTopology->second.id);
+        result.reciprocalFormEdges.push_back(formEdge);
         const Vec3 formVector = formB->getPosition() - formA->getPosition();
-        const Vec3 forceVector = result.mesh.vertices[secondFace].position -
-                                 result.mesh.vertices[firstFace].position;
+        const Vec3 forceVector = result.mesh.vertices[second->second].position -
+                                 result.mesh.vertices[first->second].position;
         result.edgeAnglesDegrees.push_back(reciprocalAngleDegrees(formVector, forceVector));
+    }
+
+    const bool forceInitialised = missingReciprocalEdges == 0 &&
+                                  initialiseForceFromUnitDensities(result.mesh, formDiagram,
+                                                                   result.reciprocalFormEdges);
+    if (forceInitialised) {
+        result.edgeAnglesDegrees.clear();
+        result.edgeAnglesDegrees.reserve(result.mesh.edges.size());
+        for (int edgeIndex = 0; edgeIndex < static_cast<int>(result.mesh.edges.size()); ++edgeIndex) {
+            const MeshEdge& forceEdge = result.mesh.edges[edgeIndex];
+            const TnaEdge& formEdge = result.reciprocalFormEdges[edgeIndex];
+            const Vec3 formVector = formDiagram.vertices[formEdge.vertexB].position -
+                                    formDiagram.vertices[formEdge.vertexA].position;
+            const Vec3 forceVector = result.mesh.vertices[forceEdge.vertexB].position -
+                                     result.mesh.vertices[forceEdge.vertexA].position;
+            result.edgeAnglesDegrees.push_back(reciprocalAngleDegrees(formVector, forceVector));
+        }
     }
 
     result.mesh.triangulationDirty = true;
     std::ostringstream status;
-    status << "Force diagram: " << result.mesh.vertices.size() << " dual vertices, "
-           << result.mesh.edges.size() << " dual edges";
+    status << "TNA force diagram: " << result.mesh.vertices.size() << " dual vertices, "
+           << result.mesh.edges.size() << " dual edges, " << result.mesh.faces.size() << " dual faces, "
+           << result.fixedForceVertices.size() << " fixed force vertices";
+    if (missingReciprocalEdges > 0) {
+        status << " (" << missingReciprocalEdges << " active form edges have no dual edge)";
+    }
+    if (!forceInitialised) {
+        status << " (could not initialise reciprocal unit-density force geometry)";
+    }
     result.diagnostic = status.str();
-    result.success = !result.mesh.vertices.empty();
+    result.success = !result.mesh.vertices.empty() &&
+                     result.mesh.edges.size() == form.activeFormEdges.size() &&
+                     missingReciprocalEdges == 0 && forceInitialised;
     return result;
+}
+
+namespace {
+
+void paralleliseEdges(std::vector<Vec3>& coordinates,
+                      const std::vector<TnaEdge>& edges,
+                      const std::vector<Vec3>& targets,
+                      const std::vector<bool>& fixed,
+                      const std::vector<float>& minimumLengths,
+                      const std::vector<float>& maximumLengths) {
+    std::vector<std::vector<int>> incidentEdges(coordinates.size());
+    for (int edge = 0; edge < static_cast<int>(edges.size()); ++edge) {
+        if (edges[edge].vertexA >= 0 && edges[edge].vertexB >= 0 &&
+            edges[edge].vertexA < static_cast<int>(coordinates.size()) &&
+            edges[edge].vertexB < static_cast<int>(coordinates.size())) {
+            incidentEdges[edges[edge].vertexA].push_back(edge);
+            incidentEdges[edges[edge].vertexB].push_back(edge);
+        }
+    }
+
+    // Match COMPAS parallelise_edges: one Jacobi step reads a frozen snapshot
+    // of positions and edge lengths, and writes every movable vertex from
+    // that same snapshot. In-place Gauss-Seidel updates give a different
+    // result, particularly for intermediate form/force weights.
+    const std::vector<Vec3> previous = coordinates;
+    std::vector<float> lengths(edges.size(), 0.0f);
+    for (int edge = 0; edge < static_cast<int>(edges.size()); ++edge) {
+        const TnaEdge& endpoints = edges[edge];
+        if (endpoints.vertexA < 0 || endpoints.vertexB < 0 ||
+            endpoints.vertexA >= static_cast<int>(previous.size()) ||
+            endpoints.vertexB >= static_cast<int>(previous.size())) continue;
+        lengths[edge] = (previous[endpoints.vertexB] - previous[endpoints.vertexA]).length();
+        if (edge < static_cast<int>(minimumLengths.size())) {
+            lengths[edge] = std::max(lengths[edge], minimumLengths[edge]);
+        }
+        if (edge < static_cast<int>(maximumLengths.size())) {
+            lengths[edge] = std::min(lengths[edge], maximumLengths[edge]);
+        }
+    }
+
+    for (int vertex = 0; vertex < static_cast<int>(coordinates.size()); ++vertex) {
+        if (fixed[vertex]) continue;
+        Vec3 targetPosition(0.0f, 0.0f, 0.0f);
+        int count = 0;
+        for (const int edgeIndex : incidentEdges[vertex]) {
+            const TnaEdge& edge = edges[edgeIndex];
+            const int other = edge.vertexA == vertex ? edge.vertexB : edge.vertexA;
+            const Vec3& target = targets[edgeIndex];
+            const float length = lengths[edgeIndex];
+            targetPosition += edge.vertexA == vertex
+                                  ? previous[other] - target * length
+                                  : previous[other] + target * length;
+            ++count;
+        }
+        if (count > 0) coordinates[vertex] = targetPosition / static_cast<float>(count);
+        coordinates[vertex].z = 0.0f;
+    }
+
+    // COMPAS collapses exactly-zero-length edges to their midpoint after the
+    // Jacobi update. Keep this rare but important degeneracy behaviour.
+    for (int edge = 0; edge < static_cast<int>(edges.size()); ++edge) {
+        if (lengths[edge] != 0.0f) continue;
+        const TnaEdge& endpoints = edges[edge];
+        if (endpoints.vertexA < 0 || endpoints.vertexB < 0 ||
+            endpoints.vertexA >= static_cast<int>(coordinates.size()) ||
+            endpoints.vertexB >= static_cast<int>(coordinates.size())) continue;
+        const Vec3 midpoint = (coordinates[endpoints.vertexA] + coordinates[endpoints.vertexB]) * 0.5f;
+        coordinates[endpoints.vertexA] = midpoint;
+        coordinates[endpoints.vertexB] = midpoint;
+    }
+}
+
+std::vector<Vec3> rotateForceCounterClockwise(const MeshData& forceDiagram) {
+    std::vector<Vec3> rotated;
+    rotated.reserve(forceDiagram.vertices.size());
+    for (const MeshVertex& vertex : forceDiagram.vertices) {
+        rotated.emplace_back(-vertex.position.y, vertex.position.x, 0.0f);
+    }
+    return rotated;
+}
+
+void rotateForceClockwise(MeshData& forceDiagram, const std::vector<Vec3>& rotated) {
+    for (int vertex = 0; vertex < static_cast<int>(forceDiagram.vertices.size()) &&
+                          vertex < static_cast<int>(rotated.size()); ++vertex) {
+        forceDiagram.vertices[vertex].position = Vec3(rotated[vertex].y, -rotated[vertex].x, 0.0f);
+    }
+}
+
+std::vector<Vec3> makeHorizontalTargets(const TnaHorizontalEquilibrium& state,
+                                        float alpha) {
+    std::vector<Vec3> targets(state.forceDiagram.edges.size(), Vec3(0.0f, 0.0f, 0.0f));
+    const std::vector<Vec3> rotatedForce = rotateForceCounterClockwise(state.forceDiagram);
+    for (int edgeIndex = 0; edgeIndex < static_cast<int>(state.forceDiagram.edges.size()); ++edgeIndex) {
+        const MeshEdge& forceEdge = state.forceDiagram.edges[edgeIndex];
+        const TnaEdge formEdge = state.reciprocalFormEdges[edgeIndex];
+        if (!validVertex(state.forceDiagram, forceEdge.vertexA) ||
+            !validVertex(state.forceDiagram, forceEdge.vertexB) ||
+            !validVertex(state.formDiagram, formEdge.vertexA) ||
+            !validVertex(state.formDiagram, formEdge.vertexB)) continue;
+
+        Vec3 formDirection = state.formDiagram.vertices[formEdge.vertexB].position -
+                             state.formDiagram.vertices[formEdge.vertexA].position;
+        Vec3 forceDirection = rotatedForce[forceEdge.vertexB] - rotatedForce[forceEdge.vertexA];
+        if (formDirection.lengthSquared() <= 1e-12f || forceDirection.lengthSquared() <= 1e-12f) continue;
+
+        if (edgeIndex < static_cast<int>(state.edgeConstraints.size()) &&
+            state.edgeConstraints[edgeIndex].isTension) {
+            formDirection = -formDirection;
+        }
+
+        // The force edge was explicitly ordered from the form edge's left
+        // face to its right face, just as ForceDiagram.ordered_edges(form).
+        // Do not normalise the blended result: COMPAS uses its magnitude in
+        // the projection update as well as its direction.
+        targets[edgeIndex] = formDirection.normalized() * alpha +
+                             forceDirection.normalized() * (1.0f - alpha);
+    }
+    return targets;
+}
+
+} // namespace
+
+bool TnaSolver::resetHorizontalEquilibrium(const MeshData& formDiagram,
+                                           const TnaForceDiagram& forceDiagram,
+                                           const std::vector<int>& fixedFormVertices) {
+    m_horizontal = {};
+    m_vertical = {};
+    TnaHorizontalEquilibrium& result = m_horizontal;
+    if (!forceDiagram.success || formDiagram.vertices.empty() || forceDiagram.mesh.vertices.empty() ||
+        forceDiagram.mesh.edges.empty()) {
+        result.diagnostic = "Horizontal equilibrium needs a valid form diagram and force dual";
+        return false;
+    }
+    if (forceDiagram.mesh.edges.size() != forceDiagram.reciprocalFormEdges.size()) {
+        result.diagnostic = "Force dual is missing reciprocal form-edge mappings";
+        return false;
+    }
+
+    result.formDiagram = formDiagram;
+    result.forceDiagram = forceDiagram.mesh;
+    result.reciprocalFormEdges = forceDiagram.reciprocalFormEdges;
+    result.fixedForceVertices = forceDiagram.fixedForceVertices;
+    for (const int vertex : fixedFormVertices) {
+        if (validVertex(result.formDiagram, vertex) &&
+            std::find(result.fixedFormVertices.begin(), result.fixedFormVertices.end(), vertex) ==
+                result.fixedFormVertices.end()) {
+            result.fixedFormVertices.push_back(vertex);
+        }
+    }
+    updateHorizontalAngles(result);
+    std::ostringstream status;
+    status << "TNA horizontal equilibrium reset: " << result.forceDiagram.edges.size()
+           << " reciprocal pairs, initial max deviation " << result.maximumAngleDeviation << " deg";
+    result.diagnostic = status.str();
+    result.success = true;
+    return true;
+}
+
+bool TnaSolver::solveVerticalEquilibrium(const TnaVerticalSettings& settings) {
+    m_vertical = {};
+    TnaVerticalEquilibrium& result = m_vertical;
+    const TnaHorizontalEquilibrium& horizontal = m_horizontal;
+    if (!horizontal.success || !horizontal.converged) {
+        result.diagnostic = "Complete horizontal equilibrium before solving vertical equilibrium";
+        return false;
+    }
+    if (horizontal.formDiagram.vertices.empty() || horizontal.reciprocalFormEdges.empty() ||
+        horizontal.forceDensities.size() != horizontal.reciprocalFormEdges.size()) {
+        result.diagnostic = "Vertical equilibrium needs solved reciprocal form/force densities";
+        return false;
+    }
+
+    result.formDiagram = horizontal.formDiagram;
+    const int vertexCount = static_cast<int>(result.formDiagram.vertices.size());
+    std::vector<bool> fixed(vertexCount, false);
+    for (const int vertex : horizontal.fixedFormVertices) {
+        if (validVertex(result.formDiagram, vertex)) fixed[vertex] = true;
+    }
+    const int fixedCount = static_cast<int>(std::count(fixed.begin(), fixed.end(), true));
+    if (fixedCount == 0) {
+        result.diagnostic = "Vertical equilibrium needs at least one fixed support vertex";
+        return false;
+    }
+    if (!settings.supportHeights.empty() && settings.supportHeights.size() != result.formDiagram.vertices.size()) {
+        result.diagnostic = "Support heights must contain one Z value per form vertex";
+        return false;
+    }
+    if (!settings.nodalLoads.empty() && settings.nodalLoads.size() != result.formDiagram.vertices.size()) {
+        result.diagnostic = "Nodal loads must contain one value per form vertex";
+        return false;
+    }
+    if (!settings.thicknesses.empty() && settings.thicknesses.size() != result.formDiagram.vertices.size()) {
+        result.diagnostic = "Thicknesses must contain one value per form vertex";
+        return false;
+    }
+
+    for (int vertex = 0; vertex < vertexCount; ++vertex) {
+        if (fixed[vertex] && !settings.supportHeights.empty()) {
+            result.formDiagram.vertices[vertex].position.z = settings.supportHeights[vertex];
+        }
+    }
+
+    std::vector<int> freeVertices;
+    std::vector<int> freeIndex(vertexCount, -1);
+    for (int vertex = 0; vertex < vertexCount; ++vertex) {
+        if (!fixed[vertex]) {
+            freeIndex[vertex] = static_cast<int>(freeVertices.size());
+            freeVertices.push_back(vertex);
+        }
+    }
+    if (freeVertices.empty()) {
+        result.success = true;
+        result.converged = true;
+        result.diagnostic = "Vertical equilibrium has no free vertices";
+        return true;
+    }
+
+    const float verticalScale = settings.forceScale;
+    result.forceDensities.resize(horizontal.forceDensities.size());
+    for (int edge = 0; edge < static_cast<int>(horizontal.forceDensities.size()); ++edge) {
+        result.forceDensities[edge] = horizontal.forceDensities[edge] * verticalScale;
+        if (result.forceDensities[edge] <= 1e-8f) {
+            result.diagnostic = "Vertical equilibrium requires strictly positive compression force densities";
+            return false;
+        }
+    }
+
+    std::vector<Eigen::Triplet<double>> coefficients;
+    coefficients.reserve(horizontal.reciprocalFormEdges.size() * 4);
+    Eigen::VectorXd fixedContribution = Eigen::VectorXd::Zero(static_cast<int>(freeVertices.size()));
+    for (int edgeIndex = 0; edgeIndex < static_cast<int>(horizontal.reciprocalFormEdges.size()); ++edgeIndex) {
+        const TnaEdge& edge = horizontal.reciprocalFormEdges[edgeIndex];
+        if (!validVertex(result.formDiagram, edge.vertexA) || !validVertex(result.formDiagram, edge.vertexB)) {
+            result.diagnostic = "Vertical equilibrium contains an invalid reciprocal form edge";
+            return false;
+        }
+        const double q = result.forceDensities[edgeIndex];
+        const int first = edge.vertexA;
+        const int second = edge.vertexB;
+        if (!fixed[first]) {
+            const int row = freeIndex[first];
+            coefficients.emplace_back(row, row, q);
+            if (!fixed[second]) coefficients.emplace_back(row, freeIndex[second], -q);
+            else fixedContribution[row] += q * result.formDiagram.vertices[second].position.z;
+        }
+        if (!fixed[second]) {
+            const int row = freeIndex[second];
+            coefficients.emplace_back(row, row, q);
+            if (!fixed[first]) coefficients.emplace_back(row, freeIndex[first], -q);
+            else fixedContribution[row] += q * result.formDiagram.vertices[first].position.z;
+        }
+    }
+
+    Eigen::SparseMatrix<double> system(static_cast<int>(freeVertices.size()),
+                                        static_cast<int>(freeVertices.size()));
+    system.setFromTriplets(coefficients.begin(), coefficients.end());
+    Eigen::SimplicialLLT<Eigen::SparseMatrix<double>> solver;
+    solver.compute(system);
+    if (solver.info() != Eigen::Success) {
+        result.diagnostic = "Vertical equilibrium matrix is singular; check support placement and connected form edges";
+        return false;
+    }
+
+    const std::unordered_set<int> unloadedFaces(settings.unloadedFaces.begin(), settings.unloadedFaces.end());
+    std::vector<float> baseLoads(vertexCount, settings.nodalLoad);
+    if (!settings.nodalLoads.empty()) baseLoads = settings.nodalLoads;
+    std::vector<float> thickness(vertexCount, settings.thickness);
+    if (!settings.thicknesses.empty()) thickness = settings.thicknesses;
+
+    const int maximumIterations = std::max(1, settings.maximumIterations);
+    std::vector<float> loads(vertexCount, 0.0f);
+    std::vector<float> residual(vertexCount, 0.0f);
+    for (int iteration = 0; iteration < maximumIterations; ++iteration) {
+        const std::vector<float> areas = tributaryAreas(result.formDiagram, unloadedFaces);
+        for (int vertex = 0; vertex < vertexCount; ++vertex) {
+            loads[vertex] = baseLoads[vertex] + areas[vertex] * thickness[vertex] * settings.density;
+        }
+
+        Eigen::VectorXd rightHandSide = fixedContribution;
+        for (int row = 0; row < static_cast<int>(freeVertices.size()); ++row) {
+            rightHandSide[row] += loads[freeVertices[row]];
+        }
+        const Eigen::VectorXd freeHeights = solver.solve(rightHandSide);
+        if (solver.info() != Eigen::Success) {
+            result.diagnostic = "Vertical equilibrium sparse solve failed";
+            return false;
+        }
+        for (int row = 0; row < static_cast<int>(freeVertices.size()); ++row) {
+            result.formDiagram.vertices[freeVertices[row]].position.z = static_cast<float>(freeHeights[row]);
+        }
+
+        // COMPAS updates self-weight after the new geometry and measures the
+        // free-node residual against those updated loads.
+        const std::vector<float> updatedAreas = tributaryAreas(result.formDiagram, unloadedFaces);
+        for (int vertex = 0; vertex < vertexCount; ++vertex) {
+            loads[vertex] = baseLoads[vertex] + updatedAreas[vertex] * thickness[vertex] * settings.density;
+            residual[vertex] = -loads[vertex];
+        }
+        for (int edgeIndex = 0; edgeIndex < static_cast<int>(horizontal.reciprocalFormEdges.size()); ++edgeIndex) {
+            const TnaEdge& edge = horizontal.reciprocalFormEdges[edgeIndex];
+            const float q = result.forceDensities[edgeIndex];
+            const float contribution = q * (result.formDiagram.vertices[edge.vertexA].position.z -
+                                            result.formDiagram.vertices[edge.vertexB].position.z);
+            residual[edge.vertexA] += contribution;
+            residual[edge.vertexB] -= contribution;
+        }
+        double residualSquared = 0.0;
+        for (const int vertex : freeVertices) residualSquared += residual[vertex] * residual[vertex];
+        result.residual = static_cast<float>(std::sqrt(residualSquared));
+        result.iteration = iteration + 1;
+        if (result.residual <= settings.residualTolerance) {
+            result.converged = true;
+            break;
+        }
+    }
+
+    result.verticalLoads = std::move(loads);
+    result.verticalReactions = std::move(residual);
+    result.formDiagram.calculateNormals();
+    result.formDiagram.triangulationDirty = true;
+    result.success = true;
+    std::ostringstream status;
+    status << "TNA vertical equilibrium " << (result.converged ? "converged" : "stopped")
+           << ": iteration " << result.iteration << ", free residual " << result.residual;
+    result.diagnostic = status.str();
+    return true;
+}
+
+void TnaSolver::stepHorizontalEquilibrium(const TnaHorizontalSettings& settings) {
+    TnaHorizontalEquilibrium& state = m_horizontal;
+    if (!state.success || state.converged) return;
+
+    const float alpha = std::clamp(settings.formWeight, 0.0f, 1.0f);
+    // horizontal_nodal creates targets once, before either diagram moves.
+    // A slider change therefore starts a different problem and needs reset.
+    if (state.targetFormWeight < 0.0f) {
+        if (!settings.edgeConstraints.empty() &&
+            settings.edgeConstraints.size() != state.forceDiagram.edges.size()) {
+            state.converged = true;
+            state.diagnostic = "Horizontal edge constraints must have one item per reciprocal form/force pair";
+            return;
+        }
+        state.edgeConstraints = settings.edgeConstraints;
+        if (state.edgeConstraints.empty()) {
+            state.edgeConstraints.resize(state.forceDiagram.edges.size());
+        }
+        state.forceScale = std::max(settings.forceScale, 1e-6f);
+        state.horizontalTargets = makeHorizontalTargets(state, alpha);
+        state.targetFormWeight = alpha;
+    } else if (std::abs(state.targetFormWeight - alpha) > 1e-6f) {
+        state.converged = true;
+        state.diagnostic = "Form weight changed during horizontal solve; press h to restart with the new weight";
+        return;
+    }
+    const std::vector<Vec3>& targets = state.horizontalTargets;
+
+    std::vector<float> formMinimumLengths;
+    std::vector<float> formMaximumLengths;
+    std::vector<float> forceMinimumLengths;
+    std::vector<float> forceMaximumLengths;
+    formMinimumLengths.reserve(state.edgeConstraints.size());
+    formMaximumLengths.reserve(state.edgeConstraints.size());
+    forceMinimumLengths.reserve(state.edgeConstraints.size());
+    forceMaximumLengths.reserve(state.edgeConstraints.size());
+    for (const TnaHorizontalSettings::EdgeConstraint& constraint : state.edgeConstraints) {
+        // The sequence is intentional: it is exactly horizontal_nodal's
+        // lmin/lmax and hmin/hmax combination before parallelise_edges.
+        formMinimumLengths.push_back(constraint.formLengthMinimum);
+        formMaximumLengths.push_back(constraint.formLengthMaximum);
+        forceMinimumLengths.push_back(
+            std::max(constraint.horizontalForceMinimum / state.forceScale,
+                     constraint.forceLengthMinimum));
+        forceMaximumLengths.push_back(
+            std::min(constraint.horizontalForceMaximum / state.forceScale,
+                     constraint.forceLengthMaximum));
+    }
+
+    std::vector<bool> fixedForm(state.formDiagram.vertices.size(), false);
+    for (const int vertex : state.fixedFormVertices) {
+        if (validVertex(state.formDiagram, vertex)) fixedForm[vertex] = true;
+    }
+    std::vector<bool> fixedForce(state.forceDiagram.vertices.size(), false);
+    for (const int vertex : state.fixedForceVertices) {
+        if (validVertex(state.forceDiagram, vertex)) fixedForce[vertex] = true;
+    }
+    const int maximumIterations = std::max(1, settings.maximumIterations);
+    bool performedIteration = false;
+    if (!state.solvingForceDiagram && alpha < 1.0f && state.formIterations < maximumIterations) {
+        std::vector<Vec3> formCoordinates;
+        formCoordinates.reserve(state.formDiagram.vertices.size());
+        for (const MeshVertex& vertex : state.formDiagram.vertices) formCoordinates.push_back(vertex.position);
+        paralleliseEdges(formCoordinates, state.reciprocalFormEdges, targets, fixedForm,
+                         formMinimumLengths, formMaximumLengths);
+        for (int vertex = 0; vertex < static_cast<int>(state.formDiagram.vertices.size()); ++vertex) {
+            state.formDiagram.vertices[vertex].position = formCoordinates[vertex];
+        }
+        ++state.formIterations;
+        performedIteration = true;
+    }
+    if (!state.solvingForceDiagram && (alpha >= 1.0f || state.formIterations >= maximumIterations)) {
+        state.solvingForceDiagram = true;
+    }
+    if (!performedIteration && state.solvingForceDiagram && alpha > 0.0f &&
+        state.forceIterations < maximumIterations) {
+        std::vector<Vec3> rotatedForce = rotateForceCounterClockwise(state.forceDiagram);
+        std::vector<TnaEdge> forceEdges;
+        forceEdges.reserve(state.forceDiagram.edges.size());
+        for (const MeshEdge& edge : state.forceDiagram.edges) forceEdges.push_back({edge.vertexA, edge.vertexB});
+        paralleliseEdges(rotatedForce, forceEdges, targets, fixedForce,
+                         forceMinimumLengths, forceMaximumLengths);
+        rotateForceClockwise(state.forceDiagram, rotatedForce);
+        ++state.forceIterations;
+        performedIteration = true;
+    }
+
+    if (performedIteration) ++state.iteration;
+    updateHorizontalAngles(state);
+    state.formDiagram.calculateNormals();
+    state.formDiagram.triangulationDirty = true;
+    state.forceDensities.clear();
+    state.forceDensities.reserve(state.forceDiagram.edges.size());
+    for (int edgeIndex = 0; edgeIndex < static_cast<int>(state.forceDiagram.edges.size()); ++edgeIndex) {
+        const MeshEdge& forceEdge = state.forceDiagram.edges[edgeIndex];
+        const TnaEdge formEdge = state.reciprocalFormEdges[edgeIndex];
+        const float forceLength = (state.forceDiagram.vertices[forceEdge.vertexB].position -
+                                   state.forceDiagram.vertices[forceEdge.vertexA].position).length();
+        const float formLength = (state.formDiagram.vertices[formEdge.vertexB].position -
+                                  state.formDiagram.vertices[formEdge.vertexA].position).length();
+        const float sign = edgeIndex < static_cast<int>(state.edgeConstraints.size()) &&
+                                   state.edgeConstraints[edgeIndex].isTension
+                               ? -1.0f
+                               : 1.0f;
+        state.forceDensities.push_back(formLength > 1e-6f
+                                           ? sign * state.forceScale * forceLength / formLength
+                                           : 0.0f);
+    }
+    const bool formComplete = alpha >= 1.0f || state.formIterations >= maximumIterations;
+    const bool forceComplete = alpha <= 0.0f || state.forceIterations >= maximumIterations;
+    if (formComplete && forceComplete) {
+        state.converged = true;
+    }
+
+    std::ostringstream status;
+    status << "TNA horizontal equilibrium " << (state.converged ? "complete" : "running")
+           << ": form " << state.formIterations << "/" << (alpha < 1.0f ? maximumIterations : 0)
+           << ", force " << state.forceIterations << "/" << (alpha > 0.0f ? maximumIterations : 0)
+           << ", max angle deviation "
+           << state.maximumAngleDeviation << " deg"
+           << (state.maximumAngleDeviation <= std::max(0.0f, settings.angleToleranceDegrees)
+                   ? " (within tolerance)"
+                   : " (outside tolerance)");
+    state.diagnostic = status.str();
 }
 
 } // namespace alice2
