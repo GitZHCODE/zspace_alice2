@@ -43,8 +43,10 @@
 #include "../src/analysis/StressAnalyzer.h"
 
 // Remesher
-#include "../src/remeshing/Dev2PqRemesher.h"
 #include "../src/remeshing/MiqFieldRemesher.h"
+
+// Geometry
+#include "../src/geometry/DevelopableRibbon.h"
 
 // Convenience namespace
 namespace alice2 {

@@ -876,6 +876,7 @@ namespace alice2 {
         , m_renderMode(MeshRenderMode::Lit)
         , m_frontColor(1.0f, 1.0f, 1.0f)  // Default: white
         , m_backColor(0.0f, 0.0f, 0.0f)   // Default: black
+        , m_useFaceColors(false)
         , m_showVertices(false)
         , m_showEdges(false)
         , m_showFaces(true)
@@ -902,6 +903,7 @@ namespace alice2 {
         // Normal shading colors
         copy.m_frontColor = m_frontColor;
         copy.m_backColor = m_backColor;
+        copy.m_useFaceColors = m_useFaceColors;
 
         // Overlay controls
         copy.m_showVertices = m_showVertices;
@@ -1273,11 +1275,25 @@ namespace alice2 {
             std::vector<Vec3> triangleNormals;
             std::vector<Color> triangleColors;
 
-            for (int index : m_meshData->triangleIndices) {
-                if (index >= 0 && index < static_cast<int>(m_meshData->vertices.size())) {
-                    triangleVertices.push_back(m_meshData->vertices[index].position);
-                    triangleNormals.push_back(m_meshData->vertices[index].normal);
-                    triangleColors.push_back(m_meshData->vertices[index].color);
+            if (m_useFaceColors) {
+                for (const MeshFace& face : m_meshData->faces) {
+                    if (face.vertices.size() < 3) continue;
+                    for (size_t i = 1; i + 1 < face.vertices.size(); ++i) {
+                        for (int index : {face.vertices[0], face.vertices[i], face.vertices[i + 1]}) {
+                            if (index < 0 || index >= static_cast<int>(m_meshData->vertices.size())) continue;
+                            triangleVertices.push_back(m_meshData->vertices[index].position);
+                            triangleNormals.push_back(m_meshData->vertices[index].normal);
+                            triangleColors.push_back(face.color);
+                        }
+                    }
+                }
+            } else {
+                for (int index : m_meshData->triangleIndices) {
+                    if (index >= 0 && index < static_cast<int>(m_meshData->vertices.size())) {
+                        triangleVertices.push_back(m_meshData->vertices[index].position);
+                        triangleNormals.push_back(m_meshData->vertices[index].normal);
+                        triangleColors.push_back(m_meshData->vertices[index].color);
+                    }
                 }
             }
 

@@ -165,6 +165,11 @@ namespace alice2 {
         const Color& getFrontColor() const { return m_frontColor; }
         const Color& getBackColor() const { return m_backColor; }
 
+        // Render each polygon with MeshFace::color instead of the shared
+        // vertex colours. Disabled by default to preserve analysis displays.
+        void setUseFaceColors(bool use) { m_useFaceColors = use; }
+        bool getUseFaceColors() const { return m_useFaceColors; }
+
         // Overlay controls
         void setShowVertices(bool show) { m_showVertices = show; }
         bool getShowVertices() const { return m_showVertices; }
@@ -231,6 +236,7 @@ namespace alice2 {
         // Normal shading colors
         Color m_frontColor;
         Color m_backColor;
+        bool m_useFaceColors;
 
         // Overlay controls
         bool m_showVertices;
