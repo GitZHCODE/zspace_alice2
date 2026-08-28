@@ -3,20 +3,18 @@
 #if ALICE2_WITH_DIRECTIONAL
 
 #include <Eigen/Core>
-#include <Eigen/Sparse>
-#include <Eigen/SparseCholesky>
-
-#include <igl/grad.h>
-#include <igl/isolines.h>
 #include <igl/principal_curvature.h>
 
 #include <directional/TriMesh.h>
 #include <directional/PCFaceTangentBundle.h>
 #include <directional/curl_matrices.h>
+#include <directional/integrate.h>
+#include <directional/isolines.h>
 #include <directional/power_field.h>
 #include <directional/power_to_raw.h>
 #include <directional/principal_matching.h>
 #include <directional/project_curl.h>
+#include <directional/setup_integration.h>
 
 #include <algorithm>
 #include <array>
@@ -89,101 +87,26 @@ Vec3 faceNormal(const TriangleInput& input, int face) {
     return Vec3(static_cast<float>(normal.x()), static_cast<float>(normal.y()), static_cast<float>(normal.z()));
 }
 
-Eigen::SparseMatrix<double> faceMass(const TriangleInput& input) {
-    const int faces = input.faces.rows();
-    Eigen::SparseMatrix<double> mass(3 * faces, 3 * faces);
-    for (int face = 0; face < faces; ++face) {
-        const Eigen::Vector3d a = input.vertices.row(input.faces(face, 0));
-        const Eigen::Vector3d b = input.vertices.row(input.faces(face, 1));
-        const Eigen::Vector3d c = input.vertices.row(input.faces(face, 2));
-        const double area = 0.5 * (b - a).cross(c - a).norm();
-        mass.insert(face, face) = area;
-        mass.insert(faces + face, faces + face) = area;
-        mass.insert(2 * faces + face, 2 * faces + face) = area;
-    }
-    mass.makeCompressed();
-    return mass;
-}
-
-bool integrateField(const TriangleInput& input, const std::vector<Vec3>& field, Eigen::VectorXd& scalar) {
-    const int faceCount = input.faces.rows();
-    Eigen::SparseMatrix<double> gradient;
-    igl::grad(input.vertices, input.faces, gradient);
-    Eigen::VectorXd target(3 * faceCount);
-    for (int face = 0; face < faceCount; ++face) {
-        target(face) = field[face].x;
-        target(faceCount + face) = field[face].y;
-        target(2 * faceCount + face) = field[face].z;
-    }
-    const Eigen::SparseMatrix<double> mass = faceMass(input);
-    Eigen::SparseMatrix<double> system = gradient.transpose() * mass * gradient;
-    system.coeffRef(0, 0) += 1.0;
-    system.makeCompressed();
-    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver;
-    solver.compute(system);
-    if (solver.info() != Eigen::Success) return false;
-    scalar = solver.solve(gradient.transpose() * mass * target);
-    return solver.info() == Eigen::Success && scalar.allFinite();
-}
-
-std::vector<Vec3> gradients(const TriangleInput& input, const Eigen::VectorXd& scalar) {
-    Eigen::SparseMatrix<double> gradient;
-    igl::grad(input.vertices, input.faces, gradient);
-    const Eigen::VectorXd values = gradient * scalar;
-    const int faceCount = input.faces.rows();
-    std::vector<Vec3> result(faceCount);
-    for (int face = 0; face < faceCount; ++face)
-        result[face] = Vec3(static_cast<float>(values(face)),
-                            static_cast<float>(values(faceCount + face)),
-                            static_cast<float>(values(2 * faceCount + face)));
-    return result;
-}
-
-void extractIsolines(const TriangleInput& input, const Eigen::VectorXd& scalar, float spacing,
-                     std::vector<std::vector<Vec3>>& result) {
+void extractDirectionalIsolines(const directional::TriMesh& cutMesh, const Eigen::MatrixXd& functions,
+                                std::vector<std::vector<Vec3>>& result) {
     result.clear();
-    const int first = static_cast<int>(std::ceil(scalar.minCoeff() / spacing));
-    const int last = static_cast<int>(std::floor(scalar.maxCoeff() / spacing));
-    if (last < first || last - first > 512) return;
-    Eigen::VectorXd levels(last - first + 1);
-    for (int i = 0; i < levels.size(); ++i) levels(i) = (first + i) * spacing;
+    if (functions.rows() != cutMesh.V.rows() || functions.cols() == 0) return;
+
+    // A p=2 field is sign-symmetric, so one branch represents the same set of
+    // unoriented strip lines as its negative.  The cut mesh carries the seam
+    // copies needed to keep that branch single-valued during extraction.
     Eigen::MatrixXd vertices;
     Eigen::MatrixXi edges;
-    Eigen::VectorXi edgeLevels;
-    igl::isolines(input.vertices, input.faces, scalar, levels, vertices, edges, edgeLevels);
-    std::vector<std::vector<int>> incident(vertices.rows());
+    Eigen::MatrixXi originalEdges;
+    Eigen::MatrixXd normals;
+    directional::isolines(cutMesh.V, cutMesh.F, functions.col(0), 100, vertices, edges, originalEdges, normals);
+    result.reserve(edges.rows());
     for (int edge = 0; edge < edges.rows(); ++edge) {
-        incident[edges(edge, 0)].push_back(edge);
-        incident[edges(edge, 1)].push_back(edge);
-    }
-    std::vector<char> used(edges.rows(), 0);
-    for (int seed = 0; seed < edges.rows(); ++seed) {
-        if (used[seed]) continue;
-        const int level = edgeLevels(seed);
-        std::vector<int> path{edges(seed, 0), edges(seed, 1)};
-        used[seed] = 1;
-        const auto extend = [&](bool prepend) {
-            int endpoint = prepend ? path.front() : path.back();
-            while (true) {
-                int next = -1;
-                for (const int edge : incident[endpoint])
-                    if (!used[edge] && edgeLevels(edge) == level) { next = edge; break; }
-                if (next < 0) break;
-                used[next] = 1;
-                const int vertex = edges(next, 0) == endpoint ? edges(next, 1) : edges(next, 0);
-                if (prepend) path.insert(path.begin(), vertex); else path.push_back(vertex);
-                endpoint = vertex;
-            }
-        };
-        extend(false);
-        extend(true);
-        std::vector<Vec3> line;
-        line.reserve(path.size());
-        for (const int vertex : path) {
-            const Eigen::Vector3d point = vertices.row(vertex);
-            line.emplace_back(static_cast<float>(point.x()), static_cast<float>(point.y()), static_cast<float>(point.z()));
-        }
-        result.push_back(std::move(line));
+        const Eigen::Vector3d a = vertices.row(edges(edge, 0));
+        const Eigen::Vector3d b = vertices.row(edges(edge, 1));
+        if ((a - b).squaredNorm() <= 1e-20) continue;
+        result.push_back({Vec3(static_cast<float>(a.x()), static_cast<float>(a.y()), static_cast<float>(a.z())),
+                          Vec3(static_cast<float>(b.x()), static_cast<float>(b.y()), static_cast<float>(b.z()))});
     }
 }
 
@@ -270,36 +193,43 @@ Dev2PqResult Dev2PqRemesher::remesh(const MeshData& mesh, const Dev2PqOptions& o
     directional::CartesianField curlFreeGamma = rawGamma;
     if (options.useDirectionalCurlProjection) {
         directional::project_curl(rawGamma, Eigen::VectorXi(), Eigen::MatrixXd(), curlFreeGamma);
-        directional::principal_matching(curlFreeGamma);
     }
-    result.maxCurlAfter = maximumAbsolute(curl * curlFreeGamma.flatten(true));
+    const Eigen::SparseMatrix<double> projectedCurl =
+        directional::curl_matrix_2D<double>(directionalMesh, true, 2, 1, curlFreeGamma.matching);
+    result.maxCurlAfter = maximumAbsolute(projectedCurl * curlFreeGamma.flatten(true));
 
-    std::vector<Vec3> gradientField(faceCount);
-    for (int face = 0; face < faceCount; ++face) {
-        const Eigen::RowVector3d gamma = curlFreeGamma.extField.block(face, 0, 1, 3);
-        gradientField[face] = Vec3(static_cast<float>(gamma.x()), static_cast<float>(gamma.y()), static_cast<float>(gamma.z()));
-    }
-    Eigen::VectorXd scalar;
-    if (!integrateField(input, gradientField, scalar)) {
-        result.diagnostic = "failed to integrate Directional's curl-projected field";
-        return result;
-    }
-    result.scalarU.assign(scalar.data(), scalar.data() + scalar.size());
-    const std::vector<Vec3> finalGradients = gradients(input, scalar);
     result.optimizedRulings.resize(faceCount);
     for (int face = 0; face < faceCount; ++face) {
-        Vec3 ruling = normals[face].cross(finalGradients[face]);
+        const Eigen::RowVector3d gamma = curlFreeGamma.extField.block(face, 0, 1, 3);
+        Vec3 ruling = normals[face].cross(
+            Vec3(static_cast<float>(gamma.x()), static_cast<float>(gamma.y()), static_cast<float>(gamma.z())));
         if (ruling.lengthSquared() <= kEpsilon) ruling = result.rawRulings[face];
         else ruling.normalize();
         if (ruling.dot(result.rawRulings[face]) < 0.0f) ruling = -ruling;
         result.optimizedRulings[face] = ruling;
     }
-    const Eigen::RowVector3d lower = input.vertices.colwise().minCoeff();
-    const Eigen::RowVector3d upper = input.vertices.colwise().maxCoeff();
-    const float spacing = options.stripSpacing * std::max(static_cast<float>((upper - lower).norm()), 1e-5f);
-    extractIsolines(input, scalar, spacing, result.isolines);
+
+    // Directional's integration preserves the p=2 matching and cuts only the
+    // necessary seam graph.  A normal Poisson solve on the original vertices
+    // cannot represent this branched function and produces false connections.
+    directional::IntegrationData integration(2);
+    integration.lengthRatio = options.stripSpacing;
+    integration.integralSeamless = true;
+    integration.roundSeams = false;
+    directional::TriMesh cutMesh;
+    directional::CartesianField combedGamma;
+    directional::setup_integration(curlFreeGamma, integration, cutMesh, combedGamma);
+    Eigen::MatrixXd functions;
+    Eigen::MatrixXd cornerFunctions;
+    if (!directional::integrate(combedGamma, integration, cutMesh, functions, cornerFunctions) ||
+        functions.rows() == 0 || !functions.allFinite()) {
+        result.diagnostic = "Directional seamless integration failed";
+        return result;
+    }
+    result.scalarU.assign(functions.col(0).data(), functions.col(0).data() + functions.rows());
+    extractDirectionalIsolines(cutMesh, functions, result.isolines);
     result.success = true;
-    result.diagnostic = "Directional power-2 field + principal matching + curl projection";
+    result.diagnostic = "Directional p=2 field + matching-aware curl projection + seamless integration";
     return result;
 }
 
