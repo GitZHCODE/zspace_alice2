@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
@@ -35,14 +36,19 @@ public:
     }
 
     void draw(Renderer& renderer, Camera&) override {
+        renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
         renderer.drawString(m_status, 10.0f, 30.0f);
         renderer.drawString("r reload | p solve planar faces | s toggle stack | o toggle original wire | [ / ] strip faces", 10.0f, 50.0f);
-        if (m_showOriginal && !m_showStack && m_original) drawEdges(renderer, *m_original->getMeshData(), Color(0.62f, 0.62f, 0.62f, 1.0f), 1.0f);
-        if (m_valid && !m_showStack) {
+        if (m_showOriginal && m_original) drawEdges(renderer, *m_original->getMeshData(), Color(0.62f, 0.62f, 0.62f, 1.0f), 1.0f);
+        if (m_valid) {
             drawRulings(renderer);
             drawStripIndices(renderer);
         }
-        if (m_showStack) drawStackAnnotations(renderer);
+        if (m_showStack) {
+            drawStackAnnotations(renderer);
+            drawStackBounds(renderer);
+            drawStackAnalysis(renderer);
+        }
     }
 
     bool onKeyPress(unsigned char key, int, int) override {
@@ -100,7 +106,7 @@ private:
             m_mesh->setUseFaceColors(true);
             m_mesh->setShowEdges(true);
             m_mesh->setShowFaces(true);
-            m_mesh->setVisible(!m_showStack);
+            m_mesh->setVisible(true);
             scene().addObject(m_mesh);
             refreshSignatures();
             m_status = diagnostic + "  " + matchSummary() + "  " + stackSummary();
@@ -265,6 +271,7 @@ private:
             if (layer.mesh) scene().removeObject(layer.mesh);
         }
         m_stackLayers.clear();
+        m_stackBoundsValid = false;
     }
 
     void rebuildStackVisualisation() {
@@ -273,18 +280,56 @@ private:
 
         std::vector<StackStripGeometry> geometries;
         geometries.reserve(m_stackResult.order.size());
-        float thickestStrip = 0.0f;
         for (int stripIndex : m_stackResult.order) {
             geometries.push_back(buildStackStripGeometry(m_signatures[stripIndex]));
-            thickestStrip = std::max(thickestStrip, geometries.back().maxZ - geometries.back().minZ);
         }
-        const float spacing = std::max(0.08f, thickestStrip + 0.035f);
-        const float baseZ = -0.5f * spacing * static_cast<float>(geometries.size() - 1);
+
+        // Place every layer at exact bounding-box contact with the preceding
+        // layer. This deliberately adds no arbitrary inter-layer clearance.
+        std::vector<float> layerZ(geometries.size(), 0.0f);
+        float stackMinZ = geometries.front().minZ;
+        float stackMaxZ = geometries.front().maxZ;
+        for (size_t layer = 1; layer < geometries.size(); ++layer) {
+            layerZ[layer] = stackMaxZ - geometries[layer].minZ;
+            stackMaxZ = layerZ[layer] + geometries[layer].maxZ;
+        }
+        const float centreZ = 0.5f * (stackMinZ + stackMaxZ);
+        for (float& z : layerZ) z -= centreZ;
+
+        float stackMinX = std::numeric_limits<float>::infinity();
+        float stackMaxX = -std::numeric_limits<float>::infinity();
+        float stackMinY = std::numeric_limits<float>::infinity();
+        float stackMaxY = -std::numeric_limits<float>::infinity();
+        for (const StackStripGeometry& geometry : geometries) {
+            for (const Vec3& position : geometry.positions) {
+                stackMinX = std::min(stackMinX, position.x);
+                stackMaxX = std::max(stackMaxX, position.x);
+                stackMinY = std::min(stackMinY, position.y);
+                stackMaxY = std::max(stackMaxY, position.y);
+            }
+        }
+        const std::shared_ptr<MeshData> originalData = m_mesh ? m_mesh->getMeshData() : nullptr;
+        Vec3 originalMin, originalMax;
+        if (originalData && !originalData->vertices.empty()) originalData->updateBounds(originalMin, originalMax);
+        const float displaySeparation = std::max(0.05f, 0.1f * std::max(originalMax.x - originalMin.x, stackMaxX - stackMinX));
+        const Vec3 stackOffset(originalMax.x - stackMinX + displaySeparation,
+                               0.5f * (originalMin.y + originalMax.y - stackMinY - stackMaxY),
+                               0.0f);
+        m_stackBoundsMin = Vec3(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity());
+        m_stackBoundsMax = Vec3(-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity());
         for (int layer = 0; layer < static_cast<int>(geometries.size()); ++layer) {
             StackStripGeometry& geometry = geometries[layer];
             const int stripIndex = m_stackResult.order[layer];
-            const Vec3 offset(0.0f, 0.0f, baseZ + layer * spacing);
-            for (Vec3& position : geometry.positions) position += offset;
+            const Vec3 offset = stackOffset + Vec3(0.0f, 0.0f, layerZ[layer]);
+            for (Vec3& position : geometry.positions) {
+                position += offset;
+                m_stackBoundsMin.x = std::min(m_stackBoundsMin.x, position.x);
+                m_stackBoundsMin.y = std::min(m_stackBoundsMin.y, position.y);
+                m_stackBoundsMin.z = std::min(m_stackBoundsMin.z, position.z);
+                m_stackBoundsMax.x = std::max(m_stackBoundsMax.x, position.x);
+                m_stackBoundsMax.y = std::max(m_stackBoundsMax.y, position.y);
+                m_stackBoundsMax.z = std::max(m_stackBoundsMax.z, position.z);
+            }
             for (auto& ruling : geometry.rulings) {
                 ruling.first += offset;
                 ruling.second += offset;
@@ -301,12 +346,13 @@ private:
             scene().addObject(mesh);
             m_stackLayers.push_back({stripIndex, geometry.labelPosition, std::move(geometry.rulings), mesh});
         }
+        m_stackBoundsValid = !m_stackLayers.empty();
     }
 
     void toggleStackVisualisation() {
         if (!m_valid) return;
         m_showStack = !m_showStack;
-        if (m_mesh) m_mesh->setVisible(!m_showStack);
+        if (m_mesh) m_mesh->setVisible(true);
         if (m_showStack) rebuildStackVisualisation();
         else clearStackVisualisation();
         m_status = (m_showStack ? "Stack visualisation. " : "Ribbon visualisation. ") + matchSummary() + "  " + stackSummary();
@@ -359,6 +405,42 @@ private:
         }
     }
 
+    void drawStackBounds(Renderer& renderer) const {
+        if (!m_stackBoundsValid) return;
+        const Vec3& lo = m_stackBoundsMin;
+        const Vec3& hi = m_stackBoundsMax;
+        const std::array<Vec3, 8> corners = {
+            Vec3(lo.x, lo.y, lo.z), Vec3(hi.x, lo.y, lo.z), Vec3(hi.x, hi.y, lo.z), Vec3(lo.x, hi.y, lo.z),
+            Vec3(lo.x, lo.y, hi.z), Vec3(hi.x, lo.y, hi.z), Vec3(hi.x, hi.y, hi.z), Vec3(lo.x, hi.y, hi.z)};
+        constexpr std::array<std::array<int, 2>, 12> edges = {{{0, 1}, {1, 2}, {2, 3}, {3, 0},
+                                                                  {4, 5}, {5, 6}, {6, 7}, {7, 4},
+                                                                  {0, 4}, {1, 5}, {2, 6}, {3, 7}}};
+        for (const auto& edge : edges) renderer.drawLine(corners[edge[0]], corners[edge[1]], Color(0.0f, 0.0f, 0.0f, 1.0f), 1.2f);
+    }
+
+    void drawStackAnalysis(Renderer& renderer) const {
+        renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
+        renderer.drawString("Stack compatibility: total = " + formatCost(m_stackResult.totalCost) +
+                            "; each layer touches the preceding layer's Z bounding extent.", 10.0f, 70.0f);
+        for (int layer = 1; layer < static_cast<int>(m_stackLayers.size()); ++layer) {
+            const int below = m_stackLayers[layer - 1].stripIndex;
+            const int above = m_stackLayers[layer].stripIndex;
+            const RibbonPairCompatibility& cost = m_stackResult.pairCosts[below][above];
+            std::ostringstream line;
+            line << "L" << layer - 1 << " S" << below << " -> L" << layer << " S" << above
+                 << " : total " << formatCost(cost.totalCost)
+                 << " (local " << formatCost(cost.localCost) << ", accumulated " << formatCost(cost.accumulatedCost)
+                 << (cost.reversed ? ", reverse candidate" : ", forward candidate") << ")";
+            renderer.drawString(line.str(), 10.0f, 90.0f + 17.0f * static_cast<float>(layer - 1));
+        }
+    }
+
+    static std::string formatCost(double value) {
+        std::ostringstream text;
+        text << std::fixed << std::setprecision(4) << value;
+        return text.str();
+    }
+
     static void drawEdges(Renderer& renderer, const MeshData& mesh, const Color& color, float width) {
         std::vector<Vec3> segments;
         for (const MeshEdge& edge : mesh.edges) {
@@ -383,6 +465,9 @@ private:
     bool m_showOriginal{true};
     bool m_showStack{false};
     bool m_valid{false};
+    Vec3 m_stackBoundsMin;
+    Vec3 m_stackBoundsMax;
+    bool m_stackBoundsValid{false};
 };
 
 ALICE2_REGISTER_SKETCH_AUTO(DevelopableRibbonSketch)
