@@ -4,6 +4,7 @@ project(alice2 VERSION 1.0.0 LANGUAGES C CXX)
 
 option(ALICE2_ENABLE_CUDA "Enable CUDA build of alice2" OFF)
 option(ALICE2_ENABLE_MIQ_REMESH "Enable the GPL-licensed libigl/CoMiSo MIQ remeshing experiment" ON)
+option(ALICE2_ENABLE_DIRECTIONAL "Enable the Directional face-field processing integration" ON)
 option(ALICE2_USE_SYSTEM_DEPS "Prefer system-installed CMake packages for third-party dependencies" ON)
 set(ALICE2_BUILD_MODE "default" CACHE STRING "Select alice2 build mode (default or test)")
 set_property(CACHE ALICE2_BUILD_MODE PROPERTY STRINGS default test)
@@ -130,7 +131,7 @@ if(ALICE2_HAS_SYSTEM_LIBIGL)
     set(ALICE2_LIBIGL_TARGETS igl::core)
 else()
     set(LIBIGL_DIR "${ALICE2_DEPENDS_DIR}/libigl")
-    if(NOT EXISTS "${LIBIGL_DIR}/include/igl/igl_inline.h")
+if(NOT EXISTS "${LIBIGL_DIR}/include/igl/igl_inline.h")
         alice2_download_dependency("${LIBIGL_URL}")
         if(EXISTS "${ALICE2_DEPENDS_DIR}/libigl-2.5.0")
             file(RENAME "${ALICE2_DEPENDS_DIR}/libigl-2.5.0" "${LIBIGL_DIR}")
@@ -141,6 +142,26 @@ else()
     endif()
     set(LIBIGL_INCLUDE_DIRS "${LIBIGL_DIR}/include")
     set(ALICE2_LIBIGL_TARGETS "")
+endif()
+
+set(ALICE2_DIRECTIONAL_INCLUDE_DIRS "")
+if(ALICE2_ENABLE_DIRECTIONAL)
+    set(DIRECTIONAL_DIR "${ALICE2_DEPENDS_DIR}/directional")
+    if(NOT EXISTS "${DIRECTIONAL_DIR}/include/directional/PCFaceTangentBundle.h")
+        include(FetchContent)
+        FetchContent_Declare(
+            directional
+            GIT_REPOSITORY https://github.com/avaxman/Directional.git
+            GIT_TAG 25738730958f0bfa68289ae628a5cd3c4b719d61
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_Populate(directional)
+        set(DIRECTIONAL_DIR "${directional_SOURCE_DIR}")
+    endif()
+    if(NOT EXISTS "${DIRECTIONAL_DIR}/include/directional/PCFaceTangentBundle.h")
+        message(FATAL_ERROR "Directional headers not found at ${DIRECTIONAL_DIR}/include")
+    endif()
+    set(ALICE2_DIRECTIONAL_INCLUDE_DIRS "${DIRECTIONAL_DIR}/include")
 endif()
 
 # MIQ is provided by libigl's GPL/copyleft CoMiSo module. Keep it explicit so
@@ -347,6 +368,7 @@ target_include_directories(alice2 SYSTEM PRIVATE
     ${EIGEN_DIR}
     ${NLOHMANN_JSON_INCLUDE_DIRS}
     ${LIBIGL_INCLUDE_DIRS}
+    ${ALICE2_DIRECTIONAL_INCLUDE_DIRS}
     ${GL2PS_INCLUDE_DIRS}
     ${STB_INCLUDE_DIRS}
 )
@@ -361,6 +383,12 @@ if(ALICE2_ENABLE_MIQ_REMESH)
     target_compile_definitions(alice2 PRIVATE ALICE2_WITH_MIQ=1)
 else()
     target_compile_definitions(alice2 PRIVATE ALICE2_WITH_MIQ=0)
+endif()
+
+if(ALICE2_ENABLE_DIRECTIONAL)
+    target_compile_definitions(alice2 PRIVATE ALICE2_WITH_DIRECTIONAL=1)
+else()
+    target_compile_definitions(alice2 PRIVATE ALICE2_WITH_DIRECTIONAL=0)
 endif()
 
 target_link_libraries(alice2
