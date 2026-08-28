@@ -1881,7 +1881,10 @@ namespace alice2 {
             out << "v "
                 << v.position.x << ' '
                 << v.position.y << ' '
-                << v.position.z << '\n';
+                << v.position.z << ' '
+                << v.color.r << ' '
+                << v.color.g << ' '
+                << v.color.b << '\n';
         }
 
         // normals

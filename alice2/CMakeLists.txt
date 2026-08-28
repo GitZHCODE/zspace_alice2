@@ -252,14 +252,6 @@ endif()
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${OPENGL_INCLUDE_DIRS}
-    ${GLEW_INCLUDE_DIRS}
-    ${GLFW_INCLUDE_DIRS}
-    ${EIGEN_DIR}
-    ${NLOHMANN_JSON_INCLUDE_DIRS}
-    ${LIBIGL_INCLUDE_DIRS}
-    ${GL2PS_INCLUDE_DIRS}
-    ${STB_INCLUDE_DIRS}
 )
 if(ALICE2_USING_TEST_MODE)
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -344,6 +336,20 @@ group_sources_by_folder("Source Files" "${ALICE2_SOURCES}")
 group_sources_by_folder("Header Files" "${ALICE2_HEADERS}")
 
 add_executable(alice2 ${ALICE2_SOURCES} ${ALICE2_HEADERS})
+
+# Keep diagnostics from our sources enabled, but treat dependency headers as
+# system headers. libigl is header-only, so its template implementation is
+# otherwise diagnosed every time an alice2 translation unit includes it.
+target_include_directories(alice2 SYSTEM PRIVATE
+    ${OPENGL_INCLUDE_DIRS}
+    ${GLEW_INCLUDE_DIRS}
+    ${GLFW_INCLUDE_DIRS}
+    ${EIGEN_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIRS}
+    ${LIBIGL_INCLUDE_DIRS}
+    ${GL2PS_INCLUDE_DIRS}
+    ${STB_INCLUDE_DIRS}
+)
 
 if(ALICE2_ENABLE_CUDA)
     target_compile_definitions(alice2 PRIVATE ALICE2_WITH_CUDA=1)

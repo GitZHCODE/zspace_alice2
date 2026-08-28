@@ -498,13 +498,11 @@ namespace alice2 {
                                 s_instance->m_scene->getBoundsMax()
                             );
                             break;
-                        case 'n':
-                        case 'N':
+                        case '0':
                             // Switch to next sketch
                             s_instance->m_sketchManager->switchToNextSketch();
                             break;
-                        case 'p':
-                        case 'P':
+                        case '9':
                             // Switch to previous sketch
                             s_instance->m_sketchManager->switchToPreviousSketch();
                             break;
