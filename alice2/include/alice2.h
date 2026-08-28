@@ -47,6 +47,7 @@
 
 // Geometry
 #include "../src/geometry/DevelopableRibbon.h"
+#include "../src/geometry/RibbonStacking.h"
 
 // Convenience namespace
 namespace alice2 {

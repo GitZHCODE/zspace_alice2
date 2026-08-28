@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 using namespace alice2;
@@ -29,20 +30,26 @@ public:
 
     void update(float) override {}
 
+    void cleanup() override {
+        clearStackVisualisation();
+    }
+
     void draw(Renderer& renderer, Camera&) override {
         renderer.drawString(m_status, 10.0f, 30.0f);
-        renderer.drawString("r reload | p solve planar faces | o toggle original wire | [ / ] strip faces", 10.0f, 50.0f);
-        if (m_showOriginal && m_original) drawEdges(renderer, *m_original->getMeshData(), Color(0.62f, 0.62f, 0.62f, 1.0f), 1.0f);
-        if (m_valid) {
+        renderer.drawString("r reload | p solve planar faces | s toggle stack | o toggle original wire | [ / ] strip faces", 10.0f, 50.0f);
+        if (m_showOriginal && !m_showStack && m_original) drawEdges(renderer, *m_original->getMeshData(), Color(0.62f, 0.62f, 0.62f, 1.0f), 1.0f);
+        if (m_valid && !m_showStack) {
             drawRulings(renderer);
             drawStripIndices(renderer);
         }
+        if (m_showStack) drawStackAnnotations(renderer);
     }
 
     bool onKeyPress(unsigned char key, int, int) override {
         switch (key) {
             case 'r': case 'R': reload(); return true;
             case 'p': case 'P': planarise(); return true;
+            case 's': case 'S': toggleStackVisualisation(); return true;
             case 'o': case 'O': m_showOriginal = !m_showOriginal; return true;
             case '[': m_facesPerStrip = std::max(2, m_facesPerStrip - 1); refreshSignatures(); return true;
             case ']': ++m_facesPerStrip; refreshSignatures(); return true;
@@ -60,6 +67,7 @@ private:
     }
 
     void reload() {
+        clearStackVisualisation();
         if (m_mesh) scene().removeObject(m_mesh);
         m_mesh = std::make_shared<MeshObject>("developable_ribbon");
         try {
@@ -92,9 +100,10 @@ private:
             m_mesh->setUseFaceColors(true);
             m_mesh->setShowEdges(true);
             m_mesh->setShowFaces(true);
+            m_mesh->setVisible(!m_showStack);
             scene().addObject(m_mesh);
             refreshSignatures();
-            m_status = diagnostic + "  " + matchSummary();
+            m_status = diagnostic + "  " + matchSummary() + "  " + stackSummary();
         } catch (const std::exception& error) {
             m_valid = false;
             m_status = std::string("Could not load ribbon.obj: ") + error.what();
@@ -109,7 +118,7 @@ private:
         std::ostringstream report;
         report << "ProjectionSolver planar-face solve: " << iterations << " iterations; max residual " << std::scientific
                << std::setprecision(2) << maxRibbonPlanarityError(m_ribbon) << ". "
-               << matchSummary();
+               << matchSummary() << "  " << stackSummary();
         m_status = report.str();
     }
 
@@ -133,7 +142,9 @@ private:
         m_facesPerStrip = std::min(std::max(2, m_facesPerStrip), faceCount);
         m_signatures = buildRibbonSignatures(m_ribbon, m_facesPerStrip, m_facesPerStrip);
         m_matches = findSimilarRibbonStrips(m_signatures, 3);
+        m_stackResult = findBestRibbonStack(m_signatures);
         applyStripColours();
+        if (m_showStack) rebuildStackVisualisation();
     }
 
     static Color stripColour(int index, int count) {
@@ -171,6 +182,136 @@ private:
         return summary.str();
     }
 
+    std::string stackSummary() const {
+        if (m_stackResult.order.empty()) return "No stack order.";
+        std::ostringstream summary;
+        summary << "stack cost " << std::fixed << std::setprecision(3) << m_stackResult.totalCost;
+        return summary.str();
+    }
+
+    struct StackStripGeometry {
+        std::vector<Vec3> positions;
+        std::vector<std::vector<int>> faces;
+        std::vector<std::pair<Vec3, Vec3>> rulings;
+        Vec3 labelPosition;
+        float minZ = 0.0f;
+        float maxZ = 0.0f;
+    };
+
+    struct StackVisualLayer {
+        int stripIndex = -1;
+        Vec3 labelPosition;
+        std::vector<std::pair<Vec3, Vec3>> rulings;
+        std::shared_ptr<MeshObject> mesh;
+    };
+
+    StackStripGeometry buildStackStripGeometry(const RibbonSignature& signature) const {
+        StackStripGeometry result;
+        const int firstStation = signature.startFace;
+        const int lastStation = signature.startFace + signature.faceCount;
+        const Vec3 firstCentre = (m_ribbon.vertices[m_ribbon.railP[firstStation]] +
+                                  m_ribbon.vertices[m_ribbon.railQ[firstStation]]) * 0.5f;
+        const Vec3 lastCentre = (m_ribbon.vertices[m_ribbon.railP[lastStation]] +
+                                 m_ribbon.vertices[m_ribbon.railQ[lastStation]]) * 0.5f;
+        Vec3 longitudinal = (lastCentre - firstCentre).normalized();
+        Vec3 ruling;
+        Vec3 origin;
+        for (int station = firstStation; station <= lastStation; ++station) {
+            const Vec3& p = m_ribbon.vertices[m_ribbon.railP[station]];
+            const Vec3& q = m_ribbon.vertices[m_ribbon.railQ[station]];
+            ruling += q - p;
+            origin += (p + q) * 0.5f;
+        }
+        origin /= static_cast<float>(signature.faceCount + 1);
+        if (longitudinal.lengthSquared() <= 1e-8f) longitudinal = Vec3(1.0f, 0.0f, 0.0f);
+        ruling -= longitudinal * longitudinal.dot(ruling);
+        if (ruling.lengthSquared() <= 1e-8f) ruling = Vec3(0.0f, 1.0f, 0.0f);
+        ruling.normalize();
+        Vec3 normal = longitudinal.cross(ruling).normalized();
+        if (normal.lengthSquared() <= 1e-8f) normal = Vec3(0.0f, 0.0f, 1.0f);
+        ruling = normal.cross(longitudinal).normalized();
+
+        auto toLocal = [&](const Vec3& point) {
+            const Vec3 delta = point - origin;
+            return Vec3(delta.dot(longitudinal), delta.dot(ruling), delta.dot(normal));
+        };
+
+        std::unordered_map<int, int> vertexMap;
+        for (int faceIndex = signature.startFace; faceIndex < signature.startFace + signature.faceCount; ++faceIndex) {
+            std::vector<int> face;
+            for (int vertex : m_ribbon.faces[faceIndex]) {
+                auto [entry, inserted] = vertexMap.emplace(vertex, static_cast<int>(result.positions.size()));
+                if (inserted) result.positions.push_back(toLocal(m_ribbon.vertices[vertex]));
+                face.push_back(entry->second);
+            }
+            result.faces.push_back(std::move(face));
+        }
+        result.minZ = result.maxZ = result.positions.empty() ? 0.0f : result.positions.front().z;
+        for (const Vec3& position : result.positions) {
+            result.labelPosition += position;
+            result.minZ = std::min(result.minZ, position.z);
+            result.maxZ = std::max(result.maxZ, position.z);
+        }
+        if (!result.positions.empty()) result.labelPosition /= static_cast<float>(result.positions.size());
+        for (int station = firstStation; station <= lastStation; ++station) {
+            result.rulings.push_back({toLocal(m_ribbon.vertices[m_ribbon.railP[station]]),
+                                      toLocal(m_ribbon.vertices[m_ribbon.railQ[station]])});
+        }
+        return result;
+    }
+
+    void clearStackVisualisation() {
+        for (const StackVisualLayer& layer : m_stackLayers) {
+            if (layer.mesh) scene().removeObject(layer.mesh);
+        }
+        m_stackLayers.clear();
+    }
+
+    void rebuildStackVisualisation() {
+        clearStackVisualisation();
+        if (!m_showStack || m_stackResult.order.empty()) return;
+
+        std::vector<StackStripGeometry> geometries;
+        geometries.reserve(m_stackResult.order.size());
+        float thickestStrip = 0.0f;
+        for (int stripIndex : m_stackResult.order) {
+            geometries.push_back(buildStackStripGeometry(m_signatures[stripIndex]));
+            thickestStrip = std::max(thickestStrip, geometries.back().maxZ - geometries.back().minZ);
+        }
+        const float spacing = std::max(0.08f, thickestStrip + 0.035f);
+        const float baseZ = -0.5f * spacing * static_cast<float>(geometries.size() - 1);
+        for (int layer = 0; layer < static_cast<int>(geometries.size()); ++layer) {
+            StackStripGeometry& geometry = geometries[layer];
+            const int stripIndex = m_stackResult.order[layer];
+            const Vec3 offset(0.0f, 0.0f, baseZ + layer * spacing);
+            for (Vec3& position : geometry.positions) position += offset;
+            for (auto& ruling : geometry.rulings) {
+                ruling.first += offset;
+                ruling.second += offset;
+            }
+            geometry.labelPosition += offset;
+
+            auto mesh = std::make_shared<MeshObject>("ribbon_stack_layer_" + std::to_string(layer));
+            mesh->createFromVerticesAndFaces(geometry.positions, geometry.faces);
+            mesh->setUseFaceColors(true);
+            mesh->setShowEdges(true);
+            const Color colour = stripColour(stripIndex, static_cast<int>(m_signatures.size()));
+            for (MeshFace& face : mesh->getMeshData()->faces) face.color = colour;
+            for (MeshEdge& edge : mesh->getMeshData()->edges) edge.color = Color(0.20f, 0.16f, 0.24f, 1.0f);
+            scene().addObject(mesh);
+            m_stackLayers.push_back({stripIndex, geometry.labelPosition, std::move(geometry.rulings), mesh});
+        }
+    }
+
+    void toggleStackVisualisation() {
+        if (!m_valid) return;
+        m_showStack = !m_showStack;
+        if (m_mesh) m_mesh->setVisible(!m_showStack);
+        if (m_showStack) rebuildStackVisualisation();
+        else clearStackVisualisation();
+        m_status = (m_showStack ? "Stack visualisation. " : "Ribbon visualisation. ") + matchSummary() + "  " + stackSummary();
+    }
+
     void drawRulings(Renderer& renderer) const {
         for (size_t i = 0; i < m_ribbon.railP.size(); ++i) {
             const Vec3& p = m_ribbon.vertices[m_ribbon.railP[i]];
@@ -206,6 +347,18 @@ private:
         }
     }
 
+    void drawStackAnnotations(Renderer& renderer) const {
+        renderer.setColor(Color(0.08f, 0.08f, 0.12f, 1.0f));
+        for (int layer = 0; layer < static_cast<int>(m_stackLayers.size()); ++layer) {
+            const StackVisualLayer& item = m_stackLayers[layer];
+            renderer.drawText("L" + std::to_string(layer) + " / S" + std::to_string(item.stripIndex),
+                              item.labelPosition, 1.0f);
+            for (const auto& ruling : item.rulings) {
+                renderer.drawLine(ruling.first, ruling.second, Color(0.88f, 0.12f, 0.08f, 1.0f), 1.0f);
+            }
+        }
+    }
+
     static void drawEdges(Renderer& renderer, const MeshData& mesh, const Color& color, float width) {
         std::vector<Vec3> segments;
         for (const MeshEdge& edge : mesh.edges) {
@@ -223,9 +376,12 @@ private:
     QuadRibbon m_ribbon;
     std::vector<RibbonSignature> m_signatures;
     std::vector<RibbonMatch> m_matches;
+    RibbonStackResult m_stackResult;
+    std::vector<StackVisualLayer> m_stackLayers;
     std::string m_status{"Loading ribbon.obj..."};
     int m_facesPerStrip{12};
     bool m_showOriginal{true};
+    bool m_showStack{false};
     bool m_valid{false};
 };
 
