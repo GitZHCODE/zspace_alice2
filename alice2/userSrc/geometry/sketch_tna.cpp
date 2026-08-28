@@ -1,4 +1,4 @@
-#define __MAIN__
+// #define __MAIN__
 #ifdef __MAIN__
 
 #include <alice2.h>
@@ -12,6 +12,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace alice2;
@@ -58,7 +59,7 @@ public:
         drawSupports(renderer);
 
         renderer.setColor(Color(0.06f, 0.06f, 0.06f, 1.0f));
-        renderer.drawString("r reload OBJ | h horizontal | v vertical | i toggle original | a toggle angles", 10.0f, 30.0f);
+        renderer.drawString("r reload OBJ | h horizontal | v vertical | e export OBJ | i toggle original | a toggle angles", 10.0f, 30.0f);
         renderer.drawString(m_status, 10.0f, 52.0f);
         if (m_ui) m_ui->draw(renderer);
     }
@@ -68,6 +69,7 @@ public:
             case 'r': case 'R': reload(); return true;
             case 'h': case 'H': startHorizontalEquilibrium(); return true;
             case 'v': case 'V': startVerticalEquilibrium(); return true;
+            case 'e': case 'E': exportFormFoundMesh(); return true;
             case 'i': case 'I': m_showInput = !m_showInput; return true;
             case 'a': case 'A': m_showForceAngles = !m_showForceAngles; return true;
             default: return false;
@@ -240,6 +242,37 @@ private:
         const TnaVerticalEquilibrium& vertical = m_solver.verticalEquilibrium();
         m_formMesh = std::make_shared<MeshData>(vertical.formDiagram);
         m_status = vertical.diagnostic;
+    }
+
+    void exportFormFoundMesh() {
+        if (!m_formMesh || m_formMesh->faces.empty()) {
+            m_status = "No form-found mesh available to export";
+            return;
+        }
+
+        // The form diagram includes exterior n-gons solely to complete the
+        // topology needed for the reciprocal force diagram. They are not part
+        // of the physical form-found surface, so omit them from the OBJ.
+        std::vector<bool> exteriorFaces(m_formMesh->faces.size(), false);
+        for (const int face : m_result.exteriorFormFaces) {
+            if (face >= 0 && face < static_cast<int>(exteriorFaces.size())) {
+                exteriorFaces[face] = true;
+            }
+        }
+        MeshData exportMesh = *m_formMesh;
+        exportMesh.faces.clear();
+        exportMesh.faces.reserve(m_formMesh->faces.size());
+        for (int face = 0; face < static_cast<int>(m_formMesh->faces.size()); ++face) {
+            if (!exteriorFaces[face]) exportMesh.faces.push_back(m_formMesh->faces[face]);
+        }
+        exportMesh.edges.clear();
+        exportMesh.calculateNormals();
+        exportMesh.triangulationDirty = true;
+
+        MeshObject output("tna_formfound");
+        output.setMeshData(std::make_shared<MeshData>(std::move(exportMesh)));
+        output.writeToObj(dataPath("tna_formfound.obj").string());
+        m_status = "Exported clean form-found mesh to data/tna_formfound.obj";
     }
 
     static std::vector<int> blackVertexSupports(const MeshData& mesh) {

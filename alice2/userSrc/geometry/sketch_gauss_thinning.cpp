@@ -1,4 +1,4 @@
-// #define __MAIN__
+#define __MAIN__
 #ifdef __MAIN__
 
 #include <alice2.h>
@@ -30,7 +30,7 @@ using namespace alice2;
 class GaussThinningSketch : public ISketch {
 public:
     std::string getName() const override { return "Gauss Thinning Box Hollow"; }
-    std::string getDescription() const override { return "libigl Gauss-image thinning; box_hollow.obj input"; }
+    std::string getDescription() const override { return "libigl Gauss-image thinning; tna_tri.obj input"; }
     std::string getAuthor() const override { return "alice2 User"; }
 
     void setup() override {
@@ -42,7 +42,7 @@ public:
         loadBoxHollow();
         normalize(m_vertices);
         m_originalVertices = m_vertices;
-        m_mesh = std::make_shared<MeshObject>("gauss_thinning_box_hollow");
+        m_mesh = std::make_shared<MeshObject>("gauss_thinning_tna_formfound");
         scene().addObject(m_mesh);
         prepareSolver();
         updateMesh();
@@ -62,9 +62,15 @@ public:
         if (m_showOriginalWireframe) drawOriginalWireframe(renderer);
         drawMinConeEdges(renderer);
         drawFittingNormals(renderer);
+        if (m_showPrincipalCurvature) drawPrincipalDirections(renderer);
         renderer.drawString("Box hollow: " + std::to_string(m_iteration) + "/" + std::to_string(m_maxIterations) +
-                            " iterations | u step | p run/pause | r reset | e export OBJ | n normals | w wireframe | c curvature", 10, 30);
-        if (!m_exportStatus.empty()) renderer.drawString(m_exportStatus, 10, 50);
+                            " iterations | u step | p run/pause | r reset | e export OBJ | n normals | w wireframe | c principal curvature", 10, 30);
+        if (m_showPrincipalCurvature) {
+            renderer.drawString("principal curvature: k1 " + std::to_string(m_principalCurvature.minK1) + " to " +
+                                std::to_string(m_principalCurvature.maxK1) +
+                                " | red k1 / blue k2 directions", 10, 50);
+        }
+        if (!m_exportStatus.empty()) renderer.drawString(m_exportStatus, 10, m_showPrincipalCurvature ? 70 : 50);
     }
 
     bool onKeyPress(unsigned char key, int, int) override {
@@ -89,7 +95,7 @@ public:
             return true;
         }
         if (key == 'c') {
-            m_showCurvature = !m_showCurvature;
+            m_showPrincipalCurvature = !m_showPrincipalCurvature;
             updateMesh();
             return true;
         }
@@ -120,20 +126,20 @@ private:
     }
 
     void loadBoxHollow() {
-        const std::filesystem::path meshPath = dataPath("box_hollow.obj");
+        const std::filesystem::path meshPath = dataPath("tna_tri.obj");
         if (!igl::read_triangle_mesh(meshPath.string(), m_vertices, m_faces)) {
-            throw std::runtime_error("Failed to load Gauss-thinning box_hollow.obj: " + meshPath.string());
+            throw std::runtime_error("Failed to load Gauss-thinning tna_tri.obj: " + meshPath.string());
         }
     }
 
     void exportOptimizedMesh() {
-        const std::filesystem::path exportPath = dataPath("box_hollow_optimized.obj");
+        const std::filesystem::path exportPath = dataPath("tna_tri_optimised.obj");
         Eigen::MatrixXd exportVertices = m_vertices;
         exportVertices /= m_normalizationScale;
         exportVertices.rowwise() += m_normalizationCenter;
         m_exportStatus = igl::write_triangle_mesh(exportPath.string(), exportVertices, m_faces)
-            ? "Exported box_hollow_optimized.obj"
-            : "Failed to export box_hollow_optimized.obj";
+            ? "Exported tna_tri_optimised.obj"
+            : "Failed to export tna_tri_optimised.obj";
     }
     void normalize(Eigen::MatrixXd& vertices) {
         m_normalizationCenter = vertices.colwise().mean();
@@ -347,6 +353,24 @@ private:
                               normalColor, 1.0f);
         }
     }
+    void drawPrincipalDirections(Renderer& renderer) const {
+        const auto data = m_mesh ? m_mesh->getMeshData() : nullptr;
+        if (!data) return;
+        const size_t count = std::min(data->vertices.size(), m_principalCurvature.principalDirections.size());
+        const float maxMagnitude = std::max({std::abs(m_principalCurvature.minK1),
+                                             std::abs(m_principalCurvature.maxK1),
+                                             std::abs(m_principalCurvature.minK2),
+                                             std::abs(m_principalCurvature.maxK2), 1e-6f});
+        for (size_t vertex = 0; vertex < count; ++vertex) {
+            const float k1 = vertex < m_principalCurvature.k1.size() ? std::abs(m_principalCurvature.k1[vertex]) : 0.0f;
+            const float k2 = vertex < m_principalCurvature.k2.size() ? std::abs(m_principalCurvature.k2[vertex]) : 0.0f;
+            const Vec3& point = data->vertices[vertex].position;
+            const Vec3 d1 = m_principalCurvature.principalDirections[vertex] * (0.012f + 0.030f * k1 / maxMagnitude);
+            const Vec3 d2 = m_principalCurvature.otherDirections[vertex] * (0.012f + 0.030f * k2 / maxMagnitude);
+            renderer.drawLine(point - d1, point + d1, Color(0.92f, 0.05f, 0.12f, 1.0f), 1.3f);
+            renderer.drawLine(point - d2, point + d2, Color(0.04f, 0.28f, 0.95f, 1.0f), 1.0f);
+        }
+    }
     void drawOriginalWireframe(Renderer& renderer) const {
         if (m_originalVertices.rows() == 0) return;
         const Color referenceColor(0.55f, 0.55f, 0.55f, 1.0f);
@@ -376,7 +400,7 @@ private:
             faces.push_back({m_faces(face, 0), m_faces(face, 1), m_faces(face, 2)});
         }
         m_mesh->createFromVerticesAndFaces(positions, faces);
-        if (m_showCurvature) m_mesh->meanCurvature(true);
+        if (m_showPrincipalCurvature) m_principalCurvature = m_mesh->principalCurvature(3, false);
         m_mesh->setShowEdges(true);
     }
 
@@ -397,11 +421,12 @@ private:
     std::vector<int> m_boundaryVertices;
     std::string m_exportStatus;
     int m_iteration{0};
-    int m_maxIterations{1000};
+    int m_maxIterations{600};
     bool m_running{false};
     bool m_showFittingNormals{true};
     bool m_showOriginalWireframe{true};
-    bool m_showCurvature{false};
+    bool m_showPrincipalCurvature{false};
+    MeshObject::MeshPrincipalCurvatureResult m_principalCurvature;
     float m_elapsed{0.0f};
     double m_minConeAngle{13.0};
     // double m_minConeAngle{9.0};

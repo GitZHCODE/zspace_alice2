@@ -4,6 +4,7 @@
 #include <alice2.h>
 #include <sketches/SketchRegistry.h>
 #include <cmath>
+#include <filesystem>
 
 using namespace alice2;
 
@@ -22,7 +23,7 @@ public:
         m_mesh = std::make_shared<MeshObject>("circular_conical_mesh");
 
         if (!m_objPath.empty()) {
-            m_mesh->readFromObj(m_objPath);
+            m_mesh->readFromObj(dataPath(m_objPath).string());
             m_mesh->setShowFaces(false);
             m_originalMesh = std::make_shared<MeshObject>(m_mesh->duplicate());
         }
@@ -140,6 +141,10 @@ public:
     }
 
 private:
+    static std::filesystem::path dataPath(const std::string& file) {
+        return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "data" / file;
+    }
+
     enum class CurvatureView {
         Projection,
         Gaussian,
@@ -207,11 +212,11 @@ private:
     }
 
     void updateFixedVertexSettings() {
-        const bool fixZZero = m_fixBoundary && m_fixZZeroVertices;
-        const bool fixBoundary = m_fixBoundary && !m_fixZZeroVertices;
+        const bool fixBlackVertices = m_fixBoundary && m_fixBlackVertices;
+        const bool fixBoundary = m_fixBoundary && !m_fixBlackVertices;
 
         m_solver.settings.fixBoundaryVertices = fixBoundary;
-        m_solver.settings.fixedVertices = fixZZero ? fixedVertexIndices_zZero() : std::vector<int>{};
+        m_solver.settings.fixedVertices = fixBlackVertices ? fixedVertexIndices_black() : std::vector<int>{};
         m_analyzer.drawSettings.drawFixedVertices = m_fixBoundary;
 
         if (!hasMesh() || !m_fixBoundary) {
@@ -219,19 +224,21 @@ private:
             return;
         }
 
-        m_analyzer.fixedVertices = fixZZero
+        m_analyzer.fixedVertices = fixBlackVertices
             ? m_solver.fixedVertexIndices(*m_mesh, m_solver.settings.fixedVertices)
             : m_solver.fixedVertexIndices_allBoundary(*m_mesh);
     }
 
-    std::vector<int> fixedVertexIndices_zZero() const {
+    std::vector<int> fixedVertexIndices_black() const {
+        constexpr float blackThreshold = 0.02f;
         std::vector<int> indices;
         if (!hasMesh()) return indices;
 
         auto data = m_mesh->getMeshData();
         indices.reserve(data->vertices.size());
         for (size_t i = 0; i < data->vertices.size(); ++i) {
-            if (std::abs(data->vertices[i].position.z) <= m_zZeroTolerance) {
+            const Color& color = data->vertices[i].color;
+            if (color.r <= blackThreshold && color.g <= blackThreshold && color.b <= blackThreshold) {
                 indices.push_back(static_cast<int>(i));
             }
         }
@@ -412,7 +419,7 @@ private:
         renderer.drawMeshEdges(vertices.data(), edgeIndices.data(), edgeColors.data(), static_cast<int>(edgeColors.size()));
     }
 
-    std::string m_objPath = "skeleton.obj";
+    std::string m_objPath = "tna_formfound.obj";
     std::shared_ptr<MeshObject> m_mesh;
     std::shared_ptr<MeshObject> m_originalMesh;
     ProjectionSolver m_solver;
@@ -426,9 +433,9 @@ private:
     float m_stepsPerSecond{100.0f};
     float m_stepTimer{0.0f};
     bool m_fixBoundary{true};
-    // When fixing is enabled, true fixes vertices on z = 0 instead of all boundary vertices.
-    bool m_fixZZeroVertices{true};
-    float m_zZeroTolerance{7e-2f};
+    // When fixing is enabled, true fixes explicitly tagged black support vertices
+    // instead of every boundary vertex.
+    bool m_fixBlackVertices{true};
     bool m_drawOriginalWireframe{true};
     Color m_originalWireColor{0.75f, 0.75f, 0.75f, 1.0f};
     float m_originalWireWidth{1.0f};
