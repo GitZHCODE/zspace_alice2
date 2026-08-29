@@ -58,6 +58,12 @@ void improveRibbonStackOrderTwoOpt(std::vector<int>& order, const RibbonStacking
 RibbonStackResult findBestRibbonStack(const std::vector<RibbonSignature>& signatures,
                                       const RibbonStackingSettings& settings = {});
 
+// Directional solid-stack variant: C(lower, upper) compares the top side of
+// lower with the normal-offset bottom side of upper.
+RibbonStackResult findBestRibbonStack(const std::vector<RibbonSignature>& topSignatures,
+                                      const std::vector<RibbonSignature>& bottomSignatures,
+                                      const RibbonStackingSettings& settings = {});
+
 } // namespace alice2
 
 #endif // ALICE2_RIBBON_STACKING_H

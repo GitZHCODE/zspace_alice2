@@ -26,19 +26,36 @@ public:
         scene().setShowGrid(false);
         scene().setShowAxes(true);
         scene().setAxesLength(0.2f);
+        m_ui = std::make_unique<SimpleUI>(input());
+        m_ui->setTheme(SimpleUI::UITheme::Dark);
+        m_ui->addSlider("Faces per strip", Vec2{10.0f, 52.0f}, 210.0f, 2.0f,
+                        static_cast<float>(kMaxFacesPerStrip), m_facesPerStripSlider);
+        m_ui->addSlider("Thickness (vertex normals)", Vec2{10.0f, 80.0f}, 210.0f, 0.0f, 0.10f, m_stripThickness);
         reload();
     }
 
-    void update(float) override {}
+    void update(float) override {
+        const int requestedFaceCount = std::clamp(static_cast<int>(std::lround(m_facesPerStripSlider)), 2, kMaxFacesPerStrip);
+        bool signaturesChanged = false;
+        if (m_valid && requestedFaceCount != m_facesPerStrip) {
+            m_facesPerStrip = requestedFaceCount;
+            signaturesChanged = true;
+        }
+        if (m_valid && std::abs(m_stripThickness - m_lastStackThickness) > 1e-6f) signaturesChanged = true;
+        if (signaturesChanged) refreshSignatures();
+    }
 
     void cleanup() override {
+        clearRibbonBlockVisualisation();
         clearStackVisualisation();
     }
 
     void draw(Renderer& renderer, Camera&) override {
         renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
-        renderer.drawString(m_status, 10.0f, 30.0f);
-        renderer.drawString("r reload | p solve planar faces | s toggle stack | o toggle original wire | [ / ] strip faces", 10.0f, 50.0f);
+        renderer.drawString("r reload | p solve planar faces | s toggle stack | o toggle original wire | [ / ] strip faces", 10.0f, 30.0f);
+        if (m_ui) m_ui->draw(renderer);
+        renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
+        renderer.drawString(m_status, 10.0f, 120.0f);
         if (m_showOriginal && m_original) drawEdges(renderer, *m_original->getMeshData(), Color(0.62f, 0.62f, 0.62f, 1.0f), 1.0f);
         if (m_valid) {
             drawRulings(renderer);
@@ -57,13 +74,23 @@ public:
             case 'p': case 'P': planarise(); return true;
             case 's': case 'S': toggleStackVisualisation(); return true;
             case 'o': case 'O': m_showOriginal = !m_showOriginal; return true;
-            case '[': m_facesPerStrip = std::max(2, m_facesPerStrip - 1); refreshSignatures(); return true;
-            case ']': ++m_facesPerStrip; refreshSignatures(); return true;
+            case '[': m_facesPerStrip = std::max(2, m_facesPerStrip - 1); m_facesPerStripSlider = static_cast<float>(m_facesPerStrip); refreshSignatures(); return true;
+            case ']': m_facesPerStrip = std::min(kMaxFacesPerStrip, m_facesPerStrip + 1); m_facesPerStripSlider = static_cast<float>(m_facesPerStrip); refreshSignatures(); return true;
             default: return false;
         }
     }
 
+    bool onMousePress(int button, int state, int x, int y) override {
+        return m_ui && m_ui->onMousePress(button, state, x, y);
+    }
+
+    bool onMouseMove(int x, int y) override {
+        return m_ui && m_ui->onMouseMove(x, y);
+    }
+
 private:
+    static constexpr int kMaxFacesPerStrip = 36;
+
     static std::filesystem::path dataPath(const std::string& file) {
         const std::filesystem::path requested(file);
         if (requested.is_absolute() || std::filesystem::exists(requested)) return requested;
@@ -73,6 +100,7 @@ private:
     }
 
     void reload() {
+        clearRibbonBlockVisualisation();
         clearStackVisualisation();
         if (m_mesh) scene().removeObject(m_mesh);
         m_mesh = std::make_shared<MeshObject>("developable_ribbon");
@@ -106,7 +134,9 @@ private:
             m_mesh->setUseFaceColors(true);
             m_mesh->setShowEdges(true);
             m_mesh->setShowFaces(true);
-            m_mesh->setVisible(true);
+            // This mesh is the solver input. The visible ribbon is rebuilt as
+            // closed, individually coloured solid strip blocks below.
+            m_mesh->setVisible(false);
             scene().addObject(m_mesh);
             refreshSignatures();
             m_status = diagnostic + "  " + matchSummary() + "  " + stackSummary();
@@ -145,11 +175,16 @@ private:
     void refreshSignatures() {
         if (!m_valid) return;
         const int faceCount = static_cast<int>(m_ribbon.faces.size());
-        m_facesPerStrip = std::min(std::max(2, m_facesPerStrip), faceCount);
+        m_facesPerStrip = std::min(std::clamp(m_facesPerStrip, 2, kMaxFacesPerStrip), faceCount);
+        m_facesPerStripSlider = static_cast<float>(m_facesPerStrip);
         m_signatures = buildRibbonSignatures(m_ribbon, m_facesPerStrip, m_facesPerStrip);
+        m_bottomRibbon = offsetRibbonAlongVertexNormals(m_ribbon, -m_stripThickness);
+        m_bottomSignatures = buildRibbonSignatures(m_bottomRibbon, m_facesPerStrip, m_facesPerStrip);
         m_matches = findSimilarRibbonStrips(m_signatures, 3);
-        m_stackResult = findBestRibbonStack(m_signatures);
+        m_stackResult = findBestRibbonStack(m_signatures, m_bottomSignatures);
         applyStripColours();
+        rebuildRibbonBlockVisualisation();
+        m_lastStackThickness = m_stripThickness;
         if (m_showStack) rebuildStackVisualisation();
     }
 
@@ -197,6 +232,7 @@ private:
 
     struct StackStripGeometry {
         std::vector<Vec3> positions;
+        std::vector<Vec3> bottomPositions;
         std::vector<std::vector<int>> faces;
         std::vector<std::pair<Vec3, Vec3>> rulings;
         Vec3 labelPosition;
@@ -235,6 +271,15 @@ private:
         ruling.normalize();
         Vec3 normal = longitudinal.cross(ruling).normalized();
         if (normal.lengthSquared() <= 1e-8f) normal = Vec3(0.0f, 0.0f, 1.0f);
+        Vec3 averageFaceNormal;
+        for (int faceIndex = signature.startFace; faceIndex < signature.startFace + signature.faceCount; ++faceIndex) {
+            const std::array<int, 4>& face = m_ribbon.faces[faceIndex];
+            const Vec3& a = m_ribbon.vertices[face[0]];
+            const Vec3& b = m_ribbon.vertices[face[1]];
+            const Vec3& d = m_ribbon.vertices[face[3]];
+            averageFaceNormal += (b - a).cross(d - a).normalized();
+        }
+        if (averageFaceNormal.lengthSquared() > 1e-8f && normal.dot(averageFaceNormal) < 0.0f) normal = -normal;
         ruling = normal.cross(longitudinal).normalized();
 
         auto toLocal = [&](const Vec3& point) {
@@ -247,7 +292,10 @@ private:
             std::vector<int> face;
             for (int vertex : m_ribbon.faces[faceIndex]) {
                 auto [entry, inserted] = vertexMap.emplace(vertex, static_cast<int>(result.positions.size()));
-                if (inserted) result.positions.push_back(toLocal(m_ribbon.vertices[vertex]));
+                if (inserted) {
+                    result.positions.push_back(toLocal(m_ribbon.vertices[vertex]));
+                    result.bottomPositions.push_back(toLocal(m_bottomRibbon.vertices[vertex]));
+                }
                 face.push_back(entry->second);
             }
             result.faces.push_back(std::move(face));
@@ -264,6 +312,66 @@ private:
                                       toLocal(m_ribbon.vertices[m_ribbon.railQ[station]])});
         }
         return result;
+    }
+
+    std::shared_ptr<MeshObject> createSolidBlock(const std::string& name,
+                                                 const std::vector<Vec3>& topPositions,
+                                                 const std::vector<Vec3>& bottomPositions,
+                                                 const std::vector<std::vector<int>>& topFaces,
+                                                 const Color& colour) const {
+        if (topPositions.empty() || topPositions.size() != bottomPositions.size() || topFaces.empty()) return nullptr;
+
+        MeshObject bottom(name + "_bottom");
+        bottom.createFromVerticesAndFaces(bottomPositions, topFaces);
+        std::vector<Vec3> offsets;
+        offsets.reserve(topPositions.size());
+        for (size_t i = 0; i < topPositions.size(); ++i) offsets.push_back(topPositions[i] - bottomPositions[i]);
+        auto mesh = std::make_shared<MeshObject>(bottom.extrudeMesh(0.0f, MeshExtrudeMode::SmoothSolid, offsets));
+        mesh->setUseFaceColors(true);
+        mesh->setShowEdges(true);
+        mesh->setEdgeWidth(2.0f);
+        const std::shared_ptr<MeshData> data = mesh->getMeshData();
+        for (MeshFace& face : data->faces) face.color = colour;
+        for (MeshEdge& edge : data->edges) edge.color = Color(0.0f, 0.0f, 0.0f, 1.0f);
+        return mesh;
+    }
+
+    void clearRibbonBlockVisualisation() {
+        for (const std::shared_ptr<MeshObject>& block : m_ribbonBlocks) {
+            if (block) scene().removeObject(block);
+        }
+        m_ribbonBlocks.clear();
+    }
+
+    void rebuildRibbonBlockVisualisation() {
+        clearRibbonBlockVisualisation();
+        if (!m_valid) return;
+        for (int strip = 0; strip < static_cast<int>(m_signatures.size()); ++strip) {
+            const RibbonSignature& signature = m_signatures[strip];
+            std::unordered_map<int, int> vertexMap;
+            std::vector<Vec3> topPositions;
+            std::vector<Vec3> bottomPositions;
+            std::vector<std::vector<int>> faces;
+            for (int faceIndex = signature.startFace;
+                 faceIndex < signature.startFace + signature.faceCount;
+                 ++faceIndex) {
+                std::vector<int> face;
+                for (int vertex : m_ribbon.faces[faceIndex]) {
+                    auto [entry, inserted] = vertexMap.emplace(vertex, static_cast<int>(topPositions.size()));
+                    if (inserted) {
+                        topPositions.push_back(m_ribbon.vertices[vertex]);
+                        bottomPositions.push_back(m_bottomRibbon.vertices[vertex]);
+                    }
+                    face.push_back(entry->second);
+                }
+                faces.push_back(std::move(face));
+            }
+            auto block = createSolidBlock("ribbon_block_" + std::to_string(strip), topPositions, bottomPositions,
+                                          faces, stripColour(strip, static_cast<int>(m_signatures.size())));
+            if (!block) continue;
+            scene().addObject(block);
+            m_ribbonBlocks.push_back(std::move(block));
+        }
     }
 
     void clearStackVisualisation() {
@@ -286,11 +394,19 @@ private:
 
         // Place every layer at exact bounding-box contact with the preceding
         // layer. This deliberately adds no arbitrary inter-layer clearance.
+        auto bottomMinZ = [&](const StackStripGeometry& geometry) {
+            float result = std::numeric_limits<float>::infinity();
+            for (const Vec3& position : geometry.bottomPositions) result = std::min(result, position.z);
+            return result;
+        };
         std::vector<float> layerZ(geometries.size(), 0.0f);
-        float stackMinZ = geometries.front().minZ;
+        float stackMinZ = bottomMinZ(geometries.front());
         float stackMaxZ = geometries.front().maxZ;
         for (size_t layer = 1; layer < geometries.size(); ++layer) {
-            layerZ[layer] = stackMaxZ - geometries[layer].minZ;
+            // The lower face of this upper solid contacts the top face of the
+            // preceding solid. The descriptor cost above is therefore read as
+            // lower(upper) versus top(lower) compatibility.
+            layerZ[layer] = stackMaxZ - bottomMinZ(geometries[layer]);
             stackMaxZ = layerZ[layer] + geometries[layer].maxZ;
         }
         const float centreZ = 0.5f * (stackMinZ + stackMaxZ);
@@ -330,29 +446,36 @@ private:
                 m_stackBoundsMax.y = std::max(m_stackBoundsMax.y, position.y);
                 m_stackBoundsMax.z = std::max(m_stackBoundsMax.z, position.z);
             }
+            for (Vec3& position : geometry.bottomPositions) position += offset;
             for (auto& ruling : geometry.rulings) {
                 ruling.first += offset;
                 ruling.second += offset;
             }
             geometry.labelPosition += offset;
 
-            auto mesh = std::make_shared<MeshObject>("ribbon_stack_layer_" + std::to_string(layer));
-            mesh->createFromVerticesAndFaces(geometry.positions, geometry.faces);
-            mesh->setUseFaceColors(true);
-            mesh->setShowEdges(true);
-            const Color colour = stripColour(stripIndex, static_cast<int>(m_signatures.size()));
-            for (MeshFace& face : mesh->getMeshData()->faces) face.color = colour;
-            for (MeshEdge& edge : mesh->getMeshData()->edges) edge.color = Color(0.20f, 0.16f, 0.24f, 1.0f);
+            auto mesh = createSolidBlock("ribbon_stack_layer_" + std::to_string(layer), geometry.positions,
+                                         geometry.bottomPositions, geometry.faces,
+                                         stripColour(stripIndex, static_cast<int>(m_signatures.size())));
+            for (const Vec3& position : geometry.bottomPositions) {
+                m_stackBoundsMin.x = std::min(m_stackBoundsMin.x, position.x);
+                m_stackBoundsMin.y = std::min(m_stackBoundsMin.y, position.y);
+                m_stackBoundsMin.z = std::min(m_stackBoundsMin.z, position.z);
+                m_stackBoundsMax.x = std::max(m_stackBoundsMax.x, position.x);
+                m_stackBoundsMax.y = std::max(m_stackBoundsMax.y, position.y);
+                m_stackBoundsMax.z = std::max(m_stackBoundsMax.z, position.z);
+            }
+            if (!mesh) continue;
             scene().addObject(mesh);
-            m_stackLayers.push_back({stripIndex, geometry.labelPosition, std::move(geometry.rulings), mesh});
+            m_stackLayers.push_back({stripIndex, geometry.labelPosition, std::move(geometry.rulings), std::move(mesh)});
         }
         m_stackBoundsValid = !m_stackLayers.empty();
+        m_lastStackThickness = m_stripThickness;
     }
 
     void toggleStackVisualisation() {
         if (!m_valid) return;
         m_showStack = !m_showStack;
-        if (m_mesh) m_mesh->setVisible(true);
+        if (m_mesh) m_mesh->setVisible(false);
         if (m_showStack) rebuildStackVisualisation();
         else clearStackVisualisation();
         m_status = (m_showStack ? "Stack visualisation. " : "Ribbon visualisation. ") + matchSummary() + "  " + stackSummary();
@@ -421,7 +544,7 @@ private:
     void drawStackAnalysis(Renderer& renderer) const {
         renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
         renderer.drawString("Stack compatibility: total = " + formatCost(m_stackResult.totalCost) +
-                            "; each layer touches the preceding layer's Z bounding extent.", 10.0f, 70.0f);
+                            "; lower normal-offset face of each upper solid touches the top face below.", 10.0f, 140.0f);
         for (int layer = 1; layer < static_cast<int>(m_stackLayers.size()); ++layer) {
             const int below = m_stackLayers[layer - 1].stripIndex;
             const int above = m_stackLayers[layer].stripIndex;
@@ -431,7 +554,7 @@ private:
                  << " : total " << formatCost(cost.totalCost)
                  << " (local " << formatCost(cost.localCost) << ", accumulated " << formatCost(cost.accumulatedCost)
                  << (cost.reversed ? ", reverse candidate" : ", forward candidate") << ")";
-            renderer.drawString(line.str(), 10.0f, 90.0f + 17.0f * static_cast<float>(layer - 1));
+            renderer.drawString(line.str(), 10.0f, 160.0f + 17.0f * static_cast<float>(layer - 1));
         }
     }
 
@@ -454,14 +577,21 @@ private:
 
     std::shared_ptr<MeshObject> m_mesh;
     std::shared_ptr<MeshObject> m_original;
+    std::unique_ptr<SimpleUI> m_ui;
     ProjectionSolver m_solver;
     QuadRibbon m_ribbon;
+    QuadRibbon m_bottomRibbon;
     std::vector<RibbonSignature> m_signatures;
+    std::vector<RibbonSignature> m_bottomSignatures;
     std::vector<RibbonMatch> m_matches;
     RibbonStackResult m_stackResult;
+    std::vector<std::shared_ptr<MeshObject>> m_ribbonBlocks;
     std::vector<StackVisualLayer> m_stackLayers;
     std::string m_status{"Loading ribbon.obj..."};
     int m_facesPerStrip{12};
+    float m_facesPerStripSlider{12.0f};
+    float m_stripThickness{0.015f};
+    float m_lastStackThickness{-1.0f};
     bool m_showOriginal{true};
     bool m_showStack{false};
     bool m_valid{false};

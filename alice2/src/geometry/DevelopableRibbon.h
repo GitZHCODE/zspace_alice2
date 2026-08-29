@@ -59,6 +59,10 @@ RibbonPlanarizationResult planarizeRibbon(QuadRibbon& ribbon,
                                           float tolerance = 1e-5f,
                                           float originalWeight = 0.05f);
 
+// Returns a parallel ribbon whose vertices are displaced by averaged incident
+// face normals. Use a negative offset for the lower skin of a thick ribbon.
+QuadRibbon offsetRibbonAlongVertexNormals(const QuadRibbon& ribbon, float offset);
+
 // Builds signatures for every complete sliding window. A window of N faces
 // has N-1 interior bend/ruling-angle samples, so N must be at least two.
 std::vector<RibbonSignature> buildRibbonSignatures(const QuadRibbon& ribbon,

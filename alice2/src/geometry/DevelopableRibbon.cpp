@@ -362,6 +362,24 @@ RibbonPlanarizationResult planarizeRibbon(QuadRibbon& ribbon,
     return result;
 }
 
+QuadRibbon offsetRibbonAlongVertexNormals(const QuadRibbon& ribbon, float offset) {
+    QuadRibbon result = ribbon;
+    std::vector<Vec3> normalSums(ribbon.vertices.size(), Vec3{});
+    for (const std::array<int, 4>& face : ribbon.faces) {
+        const Vec3& a = ribbon.vertices[face[0]];
+        const Vec3& b = ribbon.vertices[face[1]];
+        const Vec3& d = ribbon.vertices[face[3]];
+        const Vec3 normal = (b - a).cross(d - a).normalized();
+        for (int vertex : face) {
+            if (vertex >= 0 && vertex < static_cast<int>(normalSums.size())) normalSums[vertex] += normal;
+        }
+    }
+    for (size_t vertex = 0; vertex < result.vertices.size(); ++vertex) {
+        if (normalSums[vertex].lengthSquared() > kEpsilon) result.vertices[vertex] += normalSums[vertex].normalized() * offset;
+    }
+    return result;
+}
+
 std::vector<RibbonSignature> buildRibbonSignatures(const QuadRibbon& ribbon,
                                                     int facesPerStrip,
                                                     int stride) {

@@ -131,15 +131,11 @@ void improveRibbonStackOrderTwoOpt(std::vector<int>& order, const RibbonStacking
         changed = false;
         for (size_t begin = 1; begin + 2 < order.size() && !changed; ++begin) {
             for (size_t end = begin + 1; end + 1 < order.size(); ++end) {
-                const int a = order[begin - 1];
-                const int b = order[begin];
-                const int c = order[end];
-                const int d = order[end + 1];
-                const double previous = costs[a][b].totalCost + costs[c][d].totalCost;
-                const double replacement = costs[a][c].totalCost + costs[b][d].totalCost;
-                if (replacement + 1e-12 < previous) {
-                    std::reverse(order.begin() + static_cast<std::ptrdiff_t>(begin),
-                                 order.begin() + static_cast<std::ptrdiff_t>(end + 1));
+                std::vector<int> candidate = order;
+                std::reverse(candidate.begin() + static_cast<std::ptrdiff_t>(begin),
+                             candidate.begin() + static_cast<std::ptrdiff_t>(end + 1));
+                if (ribbonStackOrderCost(candidate, costs) + 1e-12 < ribbonStackOrderCost(order, costs)) {
+                    order = std::move(candidate);
                     changed = true;
                     break;
                 }
@@ -150,12 +146,31 @@ void improveRibbonStackOrderTwoOpt(std::vector<int>& order, const RibbonStacking
 
 RibbonStackResult findBestRibbonStack(const std::vector<RibbonSignature>& signatures,
                                       const RibbonStackingSettings& settings) {
+    return findBestRibbonStack(signatures, signatures, settings);
+}
+
+RibbonStackResult findBestRibbonStack(const std::vector<RibbonSignature>& topSignatures,
+                                      const std::vector<RibbonSignature>& bottomSignatures,
+                                      const RibbonStackingSettings& settings) {
     RibbonStackResult result;
-    result.pairCosts = buildRibbonStackingCostMatrix(signatures, settings);
-    if (signatures.empty()) return result;
+    if (topSignatures.size() != bottomSignatures.size()) return result;
+    const int count = static_cast<int>(topSignatures.size());
+    result.pairCosts.assign(count, std::vector<RibbonPairCompatibility>(count));
+    for (int lower = 0; lower < count; ++lower) {
+        for (int upper = 0; upper < count; ++upper) {
+            if (lower == upper) continue;
+            RibbonPairCompatibility best = ribbonStackingCost(topSignatures[lower], bottomSignatures[upper], settings, false);
+            if (settings.allowPairwiseReversal) {
+                const RibbonPairCompatibility reversed = ribbonStackingCost(topSignatures[lower], bottomSignatures[upper], settings, true);
+                if (reversed.totalCost < best.totalCost) best = reversed;
+            }
+            result.pairCosts[lower][upper] = best;
+        }
+    }
+    if (topSignatures.empty()) return result;
 
     result.totalCost = std::numeric_limits<double>::infinity();
-    for (int start = 0; start < static_cast<int>(signatures.size()); ++start) {
+    for (int start = 0; start < count; ++start) {
         std::vector<int> candidate = nearestNeighborStackOrder(result.pairCosts, start);
         improveRibbonStackOrderTwoOpt(candidate, result.pairCosts);
         const double cost = ribbonStackOrderCost(candidate, result.pairCosts);
