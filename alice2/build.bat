@@ -37,7 +37,10 @@ if errorlevel 1 goto :fail
 
 echo.
 echo [alice2] Building...
-cmake --build "%BUILD_DIR%" --config %CONFIG% --parallel
+REM Disable VS file tracking: its GetLongPathName call is denied in some
+REM redirected Windows profiles. Recreate PATH once to also remove duplicate
+REM PATH/Path entries that make the MSBuild C++ task fail to start.
+cmake -E env --unset=PATH "PATH=%PATH%" cmake --build "%BUILD_DIR%" --config %CONFIG% --parallel -- /p:TrackFileAccess=false
 if errorlevel 1 goto :fail
 
 :success
