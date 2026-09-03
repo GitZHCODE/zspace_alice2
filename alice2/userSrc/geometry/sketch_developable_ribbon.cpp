@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -65,7 +66,6 @@ public:
         if (m_showStack) {
             drawStackAnnotations(renderer);
             drawStackBounds(renderer);
-            drawStackAnalysis(renderer);
         }
     }
 
@@ -206,6 +206,56 @@ private:
         return (positions[face[1]] - positions[face[0]]).cross(positions[face[2]] - positions[face[0]]).normalized();
     }
 
+    // Each solid must use normals averaged over its own faces.  Averaging over
+    // the whole stereotomy mesh lets adjacent, unrelated strips tilt a lower
+    // skin at shared vertices and corrupts both the solid and its signature.
+    static std::vector<Vec3> offsetBlockAlongVertexNormals(const MeshData& mesh, const FaceBlock& block,
+                                                            const std::vector<Vec3>& topPositions, float thickness) {
+        std::vector<Vec3> result = topPositions;
+        std::vector<Vec3> normalSums(topPositions.size(), Vec3{});
+        for (int faceIndex : block.sourceFaces) {
+            if (faceIndex < 0 || faceIndex >= static_cast<int>(mesh.faces.size())) continue;
+            const Vec3 normal = faceNormal(mesh, faceIndex, topPositions);
+            for (int vertex : mesh.faces[faceIndex].vertices) {
+                if (vertex >= 0 && vertex < static_cast<int>(normalSums.size())) normalSums[vertex] += normal;
+            }
+        }
+        for (size_t vertex = 0; vertex < result.size(); ++vertex) {
+            if (normalSums[vertex].lengthSquared() > 1e-8f) {
+                result[vertex] -= normalSums[vertex].normalized() * thickness;
+            }
+        }
+        return result;
+    }
+
+    // Absolute distance of the fourth quad vertex from the plane through the
+    // first three.  The stacking descriptor has one normal per face, so this
+    // is the relevant precondition to report before comparing strips.
+    static std::pair<double, double> quadPlanarityDistances(const MeshData& mesh,
+                                                            const std::vector<Vec3>& positions) {
+        double sum = 0.0;
+        double maximum = 0.0;
+        int quadCount = 0;
+        for (const MeshFace& face : mesh.faces) {
+            if (face.vertices.size() != 4) continue;
+            const int a = face.vertices[0];
+            const int b = face.vertices[1];
+            const int c = face.vertices[2];
+            const int d = face.vertices[3];
+            if (a < 0 || b < 0 || c < 0 || d < 0 || a >= static_cast<int>(positions.size()) ||
+                b >= static_cast<int>(positions.size()) || c >= static_cast<int>(positions.size()) ||
+                d >= static_cast<int>(positions.size())) continue;
+            const Vec3 normal = (positions[b] - positions[a]).cross(positions[c] - positions[a]);
+            const float normalLength = normal.length();
+            if (normalLength <= 1e-8f) continue;
+            const double distance = std::abs(static_cast<double>(normal.dot(positions[d] - positions[a])) / normalLength);
+            sum += distance;
+            maximum = std::max(maximum, distance);
+            ++quadCount;
+        }
+        return {quadCount == 0 ? 0.0 : sum / quadCount, maximum};
+    }
+
     static RibbonSignature buildBlockSignature(const MeshData& mesh, const FaceBlock& block, int blockIndex,
                                                const std::vector<Vec3>& positions) {
         RibbonSignature signature;
@@ -233,6 +283,37 @@ private:
             signature.rulingAngle.push_back(std::atan2(averageNormal.dot(tangent.cross(ruling)), tangent.dot(ruling)));
         }
         return signature;
+    }
+
+    // Blocks that end at a centre-graph turn can have fewer faces than the
+    // selected window length.  Compare their shape evolution on the same
+    // normalized station domain instead of discarding them.  Geometry is not
+    // resampled: only the [bend, beta] descriptor used by the cost function.
+    static RibbonSignature resampleSignature(const RibbonSignature& source, int targetSampleCount) {
+        RibbonSignature result = source;
+        if (targetSampleCount <= 0 || source.bend.size() != source.rulingAngle.size() || source.bend.empty()) {
+            result.bend.clear();
+            result.rulingAngle.clear();
+            return result;
+        }
+        if (static_cast<int>(source.bend.size()) == targetSampleCount) return result;
+
+        result.bend.resize(static_cast<size_t>(targetSampleCount));
+        result.rulingAngle.resize(static_cast<size_t>(targetSampleCount));
+        const double sourceLast = static_cast<double>(source.bend.size() - 1);
+        const double targetLast = static_cast<double>(std::max(1, targetSampleCount - 1));
+        for (int sample = 0; sample < targetSampleCount; ++sample) {
+            const double sourcePosition = sourceLast * static_cast<double>(sample) / targetLast;
+            const size_t left = static_cast<size_t>(std::floor(sourcePosition));
+            const size_t right = std::min(left + 1, source.bend.size() - 1);
+            const double blend = sourcePosition - static_cast<double>(left);
+            result.bend[static_cast<size_t>(sample)] =
+                source.bend[left] + (source.bend[right] - source.bend[left]) * blend;
+            const double angleDelta = std::atan2(std::sin(source.rulingAngle[right] - source.rulingAngle[left]),
+                                                 std::cos(source.rulingAngle[right] - source.rulingAngle[left]));
+            result.rulingAngle[static_cast<size_t>(sample)] = source.rulingAngle[left] + angleDelta * blend;
+        }
+        return result;
     }
 
     static std::filesystem::path dataPath(const std::string& file) {
@@ -280,6 +361,15 @@ private:
             // closed, individually coloured solid strip blocks below.
             m_mesh->setVisible(false);
             scene().addObject(m_mesh);
+            std::vector<Vec3> rawPositions;
+            rawPositions.reserve(m_mesh->getMeshData()->vertices.size());
+            for (const MeshVertex& vertex : m_mesh->getMeshData()->vertices) rawPositions.push_back(vertex.position);
+            const auto [rawMeanPlanarity, rawMaxPlanarity] = quadPlanarityDistances(*m_mesh->getMeshData(), rawPositions);
+            std::cout << "[DevelopableRibbon] input quad plane distance mean/max=" << std::fixed
+                      << std::setprecision(8) << rawMeanPlanarity << '/' << rawMaxPlanarity << '\n';
+            // Planarisation remains an explicit P action.  Some inputs are
+            // already sufficiently planar, and an unnecessary global solve
+            // can change the surface that the user intends to stack.
             refreshSignatures();
             m_status = diagnostic + "  " + matchSummary() + "  " + stackSummary();
         } catch (const std::exception& error) {
@@ -293,6 +383,9 @@ private:
         const int iterations = m_solver.solve(*m_mesh);
         if (m_mesh) m_mesh->getMeshData()->calculateNormals();
         refreshSignatures();
+        std::cout << "[DevelopableRibbon] planar solve iterations=" << iterations
+                  << "; post-solve quad plane distance mean/max=" << std::fixed << std::setprecision(8)
+                  << m_meanPlanarityDistance << '/' << m_maxPlanarityDistance << '\n';
         std::ostringstream report;
         report << "ProjectionSolver planar-face solve: " << iterations << " iterations. "
                << matchSummary() << "  " << stackSummary();
@@ -325,23 +418,30 @@ private:
         }
         const std::shared_ptr<MeshData> data = m_mesh->getMeshData();
         data->calculateNormals();
-        m_bottomPositions.clear();
-        m_bottomPositions.reserve(data->vertices.size());
-        for (const MeshVertex& vertex : data->vertices) m_bottomPositions.push_back(vertex.position - vertex.normal * m_stripThickness);
         m_signatures.clear();
         m_bottomSignatures.clear();
         m_stackBlockIndices.clear();
         std::vector<Vec3> positions;
         positions.reserve(data->vertices.size());
         for (const MeshVertex& vertex : data->vertices) positions.push_back(vertex.position);
-        // Short remainders are still extruded and coloured.  Stack comparison
-        // retains its original equal-length descriptor assumption, so only
-        // complete N-face blocks participate in that ordering.
+        const auto [meanPlanarityDistance, maxPlanarityDistance] = quadPlanarityDistances(*data, positions);
+        m_meanPlanarityDistance = meanPlanarityDistance;
+        m_maxPlanarityDistance = maxPlanarityDistance;
+        m_blockBottomPositions.clear();
+        m_blockBottomPositions.reserve(m_faceBlocks.size());
+        for (const FaceBlock& block : m_faceBlocks) {
+            m_blockBottomPositions.push_back(offsetBlockAlongVertexNormals(*data, block, positions, m_stripThickness));
+        }
+        // Every block participates in the stack.  Short turn remainders are
+        // compared after descriptor-only resampling to the common normalized
+        // station count; their mesh topology is deliberately left intact.
         for (int blockIndex = 0; blockIndex < static_cast<int>(m_faceBlocks.size()); ++blockIndex) {
             const FaceBlock& block = m_faceBlocks[blockIndex];
-            if (static_cast<int>(block.sourceFaces.size()) != m_facesPerStrip) continue;
-            m_signatures.push_back(buildBlockSignature(*data, block, blockIndex, positions));
-            m_bottomSignatures.push_back(buildBlockSignature(*data, block, blockIndex, m_bottomPositions));
+            const int targetSampleCount = std::max(1, m_facesPerStrip - 1);
+            m_signatures.push_back(resampleSignature(
+                buildBlockSignature(*data, block, blockIndex, positions), targetSampleCount));
+            m_bottomSignatures.push_back(resampleSignature(
+                buildBlockSignature(*data, block, blockIndex, m_blockBottomPositions[blockIndex]), targetSampleCount));
             m_stackBlockIndices.push_back(blockIndex);
         }
         m_matches = findSimilarRibbonStrips(m_signatures, 3);
@@ -350,6 +450,7 @@ private:
         rebuildRibbonBlockVisualisation();
         m_lastStackThickness = m_stripThickness;
         if (m_showStack) rebuildStackVisualisation();
+        printStackReport(diagnostic);
     }
 
     static Color stripColour(int index, int count) {
@@ -393,6 +494,50 @@ private:
         return summary.str();
     }
 
+    // Stack diagnostics belong in the terminal: the on-screen view remains a
+    // geometric inspection tool, while this report gives the numerical basis
+    // for every selected interface.
+    void printStackReport(const std::string& traversalDiagnostic) const {
+        int completeBlocks = 0;
+        std::vector<int> remainderSizes;
+        for (const FaceBlock& block : m_faceBlocks) {
+            if (static_cast<int>(block.sourceFaces.size()) == m_facesPerStrip) ++completeBlocks;
+            else remainderSizes.push_back(static_cast<int>(block.sourceFaces.size()));
+        }
+        std::cout << "[DevelopableRibbon] " << traversalDiagnostic
+                  << "; thickness=" << std::fixed << std::setprecision(5) << m_stripThickness
+                  << "; stack strips=" << m_faceBlocks.size() << " (native " << completeBlocks
+                  << ", resampled " << remainderSizes.size() << ')'
+                  << "; descriptor samples/strip=" << std::max(0, m_facesPerStrip - 1)
+                  << "; quad plane distance mean/max=" << std::setprecision(8)
+                  << m_meanPlanarityDistance << '/' << m_maxPlanarityDistance << '\n';
+        if (!remainderSizes.empty()) {
+            std::cout << "[DevelopableRibbon] resampled partial block face counts:";
+            for (const int count : remainderSizes) std::cout << ' ' << count;
+            std::cout << '\n';
+        }
+        if (m_stackResult.order.empty()) {
+            std::cout << "[DevelopableRibbon] No valid stack order.\n";
+            return;
+        }
+        std::cout << "[DevelopableRibbon] state-aware stack: total="
+                  << std::setprecision(8) << m_stackResult.totalCost << '\n';
+        for (size_t layer = 0; layer < m_stackResult.order.size(); ++layer) {
+            const bool reversed = layer < m_stackResult.reversedInOrder.size() && m_stackResult.reversedInOrder[layer];
+            std::cout << "  layer " << layer << ": strip " << m_stackResult.order[layer]
+                      << (reversed ? " reverse" : " forward");
+            if (layer > 0 && layer - 1 < m_stackResult.interfaceCosts.size()) {
+                const RibbonPairCompatibility& cost = m_stackResult.interfaceCosts[layer - 1];
+                std::cout << " | top(" << m_stackResult.order[layer - 1] << ") -> bottom("
+                          << m_stackResult.order[layer] << "): local=" << cost.localCost
+                          << ", accumulated=" << cost.accumulatedCost
+                          << ", total=" << cost.totalCost;
+            }
+            std::cout << '\n';
+        }
+        std::cout.flush();
+    }
+
     struct StackStripGeometry {
         std::vector<Vec3> positions;
         std::vector<Vec3> bottomPositions;
@@ -405,12 +550,13 @@ private:
 
     struct StackVisualLayer {
         int stripIndex = -1;
+        bool reversed = false;
         Vec3 labelPosition;
         std::vector<std::pair<Vec3, Vec3>> rulings;
         std::shared_ptr<MeshObject> mesh;
     };
 
-    StackStripGeometry buildStackStripGeometry(int blockIndex) const {
+    StackStripGeometry buildStackStripGeometry(int blockIndex, bool reversed) const {
         StackStripGeometry result;
         const std::shared_ptr<MeshData> data = m_mesh ? m_mesh->getMeshData() : nullptr;
         if (!data || blockIndex < 0 || blockIndex >= static_cast<int>(m_faceBlocks.size())) return result;
@@ -437,7 +583,14 @@ private:
 
         auto toLocal = [&](const Vec3& point) {
             const Vec3 delta = point - origin;
-            return Vec3(delta.dot(longitudinal), delta.dot(ruling), delta.dot(normal));
+            Vec3 local(delta.dot(longitudinal), delta.dot(ruling), delta.dot(normal));
+            // A reverse descriptor is an in-plane 180 degree physical turn:
+            // it swaps traversal ends but preserves which side is top.
+            if (reversed) {
+                local.x = -local.x;
+                local.y = -local.y;
+            }
+            return local;
         };
 
         std::unordered_map<int, int> vertexMap;
@@ -447,7 +600,9 @@ private:
                 auto [entry, inserted] = vertexMap.emplace(vertex, static_cast<int>(result.positions.size()));
                 if (inserted) {
                     result.positions.push_back(toLocal(positions[vertex]));
-                    result.bottomPositions.push_back(toLocal(m_bottomPositions[vertex]));
+                    if (blockIndex < static_cast<int>(m_blockBottomPositions.size())) {
+                        result.bottomPositions.push_back(toLocal(m_blockBottomPositions[blockIndex][vertex]));
+                    }
                 }
                 face.push_back(entry->second);
             }
@@ -498,7 +653,7 @@ private:
     void rebuildRibbonBlockVisualisation() {
         clearRibbonBlockVisualisation();
         const std::shared_ptr<MeshData> data = m_mesh ? m_mesh->getMeshData() : nullptr;
-        if (!m_valid || !data || m_bottomPositions.size() != data->vertices.size()) return;
+        if (!m_valid || !data || m_blockBottomPositions.size() != m_faceBlocks.size()) return;
         for (int strip = 0; strip < static_cast<int>(m_faceBlocks.size()); ++strip) {
             const FaceBlock& sourceBlock = m_faceBlocks[strip];
             std::unordered_map<int, int> vertexMap;
@@ -513,7 +668,7 @@ private:
                     auto [entry, inserted] = vertexMap.emplace(vertex, static_cast<int>(topPositions.size()));
                     if (inserted) {
                         topPositions.push_back(data->vertices[vertex].position);
-                        bottomPositions.push_back(m_bottomPositions[vertex]);
+                        bottomPositions.push_back(m_blockBottomPositions[strip][vertex]);
                     }
                     face.push_back(entry->second);
                 }
@@ -541,9 +696,11 @@ private:
 
         std::vector<StackStripGeometry> geometries;
         geometries.reserve(m_stackResult.order.size());
-        for (int stripIndex : m_stackResult.order) {
+        for (size_t layer = 0; layer < m_stackResult.order.size(); ++layer) {
+            const int stripIndex = m_stackResult.order[layer];
             if (stripIndex < 0 || stripIndex >= static_cast<int>(m_stackBlockIndices.size())) return;
-            geometries.push_back(buildStackStripGeometry(m_stackBlockIndices[stripIndex]));
+            const bool reversed = layer < m_stackResult.reversedInOrder.size() && m_stackResult.reversedInOrder[layer];
+            geometries.push_back(buildStackStripGeometry(m_stackBlockIndices[stripIndex], reversed));
         }
 
         // Place every layer at exact bounding-box contact with the preceding
@@ -557,9 +714,9 @@ private:
         float stackMinZ = bottomMinZ(geometries.front());
         float stackMaxZ = geometries.front().maxZ;
         for (size_t layer = 1; layer < geometries.size(); ++layer) {
-            // The lower face of this upper solid contacts the top face of the
-            // preceding solid. The descriptor cost above is therefore read as
-            // lower(upper) versus top(lower) compatibility.
+            // The bottom face of this upper solid contacts the top face of the
+            // preceding solid.  This remains a bounding-box presentation
+            // placement, not a contact solver.
             layerZ[layer] = stackMaxZ - bottomMinZ(geometries[layer]);
             stackMaxZ = layerZ[layer] + geometries[layer].maxZ;
         }
@@ -590,6 +747,8 @@ private:
         for (int layer = 0; layer < static_cast<int>(geometries.size()); ++layer) {
             StackStripGeometry& geometry = geometries[layer];
             const int stripIndex = m_stackResult.order[layer];
+            const bool reversed = layer < static_cast<int>(m_stackResult.reversedInOrder.size()) &&
+                                  m_stackResult.reversedInOrder[layer];
             const Vec3 offset = stackOffset + Vec3(0.0f, 0.0f, layerZ[layer]);
             for (Vec3& position : geometry.positions) {
                 position += offset;
@@ -621,7 +780,7 @@ private:
             }
             if (!mesh) continue;
             scene().addObject(mesh);
-            m_stackLayers.push_back({stripIndex, geometry.labelPosition, std::move(geometry.rulings), std::move(mesh)});
+            m_stackLayers.push_back({stripIndex, reversed, geometry.labelPosition, std::move(geometry.rulings), std::move(mesh)});
         }
         m_stackBoundsValid = !m_stackLayers.empty();
         m_lastStackThickness = m_stripThickness;
@@ -680,7 +839,8 @@ private:
         renderer.setColor(Color(0.08f, 0.08f, 0.12f, 1.0f));
         for (int layer = 0; layer < static_cast<int>(m_stackLayers.size()); ++layer) {
             const StackVisualLayer& item = m_stackLayers[layer];
-            renderer.drawText("L" + std::to_string(layer) + " / S" + std::to_string(item.stripIndex),
+            renderer.drawText("L" + std::to_string(layer) + " / S" + std::to_string(item.stripIndex) +
+                              (item.reversed ? " R" : " F"),
                               item.labelPosition, 1.0f);
             for (const auto& ruling : item.rulings) {
                 renderer.drawLine(ruling.first, ruling.second, Color(0.88f, 0.12f, 0.08f, 1.0f), 1.0f);
@@ -699,23 +859,6 @@ private:
                                                                   {4, 5}, {5, 6}, {6, 7}, {7, 4},
                                                                   {0, 4}, {1, 5}, {2, 6}, {3, 7}}};
         for (const auto& edge : edges) renderer.drawLine(corners[edge[0]], corners[edge[1]], Color(0.0f, 0.0f, 0.0f, 1.0f), 1.2f);
-    }
-
-    void drawStackAnalysis(Renderer& renderer) const {
-        renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
-        renderer.drawString("Stack compatibility: total = " + formatCost(m_stackResult.totalCost) +
-                            "; lower normal-offset face of each upper solid touches the top face below.", 10.0f, 140.0f);
-        for (int layer = 1; layer < static_cast<int>(m_stackLayers.size()); ++layer) {
-            const int below = m_stackLayers[layer - 1].stripIndex;
-            const int above = m_stackLayers[layer].stripIndex;
-            const RibbonPairCompatibility& cost = m_stackResult.pairCosts[below][above];
-            std::ostringstream line;
-            line << "L" << layer - 1 << " S" << below << " -> L" << layer << " S" << above
-                 << " : total " << formatCost(cost.totalCost)
-                 << " (local " << formatCost(cost.localCost) << ", accumulated " << formatCost(cost.accumulatedCost)
-                 << (cost.reversed ? ", reverse candidate" : ", forward candidate") << ")";
-            renderer.drawString(line.str(), 10.0f, 160.0f + 17.0f * static_cast<float>(layer - 1));
-        }
     }
 
     static std::string formatCost(double value) {
@@ -742,7 +885,7 @@ private:
     QuadRibbon m_ribbon;
     QuadRibbon m_bottomRibbon;
     std::vector<FaceBlock> m_faceBlocks;
-    std::vector<Vec3> m_bottomPositions;
+    std::vector<std::vector<Vec3>> m_blockBottomPositions;
     std::vector<RibbonSignature> m_signatures;
     std::vector<RibbonSignature> m_bottomSignatures;
     std::vector<int> m_stackBlockIndices;
@@ -755,6 +898,8 @@ private:
     float m_facesPerStripSlider{8.0f};
     float m_stripThickness{0.015f};
     float m_lastStackThickness{-1.0f};
+    double m_meanPlanarityDistance{0.0};
+    double m_maxPlanarityDistance{0.0};
     bool m_showOriginal{true};
     bool m_showStack{false};
     bool m_valid{false};

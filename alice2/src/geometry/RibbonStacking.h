@@ -36,8 +36,14 @@ using RibbonStackingCostMatrix = std::vector<std::vector<RibbonPairCompatibility
 
 struct RibbonStackResult {
     std::vector<int> order;
+    // Physical in-plane orientation for the strip at each corresponding
+    // layer in order.  This is globally consistent, unlike the historical
+    // pairCosts[i][j].reversed diagnostic.
+    std::vector<bool> reversedInOrder;
     double totalCost = 0.0;
     RibbonStackingCostMatrix pairCosts;
+    // Costs for the interfaces actually used by order/reversedInOrder.
+    std::vector<RibbonPairCompatibility> interfaceCosts;
 };
 
 RibbonCurvatureTensor ribbonCurvatureTensor(double bend, double rulingAngle);
@@ -48,6 +54,15 @@ RibbonPairCompatibility ribbonStackingCost(const RibbonSignature& a,
                                            const RibbonSignature& b,
                                            const RibbonStackingSettings& settings = {},
                                            bool reverseB = false);
+
+// Evaluates an interface after assigning physical forward/reverse states to
+// both strips.  This is used by the state-aware ordering pass; the existing
+// four-argument function remains the pairwise diagnostic API.
+RibbonPairCompatibility ribbonStackingCostOriented(const RibbonSignature& a,
+                                                   const RibbonSignature& b,
+                                                   const RibbonStackingSettings& settings,
+                                                   bool reverseA,
+                                                   bool reverseB);
 
 RibbonStackingCostMatrix buildRibbonStackingCostMatrix(const std::vector<RibbonSignature>& signatures,
                                                        const RibbonStackingSettings& settings = {});
