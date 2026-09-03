@@ -3,6 +3,7 @@
 
 #include <alice2.h>
 #include <sketches/SketchRegistry.h>
+#include <computeGeom/ComputeMesh.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -18,7 +19,7 @@ using namespace alice2;
 class DevelopableRibbonSketch : public ISketch {
 public:
     std::string getName() const override { return "Developable Ribbon"; }
-    std::string getDescription() const override { return "Planarises an open quad ribbon and finds similar developable strips"; }
+    std::string getDescription() const override { return "Traverses stereotomy face blocks and displays them as thin solids"; }
     std::string getAuthor() const override { return "alice2 User"; }
 
     void setup() override {
@@ -91,6 +92,149 @@ public:
 private:
     static constexpr int kMaxFacesPerStrip = 36;
 
+    struct FaceBlock {
+        std::vector<int> sourceFaces;
+        std::vector<std::pair<int, int>> walkEdges;
+    };
+
+    static bool extractFaceBlocks(const ComputeMesh& mesh, int facesPerBlock,
+                                  std::vector<FaceBlock>& blocks, std::string* diagnostic) {
+        const std::shared_ptr<MeshData> data = mesh.getMeshData();
+        if (!data || data->faces.empty()) {
+            if (diagnostic) *diagnostic = "Stereotomy mesh contains no faces.";
+            return false;
+        }
+        blocks.clear();
+        const auto& vertices = mesh.getVertices();
+        std::vector<std::shared_ptr<HeMeshVertex>> starts;
+        for (const auto& vertex : vertices) {
+            if (!vertex || vertex->getValency() != 3) continue;
+            int valencyTwo = 0;
+            int valencyFour = 0;
+            for (const auto& neighbour : vertex->getConnectedVertices()) {
+                if (!neighbour) continue;
+                valencyTwo += neighbour->getValency() == 2;
+                valencyFour += neighbour->getValency() == 4;
+            }
+            if (valencyTwo == 2 && valencyFour == 1) starts.push_back(vertex);
+        }
+        if (starts.empty()) {
+            if (diagnostic) *diagnostic = "No valency-3 centre-graph endpoint with two valency-2 neighbours was found.";
+            return false;
+        }
+
+        std::vector<bool> assigned(data->faces.size(), false);
+        int assignedCount = 0;
+        auto flush = [&](FaceBlock& pending) {
+            if (!pending.sourceFaces.empty()) {
+                blocks.push_back(std::move(pending));
+                pending = FaceBlock{};
+            }
+        };
+        auto walkFrom = [&](const std::shared_ptr<HeMeshVertex>& start) -> bool {
+            std::shared_ptr<HeMeshHalfedge> startHalfedge;
+            for (const auto& halfedge : start->getHalfedges()) {
+                if (halfedge && halfedge->getVertex() && halfedge->getVertex()->getValency() == 4) {
+                    startHalfedge = halfedge;
+                    break;
+                }
+            }
+            if (!startHalfedge) return false;
+
+            FaceBlock pending;
+            std::shared_ptr<HeMeshHalfedge> current = startHalfedge;
+            bool firstStep = true;
+            const int guardLimit = std::max(1, static_cast<int>(mesh.getHalfedges().size()) * 2);
+            for (int step = 0; step < guardLimit; ++step) {
+                if (!firstStep && current == startHalfedge) {
+                    flush(pending);
+                    return true;
+                }
+                firstStep = false;
+                if (!current || !current->getFace() || !current->getStartVertex() || !current->getVertex()) return false;
+                const int face = current->getFace()->getId();
+                if (face < 0 || face >= static_cast<int>(assigned.size())) return false;
+                if (!assigned[face]) {
+                    assigned[face] = true;
+                    ++assignedCount;
+                    pending.sourceFaces.push_back(face);
+                    pending.walkEdges.push_back({current->getStartVertex()->getId(), current->getVertex()->getId()});
+                    if (static_cast<int>(pending.sourceFaces.size()) == facesPerBlock) flush(pending);
+                }
+
+                if (current->getVertex()->getValency() == 3) {
+                    flush(pending); // Turning always resets the N-face count.
+                    current = current->getSymmetry();
+                    if (!current || current->onBoundary()) return false;
+                    continue;
+                }
+                const auto next = current->getNext();
+                const auto twin = next ? next->getSymmetry() : nullptr;
+                current = twin ? twin->getNext() : nullptr; // next -> twin -> next
+                if (!current || current->onBoundary()) return false;
+            }
+            return false;
+        };
+
+        for (const auto& start : starts) {
+            if (assignedCount == static_cast<int>(data->faces.size())) break;
+            if (!walkFrom(start)) {
+                if (diagnostic) *diagnostic = "Centre-graph next/twin/next walk did not close.";
+                return false;
+            }
+        }
+        if (assignedCount != static_cast<int>(data->faces.size())) {
+            if (diagnostic) *diagnostic = "Centre-graph walks assigned " + std::to_string(assignedCount) + " of " +
+                                          std::to_string(data->faces.size()) + " faces.";
+            return false;
+        }
+        if (diagnostic) *diagnostic = "Stereotomy walk: " + std::to_string(blocks.size()) + " blocks from " +
+                                      std::to_string(data->faces.size()) + " faces.";
+        return true;
+    }
+
+    static Vec3 faceCentre(const MeshData& mesh, int faceIndex, const std::vector<Vec3>& positions) {
+        Vec3 centre;
+        const std::vector<int>& face = mesh.faces[faceIndex].vertices;
+        for (int vertex : face) centre += positions[vertex];
+        return face.empty() ? centre : centre / static_cast<float>(face.size());
+    }
+
+    static Vec3 faceNormal(const MeshData& mesh, int faceIndex, const std::vector<Vec3>& positions) {
+        const std::vector<int>& face = mesh.faces[faceIndex].vertices;
+        if (face.size() < 3) return Vec3{};
+        return (positions[face[1]] - positions[face[0]]).cross(positions[face[2]] - positions[face[0]]).normalized();
+    }
+
+    static RibbonSignature buildBlockSignature(const MeshData& mesh, const FaceBlock& block, int blockIndex,
+                                               const std::vector<Vec3>& positions) {
+        RibbonSignature signature;
+        signature.startFace = blockIndex; // Maps signature indices back to face blocks.
+        signature.faceCount = static_cast<int>(block.sourceFaces.size());
+        if (block.sourceFaces.size() < 2 || block.walkEdges.size() != block.sourceFaces.size()) return signature;
+        std::vector<Vec3> normals;
+        normals.reserve(block.sourceFaces.size());
+        for (int face : block.sourceFaces) normals.push_back(faceNormal(mesh, face, positions));
+        for (int station = 1; station < static_cast<int>(block.sourceFaces.size()); ++station) {
+            const auto [edgeStart, edgeEnd] = block.walkEdges[station];
+            const Vec3 ruling = (positions[edgeEnd] - positions[edgeStart]).normalized();
+            const Vec3& previousNormal = normals[station - 1];
+            const Vec3& nextNormal = normals[station];
+            const double bend = std::atan2(ruling.dot(previousNormal.cross(nextNormal)),
+                                           std::clamp(static_cast<double>(previousNormal.dot(nextNormal)), -1.0, 1.0));
+            const Vec3 previousCentre = faceCentre(mesh, block.sourceFaces[station - 1], positions);
+            const int nextFace = std::min(station + 1, static_cast<int>(block.sourceFaces.size()) - 1);
+            const Vec3 nextCentre = faceCentre(mesh, block.sourceFaces[nextFace], positions);
+            const Vec3 tangent = (nextCentre - previousCentre).normalized();
+            Vec3 averageNormal = previousNormal + nextNormal;
+            if (averageNormal.lengthSquared() <= 1e-8f) averageNormal = previousNormal;
+            else averageNormal.normalize();
+            signature.bend.push_back(bend);
+            signature.rulingAngle.push_back(std::atan2(averageNormal.dot(tangent.cross(ruling)), tangent.dot(ruling)));
+        }
+        return signature;
+    }
+
     static std::filesystem::path dataPath(const std::string& file) {
         const std::filesystem::path requested(file);
         if (requested.is_absolute() || std::filesystem::exists(requested)) return requested;
@@ -103,12 +247,11 @@ private:
         clearRibbonBlockVisualisation();
         clearStackVisualisation();
         if (m_mesh) scene().removeObject(m_mesh);
-        m_mesh = std::make_shared<MeshObject>("developable_ribbon");
+        m_mesh = std::make_shared<ComputeMesh>("stereotomy");
         try {
-            m_mesh->readFromObj(dataPath("ribbon.obj").string());
-            // Blender's exported face corners can be duplicated. The ribbon
-            // ordering is connectivity based, so restore the shared vertices.
+            m_mesh->readFromObj(dataPath("stereotomy.obj").string());
             m_mesh->weld(1e-5f);
+            m_mesh->updateHalfEdgeData();
             m_original = std::make_shared<MeshObject>(m_mesh->duplicate());
             m_original->setShowFaces(false);
             m_original->setShowVertices(false);
@@ -124,12 +267,11 @@ private:
             m_solver.addConstraint<PlanarFaceConstraint>();
 
             std::string diagnostic;
-            m_valid = orderRibbon(*m_mesh->getMeshData(), m_ribbon, &diagnostic);
+            m_valid = extractFaceBlocks(*m_mesh, m_facesPerStrip, m_faceBlocks, &diagnostic);
             if (!m_valid) {
-                m_status = "Ribbon input invalid: " + diagnostic;
+                m_status = "Stereotomy input invalid: " + diagnostic;
                 return;
             }
-            copyRibbonToMesh();
             m_mesh->setColor(Color(0.15f, 0.62f, 0.90f, 1.0f));
             m_mesh->setUseFaceColors(true);
             m_mesh->setShowEdges(true);
@@ -142,18 +284,17 @@ private:
             m_status = diagnostic + "  " + matchSummary() + "  " + stackSummary();
         } catch (const std::exception& error) {
             m_valid = false;
-            m_status = std::string("Could not load ribbon.obj: ") + error.what();
+            m_status = std::string("Could not load stereotomy.obj: ") + error.what();
         }
     }
 
     void planarise() {
         if (!m_valid) return;
         const int iterations = m_solver.solve(*m_mesh);
-        copyMeshToRibbon();
+        if (m_mesh) m_mesh->getMeshData()->calculateNormals();
         refreshSignatures();
         std::ostringstream report;
-        report << "ProjectionSolver planar-face solve: " << iterations << " iterations; max residual " << std::scientific
-               << std::setprecision(2) << maxRibbonPlanarityError(m_ribbon) << ". "
+        report << "ProjectionSolver planar-face solve: " << iterations << " iterations. "
                << matchSummary() << "  " << stackSummary();
         m_status = report.str();
     }
@@ -174,12 +315,35 @@ private:
 
     void refreshSignatures() {
         if (!m_valid) return;
-        const int faceCount = static_cast<int>(m_ribbon.faces.size());
-        m_facesPerStrip = std::min(std::clamp(m_facesPerStrip, 2, kMaxFacesPerStrip), faceCount);
+        m_facesPerStrip = std::clamp(m_facesPerStrip, 2, kMaxFacesPerStrip);
         m_facesPerStripSlider = static_cast<float>(m_facesPerStrip);
-        m_signatures = buildRibbonSignatures(m_ribbon, m_facesPerStrip, m_facesPerStrip);
-        m_bottomRibbon = offsetRibbonAlongVertexNormals(m_ribbon, -m_stripThickness);
-        m_bottomSignatures = buildRibbonSignatures(m_bottomRibbon, m_facesPerStrip, m_facesPerStrip);
+        std::string diagnostic;
+        m_valid = extractFaceBlocks(*m_mesh, m_facesPerStrip, m_faceBlocks, &diagnostic);
+        if (!m_valid) {
+            m_status = "Stereotomy traversal failed: " + diagnostic;
+            return;
+        }
+        const std::shared_ptr<MeshData> data = m_mesh->getMeshData();
+        data->calculateNormals();
+        m_bottomPositions.clear();
+        m_bottomPositions.reserve(data->vertices.size());
+        for (const MeshVertex& vertex : data->vertices) m_bottomPositions.push_back(vertex.position - vertex.normal * m_stripThickness);
+        m_signatures.clear();
+        m_bottomSignatures.clear();
+        m_stackBlockIndices.clear();
+        std::vector<Vec3> positions;
+        positions.reserve(data->vertices.size());
+        for (const MeshVertex& vertex : data->vertices) positions.push_back(vertex.position);
+        // Short remainders are still extruded and coloured.  Stack comparison
+        // retains its original equal-length descriptor assumption, so only
+        // complete N-face blocks participate in that ordering.
+        for (int blockIndex = 0; blockIndex < static_cast<int>(m_faceBlocks.size()); ++blockIndex) {
+            const FaceBlock& block = m_faceBlocks[blockIndex];
+            if (static_cast<int>(block.sourceFaces.size()) != m_facesPerStrip) continue;
+            m_signatures.push_back(buildBlockSignature(*data, block, blockIndex, positions));
+            m_bottomSignatures.push_back(buildBlockSignature(*data, block, blockIndex, m_bottomPositions));
+            m_stackBlockIndices.push_back(blockIndex);
+        }
         m_matches = findSimilarRibbonStrips(m_signatures, 3);
         m_stackResult = findBestRibbonStack(m_signatures, m_bottomSignatures);
         applyStripColours();
@@ -189,20 +353,19 @@ private:
     }
 
     static Color stripColour(int index, int count) {
-        const float t = count <= 1 ? 0.5f : static_cast<float>(index) / static_cast<float>(count - 1);
-        return Color::lerp(Color(0.96f, 0.38f, 0.70f, 1.0f), Color(0.30f, 0.68f, 0.96f, 1.0f), t);
+        static const Color hotPink(1.0f, 0.08f, 0.58f, 1.0f);
+        static const Color blue(0.10f, 0.38f, 1.0f, 1.0f);
+        (void)count;
+        return index % 2 == 0 ? hotPink : blue;
     }
 
     void applyStripColours() {
         const std::shared_ptr<MeshData> data = m_mesh ? m_mesh->getMeshData() : nullptr;
         if (!data) return;
         for (MeshFace& face : data->faces) face.color = Color(0.82f, 0.82f, 0.82f, 1.0f);
-        for (int strip = 0; strip < static_cast<int>(m_signatures.size()); ++strip) {
-            const RibbonSignature& signature = m_signatures[strip];
-            const Color colour = stripColour(strip, static_cast<int>(m_signatures.size()));
-            for (int ribbonFace = signature.startFace; ribbonFace < signature.startFace + signature.faceCount &&
-                 ribbonFace < static_cast<int>(m_ribbon.sourceFaceIndices.size()); ++ribbonFace) {
-                const int sourceFace = m_ribbon.sourceFaceIndices[ribbonFace];
+        for (int strip = 0; strip < static_cast<int>(m_faceBlocks.size()); ++strip) {
+            const Color colour = stripColour(strip, static_cast<int>(m_faceBlocks.size()));
+            for (const int sourceFace : m_faceBlocks[strip].sourceFaces) {
                 if (sourceFace >= 0 && sourceFace < static_cast<int>(data->faces.size())) {
                     data->faces[sourceFace].color = colour;
                 }
@@ -211,9 +374,9 @@ private:
     }
 
     std::string matchSummary() const {
-        if (m_signatures.empty()) return "Need at least two faces per strip.";
+        if (m_faceBlocks.empty()) return "No extracted face blocks.";
         std::ostringstream summary;
-        summary << m_signatures.size() << " windows (" << m_facesPerStrip << " faces)";
+        summary << m_faceBlocks.size() << " blocks (up to " << m_facesPerStrip << " faces)";
         if (!m_matches.empty()) {
             const RibbonMatch& match = m_matches.front();
             summary << "; closest " << match.stripA << "-" << match.stripB
@@ -247,40 +410,30 @@ private:
         std::shared_ptr<MeshObject> mesh;
     };
 
-    StackStripGeometry buildStackStripGeometry(const RibbonSignature& signature) const {
+    StackStripGeometry buildStackStripGeometry(int blockIndex) const {
         StackStripGeometry result;
-        const int firstStation = signature.startFace;
-        const int lastStation = signature.startFace + signature.faceCount;
-        const Vec3 firstCentre = (m_ribbon.vertices[m_ribbon.railP[firstStation]] +
-                                  m_ribbon.vertices[m_ribbon.railQ[firstStation]]) * 0.5f;
-        const Vec3 lastCentre = (m_ribbon.vertices[m_ribbon.railP[lastStation]] +
-                                 m_ribbon.vertices[m_ribbon.railQ[lastStation]]) * 0.5f;
+        const std::shared_ptr<MeshData> data = m_mesh ? m_mesh->getMeshData() : nullptr;
+        if (!data || blockIndex < 0 || blockIndex >= static_cast<int>(m_faceBlocks.size())) return result;
+        const FaceBlock& block = m_faceBlocks[blockIndex];
+        std::vector<Vec3> positions;
+        positions.reserve(data->vertices.size());
+        for (const MeshVertex& vertex : data->vertices) positions.push_back(vertex.position);
+        if (block.sourceFaces.empty()) return result;
+        const Vec3 firstCentre = faceCentre(*data, block.sourceFaces.front(), positions);
+        const Vec3 lastCentre = faceCentre(*data, block.sourceFaces.back(), positions);
         Vec3 longitudinal = (lastCentre - firstCentre).normalized();
-        Vec3 ruling;
-        Vec3 origin;
-        for (int station = firstStation; station <= lastStation; ++station) {
-            const Vec3& p = m_ribbon.vertices[m_ribbon.railP[station]];
-            const Vec3& q = m_ribbon.vertices[m_ribbon.railQ[station]];
-            ruling += q - p;
-            origin += (p + q) * 0.5f;
-        }
-        origin /= static_cast<float>(signature.faceCount + 1);
-        if (longitudinal.lengthSquared() <= 1e-8f) longitudinal = Vec3(1.0f, 0.0f, 0.0f);
-        ruling -= longitudinal * longitudinal.dot(ruling);
-        if (ruling.lengthSquared() <= 1e-8f) ruling = Vec3(0.0f, 1.0f, 0.0f);
-        ruling.normalize();
-        Vec3 normal = longitudinal.cross(ruling).normalized();
-        if (normal.lengthSquared() <= 1e-8f) normal = Vec3(0.0f, 0.0f, 1.0f);
         Vec3 averageFaceNormal;
-        for (int faceIndex = signature.startFace; faceIndex < signature.startFace + signature.faceCount; ++faceIndex) {
-            const std::array<int, 4>& face = m_ribbon.faces[faceIndex];
-            const Vec3& a = m_ribbon.vertices[face[0]];
-            const Vec3& b = m_ribbon.vertices[face[1]];
-            const Vec3& d = m_ribbon.vertices[face[3]];
-            averageFaceNormal += (b - a).cross(d - a).normalized();
+        Vec3 origin;
+        for (int faceIndex : block.sourceFaces) {
+            origin += faceCentre(*data, faceIndex, positions);
+            averageFaceNormal += faceNormal(*data, faceIndex, positions);
         }
-        if (averageFaceNormal.lengthSquared() > 1e-8f && normal.dot(averageFaceNormal) < 0.0f) normal = -normal;
-        ruling = normal.cross(longitudinal).normalized();
+        origin /= static_cast<float>(block.sourceFaces.size());
+        if (longitudinal.lengthSquared() <= 1e-8f) longitudinal = Vec3(1.0f, 0.0f, 0.0f);
+        Vec3 normal = averageFaceNormal.normalized();
+        if (normal.lengthSquared() <= 1e-8f) normal = Vec3(0.0f, 0.0f, 1.0f);
+        Vec3 ruling = normal.cross(longitudinal).normalized();
+        if (ruling.lengthSquared() <= 1e-8f) ruling = Vec3(0.0f, 1.0f, 0.0f);
 
         auto toLocal = [&](const Vec3& point) {
             const Vec3 delta = point - origin;
@@ -288,13 +441,13 @@ private:
         };
 
         std::unordered_map<int, int> vertexMap;
-        for (int faceIndex = signature.startFace; faceIndex < signature.startFace + signature.faceCount; ++faceIndex) {
+        for (int faceIndex : block.sourceFaces) {
             std::vector<int> face;
-            for (int vertex : m_ribbon.faces[faceIndex]) {
+            for (int vertex : data->faces[faceIndex].vertices) {
                 auto [entry, inserted] = vertexMap.emplace(vertex, static_cast<int>(result.positions.size()));
                 if (inserted) {
-                    result.positions.push_back(toLocal(m_ribbon.vertices[vertex]));
-                    result.bottomPositions.push_back(toLocal(m_bottomRibbon.vertices[vertex]));
+                    result.positions.push_back(toLocal(positions[vertex]));
+                    result.bottomPositions.push_back(toLocal(m_bottomPositions[vertex]));
                 }
                 face.push_back(entry->second);
             }
@@ -307,9 +460,8 @@ private:
             result.maxZ = std::max(result.maxZ, position.z);
         }
         if (!result.positions.empty()) result.labelPosition /= static_cast<float>(result.positions.size());
-        for (int station = firstStation; station <= lastStation; ++station) {
-            result.rulings.push_back({toLocal(m_ribbon.vertices[m_ribbon.railP[station]]),
-                                      toLocal(m_ribbon.vertices[m_ribbon.railQ[station]])});
+        for (const auto& [start, end] : block.walkEdges) {
+            result.rulings.push_back({toLocal(positions[start]), toLocal(positions[end])});
         }
         return result;
     }
@@ -345,32 +497,33 @@ private:
 
     void rebuildRibbonBlockVisualisation() {
         clearRibbonBlockVisualisation();
-        if (!m_valid) return;
-        for (int strip = 0; strip < static_cast<int>(m_signatures.size()); ++strip) {
-            const RibbonSignature& signature = m_signatures[strip];
+        const std::shared_ptr<MeshData> data = m_mesh ? m_mesh->getMeshData() : nullptr;
+        if (!m_valid || !data || m_bottomPositions.size() != data->vertices.size()) return;
+        for (int strip = 0; strip < static_cast<int>(m_faceBlocks.size()); ++strip) {
+            const FaceBlock& sourceBlock = m_faceBlocks[strip];
             std::unordered_map<int, int> vertexMap;
             std::vector<Vec3> topPositions;
             std::vector<Vec3> bottomPositions;
             std::vector<std::vector<int>> faces;
-            for (int faceIndex = signature.startFace;
-                 faceIndex < signature.startFace + signature.faceCount;
-                 ++faceIndex) {
+            for (int faceIndex : sourceBlock.sourceFaces) {
+                if (faceIndex < 0 || faceIndex >= static_cast<int>(data->faces.size())) continue;
                 std::vector<int> face;
-                for (int vertex : m_ribbon.faces[faceIndex]) {
+                for (int vertex : data->faces[faceIndex].vertices) {
+                    if (vertex < 0 || vertex >= static_cast<int>(data->vertices.size())) continue;
                     auto [entry, inserted] = vertexMap.emplace(vertex, static_cast<int>(topPositions.size()));
                     if (inserted) {
-                        topPositions.push_back(m_ribbon.vertices[vertex]);
-                        bottomPositions.push_back(m_bottomRibbon.vertices[vertex]);
+                        topPositions.push_back(data->vertices[vertex].position);
+                        bottomPositions.push_back(m_bottomPositions[vertex]);
                     }
                     face.push_back(entry->second);
                 }
                 faces.push_back(std::move(face));
             }
-            auto block = createSolidBlock("ribbon_block_" + std::to_string(strip), topPositions, bottomPositions,
-                                          faces, stripColour(strip, static_cast<int>(m_signatures.size())));
-            if (!block) continue;
-            scene().addObject(block);
-            m_ribbonBlocks.push_back(std::move(block));
+            auto solid = createSolidBlock("ribbon_block_" + std::to_string(strip), topPositions, bottomPositions,
+                                          faces, stripColour(strip, static_cast<int>(m_faceBlocks.size())));
+            if (!solid) continue;
+            scene().addObject(solid);
+            m_ribbonBlocks.push_back(std::move(solid));
         }
     }
 
@@ -389,7 +542,8 @@ private:
         std::vector<StackStripGeometry> geometries;
         geometries.reserve(m_stackResult.order.size());
         for (int stripIndex : m_stackResult.order) {
-            geometries.push_back(buildStackStripGeometry(m_signatures[stripIndex]));
+            if (stripIndex < 0 || stripIndex >= static_cast<int>(m_stackBlockIndices.size())) return;
+            geometries.push_back(buildStackStripGeometry(m_stackBlockIndices[stripIndex]));
         }
 
         // Place every layer at exact bounding-box contact with the preceding
@@ -453,9 +607,10 @@ private:
             }
             geometry.labelPosition += offset;
 
+            const int blockIndex = m_stackBlockIndices[stripIndex];
             auto mesh = createSolidBlock("ribbon_stack_layer_" + std::to_string(layer), geometry.positions,
                                          geometry.bottomPositions, geometry.faces,
-                                         stripColour(stripIndex, static_cast<int>(m_signatures.size())));
+                                         stripColour(blockIndex, static_cast<int>(m_faceBlocks.size())));
             for (const Vec3& position : geometry.bottomPositions) {
                 m_stackBoundsMin.x = std::min(m_stackBoundsMin.x, position.x);
                 m_stackBoundsMin.y = std::min(m_stackBoundsMin.y, position.y);
@@ -482,32 +637,37 @@ private:
     }
 
     void drawRulings(Renderer& renderer) const {
-        for (size_t i = 0; i < m_ribbon.railP.size(); ++i) {
-            const Vec3& p = m_ribbon.vertices[m_ribbon.railP[i]];
-            const Vec3& q = m_ribbon.vertices[m_ribbon.railQ[i]];
-            renderer.drawLine(p, q, Color(0.95f, 0.22f, 0.08f, 1.0f), 1.3f);
+        const std::shared_ptr<MeshData> data = m_mesh ? m_mesh->getMeshData() : nullptr;
+        if (!data) return;
+        for (const FaceBlock& block : m_faceBlocks) {
+            for (const auto& [start, end] : block.walkEdges) {
+                if (start < 0 || end < 0 || start >= static_cast<int>(data->vertices.size()) ||
+                    end >= static_cast<int>(data->vertices.size())) continue;
+                renderer.drawLine(data->vertices[start].position, data->vertices[end].position,
+                                  Color(0.95f, 0.22f, 0.08f, 1.0f), 1.3f);
+            }
         }
     }
 
     void drawStripIndices(Renderer& renderer) const {
         renderer.setColor(Color(0.08f, 0.08f, 0.12f, 1.0f));
-        for (int strip = 0; strip < static_cast<int>(m_signatures.size()); ++strip) {
-            const RibbonSignature& signature = m_signatures[strip];
+        const std::shared_ptr<MeshData> data = m_mesh ? m_mesh->getMeshData() : nullptr;
+        if (!data) return;
+        for (int strip = 0; strip < static_cast<int>(m_faceBlocks.size()); ++strip) {
             Vec3 centre;
             Vec3 normal;
             int pointCount = 0;
-            for (int faceIndex = signature.startFace;
-                 faceIndex < signature.startFace + signature.faceCount && faceIndex < static_cast<int>(m_ribbon.faces.size());
-                 ++faceIndex) {
-                const std::array<int, 4>& face = m_ribbon.faces[faceIndex];
-                const Vec3& a = m_ribbon.vertices[face[0]];
-                const Vec3& b = m_ribbon.vertices[face[1]];
-                const Vec3& d = m_ribbon.vertices[face[3]];
+            for (int faceIndex : m_faceBlocks[strip].sourceFaces) {
+                if (faceIndex < 0 || faceIndex >= static_cast<int>(data->faces.size())) continue;
+                const std::vector<int>& face = data->faces[faceIndex].vertices;
                 for (int vertex : face) {
-                    centre += m_ribbon.vertices[vertex];
+                    centre += data->vertices[vertex].position;
                     ++pointCount;
                 }
-                normal += (b - a).cross(d - a).normalized();
+                if (face.size() >= 3) {
+                    normal += (data->vertices[face[1]].position - data->vertices[face[0]].position)
+                                  .cross(data->vertices[face[2]].position - data->vertices[face[0]].position).normalized();
+                }
             }
             if (pointCount == 0) continue;
             centre /= static_cast<float>(pointCount);
@@ -575,21 +735,24 @@ private:
         if (!segments.empty()) renderer.drawLines(segments.data(), static_cast<int>(segments.size()), color, width);
     }
 
-    std::shared_ptr<MeshObject> m_mesh;
+    std::shared_ptr<ComputeMesh> m_mesh;
     std::shared_ptr<MeshObject> m_original;
     std::unique_ptr<SimpleUI> m_ui;
     ProjectionSolver m_solver;
     QuadRibbon m_ribbon;
     QuadRibbon m_bottomRibbon;
+    std::vector<FaceBlock> m_faceBlocks;
+    std::vector<Vec3> m_bottomPositions;
     std::vector<RibbonSignature> m_signatures;
     std::vector<RibbonSignature> m_bottomSignatures;
+    std::vector<int> m_stackBlockIndices;
     std::vector<RibbonMatch> m_matches;
     RibbonStackResult m_stackResult;
     std::vector<std::shared_ptr<MeshObject>> m_ribbonBlocks;
     std::vector<StackVisualLayer> m_stackLayers;
-    std::string m_status{"Loading ribbon.obj..."};
+    std::string m_status{"Loading stereotomy.obj..."};
     int m_facesPerStrip{12};
-    float m_facesPerStripSlider{12.0f};
+    float m_facesPerStripSlider{8.0f};
     float m_stripThickness{0.015f};
     float m_lastStackThickness{-1.0f};
     bool m_showOriginal{true};
