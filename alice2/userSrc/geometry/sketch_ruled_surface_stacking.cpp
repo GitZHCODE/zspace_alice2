@@ -92,13 +92,6 @@ private:
     static constexpr int kMaxSurfaceCount = 50;
     static constexpr int kMaxFacesPerSurface = 24;
 
-    int sampleResolution() const {
-        // Gap-matrix work grows with surfaceCount^2. Keep 100 samples for
-        // small diagnostic sets and reduce gradually for the 50-surface view.
-        const double count = std::max(1, m_generation.surfaceCount);
-        return std::clamp(static_cast<int>(std::lround(240.0 / std::sqrt(count))), 24, 100);
-    }
-
     void clearMeshes() {
         for (const auto& mesh : m_meshes) {
             if (mesh) scene().removeObject(mesh);
@@ -114,7 +107,8 @@ private:
         for (size_t i = 0; i < m_surfaces.size(); ++i) {
             m_valid[i] = isValidForStackDirection(m_surfaces[i], stackDirection);
         }
-        m_gapMatrix = buildRuledSurfaceGapMatrix(m_surfaces, kClearance, sampleResolution());
+        const RuledSurfaceBounds2D foamFootprint = ruledSurfaceGroupBoundsXY(m_surfaces);
+        m_gapMatrix = buildExtendedSweepGapMatrix(m_surfaces, foamFootprint, kClearance);
         m_solution = findRuledSurfaceStack(m_surfaces, m_gapMatrix);
         buildMeshes();
         writeDiagnostics();
@@ -220,7 +214,7 @@ private:
                   << " faces=" << m_generation.faceCount << " randomness=" << m_generation.randomness
                   << " length randomness=" << m_generation.lengthRandomness << " seed=" << m_generation.seed
                   << " ruling turn=" << m_generation.rulingRotation
-                  << " samples=" << sampleResolution()
+                  << " gaps=exact extended-ruling sweep"
                   << " order=" << (m_generation.surfaceCount <= 8 ? "brute force" : "multi-start greedy")
                   << " (clearance " << kClearance << ")\n";
         for (size_t i = 0; i < m_surfaces.size(); ++i) {

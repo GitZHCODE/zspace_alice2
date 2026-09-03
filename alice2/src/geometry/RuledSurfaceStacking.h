@@ -92,6 +92,7 @@ bool isValidForStackDirection(const RuledSurface& surface,
 
 double ruledSurfacePlaneHeight(const RuledSurfacePlane& plane, const Eigen::Vector2d& xy);
 RuledSurfaceBounds2D ruledSurfaceBoundsXY(const RuledSurface& surface);
+RuledSurfaceBounds2D ruledSurfaceGroupBoundsXY(const std::vector<RuledSurface>& surfaces);
 int findRuledSurfaceFaceAtXY(const RuledSurface& surface,
                              const Eigen::Vector2d& xy,
                              double epsilon = 1e-9);
@@ -109,6 +110,14 @@ double sampledRuledSurfaceNestingGap(const RuledSurface& below,
 Eigen::MatrixXd buildRuledSurfaceGapMatrix(const std::vector<RuledSurface>& surfaces,
                                            double clearance = 0.0,
                                            int resolution = 100);
+
+// Exact hot-wire gap model. Every bounding ruling is extended to
+// foamFootprint and the finite swept patch between the extended ruling pair
+// is compared with every original finite face of the other surface. The pair
+// cost enforces both possible cutting sweeps.
+Eigen::MatrixXd buildExtendedSweepGapMatrix(const std::vector<RuledSurface>& surfaces,
+                                            const RuledSurfaceBounds2D& foamFootprint,
+                                            double clearance = 0.0);
 
 // stackZ is indexed by the layer position in order, not by surface index.
 std::vector<double> solveRuledSurfaceStackHeights(const std::vector<int>& order,

@@ -53,6 +53,151 @@ bool pointInTriangle(const Eigen::Vector2d& point,
                       : (u <= epsilon && v <= epsilon && w <= epsilon);
 }
 
+using Polygon2D = std::vector<Eigen::Vector2d>;
+
+double polygonAreaTwice(const Polygon2D& polygon) {
+    double result = 0.0;
+    for (size_t i = 0; i < polygon.size(); ++i) {
+        const Eigen::Vector2d& a = polygon[i];
+        const Eigen::Vector2d& b = polygon[(i + 1) % polygon.size()];
+        result += cross2D(a, b);
+    }
+    return result;
+}
+
+// Sutherland-Hodgman clipping against a*x + b*y + c >= 0.
+Polygon2D clipPolygonAgainstLinear(const Polygon2D& polygon, double a, double b, double c) {
+    if (polygon.empty()) return {};
+    constexpr double epsilon = 1e-12;
+    Polygon2D result;
+    result.reserve(polygon.size() + 1);
+    Eigen::Vector2d previous = polygon.back();
+    double previousValue = a * previous.x() + b * previous.y() + c;
+    bool previousInside = previousValue >= -epsilon;
+    for (const Eigen::Vector2d& current : polygon) {
+        const double currentValue = a * current.x() + b * current.y() + c;
+        const bool currentInside = currentValue >= -epsilon;
+        if (currentInside != previousInside) {
+            const double denominator = previousValue - currentValue;
+            if (std::abs(denominator) > epsilon) {
+                const double t = std::clamp(previousValue / denominator, 0.0, 1.0);
+                result.push_back(previous + t * (current - previous));
+            }
+        }
+        if (currentInside) result.push_back(current);
+        previous = current;
+        previousValue = currentValue;
+        previousInside = currentInside;
+    }
+    return result;
+}
+
+Polygon2D clipPolygonAgainstConvexPolygon(const Polygon2D& subject, const Polygon2D& clip) {
+    if (subject.empty() || clip.size() < 3 || std::abs(polygonAreaTwice(clip)) <= kDegenerateEpsilon) return {};
+    Polygon2D result = subject;
+    const double orientation = polygonAreaTwice(clip) >= 0.0 ? 1.0 : -1.0;
+    for (size_t i = 0; i < clip.size() && !result.empty(); ++i) {
+        const Eigen::Vector2d& a = clip[i];
+        const Eigen::Vector2d& b = clip[(i + 1) % clip.size()];
+        const Eigen::Vector2d edge = b - a;
+        // orientation * cross(edge, point - a) >= 0
+        result = clipPolygonAgainstLinear(result,
+            orientation * -edge.y(), orientation * edge.x(),
+            orientation * (edge.y() * a.x() - edge.x() * a.y()));
+    }
+    return result;
+}
+
+bool extendRulingToBounds(const RuledSurfaceRuling& ruling,
+                          const RuledSurfaceBounds2D& bounds,
+                          RuledSurfaceRuling& extended) {
+    const Eigen::Vector3d direction = ruling.right - ruling.left;
+    double tMin = -std::numeric_limits<double>::infinity();
+    double tMax = std::numeric_limits<double>::infinity();
+    const auto clipAxis = [&](double origin, double delta, double minimum, double maximum) -> bool {
+        if (std::abs(delta) <= kDegenerateEpsilon) {
+            return origin >= minimum - kDegenerateEpsilon && origin <= maximum + kDegenerateEpsilon;
+        }
+        double first = (minimum - origin) / delta;
+        double second = (maximum - origin) / delta;
+        if (first > second) std::swap(first, second);
+        tMin = std::max(tMin, first);
+        tMax = std::min(tMax, second);
+        return tMin <= tMax + kDegenerateEpsilon;
+    };
+    if (!clipAxis(ruling.left.x(), direction.x(), bounds.min.x(), bounds.max.x()) ||
+        !clipAxis(ruling.left.y(), direction.y(), bounds.min.y(), bounds.max.y())) {
+        return false;
+    }
+    if (!std::isfinite(tMin) || !std::isfinite(tMax)) return false;
+    extended.left = ruling.left + tMin * direction;
+    extended.right = ruling.left + tMax * direction;
+    return true;
+}
+
+struct ExtendedSweepFace {
+    std::array<Eigen::Vector3d, 4> vertices;
+    RuledSurfacePlane plane;
+};
+
+std::optional<ExtendedSweepFace> makeExtendedSweepFace(const RuledSurface& surface,
+                                                        size_t faceIndex,
+                                                        const RuledSurfaceBounds2D& foamFootprint) {
+    if (faceIndex >= surface.faces.size()) return std::nullopt;
+    // Mesh/import callers may supply faces without source rulings. In that
+    // case retain the finite face rather than invent an unsupported extension.
+    if (surface.rulings.size() != surface.faces.size() + 1) {
+        return ExtendedSweepFace{surface.faces[faceIndex].vertices, surface.faces[faceIndex].plane};
+    }
+    RuledSurfaceRuling first;
+    RuledSurfaceRuling second;
+    if (!extendRulingToBounds(surface.rulings[faceIndex], foamFootprint, first) ||
+        !extendRulingToBounds(surface.rulings[faceIndex + 1], foamFootprint, second)) {
+        return std::nullopt;
+    }
+    return ExtendedSweepFace{{first.left, second.left, second.right, first.right},
+                             surface.faces[faceIndex].plane};
+}
+
+double maxExtendedSweepFiniteFaceDifference(const RuledSurface& extendedSurface,
+                                            const RuledSurface& finiteSurface,
+                                            const RuledSurfaceBounds2D& foamFootprint,
+                                            bool extendedMinusFinite) {
+    double result = -std::numeric_limits<double>::infinity();
+    constexpr std::array<std::array<int, 3>, 2> triangles{{{{0, 1, 2}}, {{0, 2, 3}}}};
+    for (size_t extendedIndex = 0; extendedIndex < extendedSurface.faces.size(); ++extendedIndex) {
+        const auto extendedFace = makeExtendedSweepFace(extendedSurface, extendedIndex, foamFootprint);
+        if (!extendedFace) continue;
+        if (std::abs(extendedFace->plane.n.z()) <= kDegenerateEpsilon) continue;
+        for (const RuledSurfaceFace& finiteFace : finiteSurface.faces) {
+            if (std::abs(finiteFace.plane.n.z()) <= kDegenerateEpsilon) continue;
+            for (const auto& extendedTriangle : triangles) {
+                Polygon2D extendedPolygon{
+                    projectXY(extendedFace->vertices[extendedTriangle[0]]),
+                    projectXY(extendedFace->vertices[extendedTriangle[1]]),
+                    projectXY(extendedFace->vertices[extendedTriangle[2]])};
+                if (std::abs(polygonAreaTwice(extendedPolygon)) <= kDegenerateEpsilon) continue;
+                for (const auto& finiteTriangle : triangles) {
+                    const Polygon2D finitePolygon{
+                        projectXY(finiteFace.vertices[finiteTriangle[0]]),
+                        projectXY(finiteFace.vertices[finiteTriangle[1]]),
+                        projectXY(finiteFace.vertices[finiteTriangle[2]])};
+                    Polygon2D overlap = clipPolygonAgainstConvexPolygon(extendedPolygon, finitePolygon);
+                    if (overlap.size() < 3 || std::abs(polygonAreaTwice(overlap)) <= kDegenerateEpsilon) continue;
+                    for (const Eigen::Vector2d& point : overlap) {
+                        const double extendedHeight = ruledSurfacePlaneHeight(extendedFace->plane, point);
+                        const double finiteHeight = ruledSurfacePlaneHeight(finiteFace.plane, point);
+                        const double difference = extendedMinusFinite ? extendedHeight - finiteHeight
+                                                                       : finiteHeight - extendedHeight;
+                        result = std::max(result, difference);
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
+
 std::pair<double, double> localZRange(const RuledSurface& surface) {
     double minZ = std::numeric_limits<double>::infinity();
     double maxZ = -std::numeric_limits<double>::infinity();
@@ -316,6 +461,23 @@ RuledSurfaceBounds2D ruledSurfaceBoundsXY(const RuledSurface& surface) {
     return result;
 }
 
+RuledSurfaceBounds2D ruledSurfaceGroupBoundsXY(const std::vector<RuledSurface>& surfaces) {
+    RuledSurfaceBounds2D result;
+    bool foundFace = false;
+    for (const RuledSurface& surface : surfaces) {
+        if (surface.faces.empty()) continue;
+        const RuledSurfaceBounds2D bounds = ruledSurfaceBoundsXY(surface);
+        if (!foundFace) {
+            result = bounds;
+            foundFace = true;
+        } else {
+            result.min = result.min.cwiseMin(bounds.min);
+            result.max = result.max.cwiseMax(bounds.max);
+        }
+    }
+    return result;
+}
+
 int findRuledSurfaceFaceAtXY(const RuledSurface& surface,
                              const Eigen::Vector2d& xy,
                              double epsilon) {
@@ -378,6 +540,27 @@ Eigen::MatrixXd buildRuledSurfaceGapMatrix(const std::vector<RuledSurface>& surf
             if (lower != upper) {
                 result(lower, upper) = sampledRuledSurfaceNestingGap(
                     surfaces[lower], surfaces[upper], clearance, resolution);
+            }
+        }
+    }
+    return result;
+}
+
+Eigen::MatrixXd buildExtendedSweepGapMatrix(const std::vector<RuledSurface>& surfaces,
+                                            const RuledSurfaceBounds2D& foamFootprint,
+                                            double clearance) {
+    const Eigen::Index count = static_cast<Eigen::Index>(surfaces.size());
+    Eigen::MatrixXd result = Eigen::MatrixXd::Zero(count, count);
+    for (Eigen::Index lower = 0; lower < count; ++lower) {
+        for (Eigen::Index upper = 0; upper < count; ++upper) {
+            if (lower == upper) continue;
+            const double lowerExtended = maxExtendedSweepFiniteFaceDifference(
+                surfaces[lower], surfaces[upper], foamFootprint, true);
+            const double upperExtended = maxExtendedSweepFiniteFaceDifference(
+                surfaces[upper], surfaces[lower], foamFootprint, false);
+            const double maximumDifference = std::max(lowerExtended, upperExtended);
+            if (std::isfinite(maximumDifference)) {
+                result(lower, upper) = std::max(0.0, maximumDifference + std::max(0.0, clearance));
             }
         }
     }
