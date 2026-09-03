@@ -60,7 +60,7 @@ public:
 
     void draw(Renderer& renderer, Camera&) override {
         renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
-        renderer.drawString("r reload | p solve planar faces | s toggle stack | o toggle original wire | [ / ] strip faces", 10.0f, 30.0f);
+        renderer.drawString("r reload | p solve planar faces | s toggle stack | i ruling-ray check | o toggle original wire | [ / ] strip faces", 10.0f, 30.0f);
         if (m_ui) m_ui->draw(renderer);
         renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
         renderer.drawString(m_status, 10.0f, 120.0f);
@@ -72,6 +72,7 @@ public:
         if (m_showStack) {
             drawStackAnnotations(renderer);
             drawStackBounds(renderer);
+            if (m_showRulingRayCheck) drawRulingRayHits(renderer);
         }
     }
 
@@ -80,6 +81,7 @@ public:
             case 'r': case 'R': reload(); return true;
             case 'p': case 'P': planarise(); return true;
             case 's': case 'S': toggleStackVisualisation(); return true;
+            case 'i': case 'I': toggleRulingRayCheck(); return true;
             case 'o': case 'O': m_showOriginal = !m_showOriginal; return true;
             case '[': m_facesPerStrip = std::max(2, m_facesPerStrip - 1); m_facesPerStripSlider = static_cast<float>(m_facesPerStrip); refreshSignatures(); return true;
             case ']': m_facesPerStrip = std::min(kMaxFacesPerStrip, m_facesPerStrip + 1); m_facesPerStripSlider = static_cast<float>(m_facesPerStrip); refreshSignatures(); return true;
@@ -210,6 +212,69 @@ private:
         const std::vector<int>& face = mesh.faces[faceIndex].vertices;
         if (face.size() < 3) return Vec3{};
         return (positions[face[1]] - positions[face[0]]).cross(positions[face[2]] - positions[face[0]]).normalized();
+    }
+
+    // The traversal edge is not necessarily a ruling.  A ribbon ruling is
+    // the transverse edge shared by two consecutive quad faces in its
+    // ordered face walk.
+    static bool sharedFaceEdge(const MeshData& mesh, int firstFace, int secondFace, std::pair<int, int>& edge) {
+        if (firstFace < 0 || secondFace < 0 || firstFace >= static_cast<int>(mesh.faces.size()) ||
+            secondFace >= static_cast<int>(mesh.faces.size())) return false;
+        const std::vector<int>& first = mesh.faces[firstFace].vertices;
+        const std::vector<int>& second = mesh.faces[secondFace].vertices;
+        if (first.size() < 2 || second.size() < 2) return false;
+        for (size_t firstVertex = 0; firstVertex < first.size(); ++firstVertex) {
+            const int a = first[firstVertex];
+            const int b = first[(firstVertex + 1) % first.size()];
+            for (size_t secondVertex = 0; secondVertex < second.size(); ++secondVertex) {
+                const int c = second[secondVertex];
+                const int d = second[(secondVertex + 1) % second.size()];
+                if ((a == c && b == d) || (a == d && b == c)) {
+                    edge = {a, b};
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    static bool oppositeQuadEdge(const MeshData& mesh, int faceIndex, const std::pair<int, int>& edge,
+                                 std::pair<int, int>& opposite) {
+        if (faceIndex < 0 || faceIndex >= static_cast<int>(mesh.faces.size())) return false;
+        const std::vector<int>& face = mesh.faces[faceIndex].vertices;
+        if (face.size() != 4) return false;
+        for (size_t vertex = 0; vertex < face.size(); ++vertex) {
+            const int a = face[vertex];
+            const int b = face[(vertex + 1) % face.size()];
+            if (!((a == edge.first && b == edge.second) || (a == edge.second && b == edge.first))) continue;
+            opposite = {face[(vertex + 2) % face.size()], face[(vertex + 3) % face.size()]};
+            return true;
+        }
+        return false;
+    }
+
+    static std::vector<std::pair<int, int>> blockRulingEdges(const MeshData& mesh, const FaceBlock& block) {
+        std::vector<std::pair<int, int>> result;
+        if (block.sourceFaces.size() < 2) return result;
+        std::vector<std::pair<int, int>> interior;
+        interior.reserve(block.sourceFaces.size() - 1);
+        for (size_t face = 1; face < block.sourceFaces.size(); ++face) {
+            std::pair<int, int> edge;
+            if (sharedFaceEdge(mesh, block.sourceFaces[face - 1], block.sourceFaces[face], edge)) {
+                interior.push_back(edge);
+            }
+        }
+        if (interior.empty()) return result;
+        std::pair<int, int> startBoundary;
+        if (oppositeQuadEdge(mesh, block.sourceFaces.front(), interior.front(), startBoundary)) {
+            result.push_back(startBoundary);
+        }
+        result.insert(result.end(), interior.begin(), interior.end());
+        std::pair<int, int> endBoundary;
+        if (oppositeQuadEdge(mesh, block.sourceFaces.back(), interior.back(), endBoundary)) {
+            result.push_back(endBoundary);
+        }
+        return result;
     }
 
     // Each solid must use normals averaged over its own faces.  Averaging over
@@ -561,6 +626,7 @@ private:
         std::vector<Vec3> bottomPositions;
         std::vector<std::vector<int>> faces;
         std::vector<std::pair<Vec3, Vec3>> rulings;
+        std::vector<std::pair<Vec3, Vec3>> bottomRulings;
         Vec3 labelPosition;
     };
 
@@ -571,12 +637,36 @@ private:
         int layerInStack = -1;
         Vec3 labelPosition;
         std::vector<std::pair<Vec3, Vec3>> rulings;
+        std::vector<std::pair<Vec3, Vec3>> bottomRulings;
+        std::vector<Vec3> topPositions;
+        std::vector<Vec3> bottomPositions;
+        std::vector<std::vector<int>> faces;
         std::shared_ptr<MeshObject> mesh;
     };
 
     struct StackBounds {
         Vec3 minimum;
         Vec3 maximum;
+    };
+
+    // A zero-radius, two-sided wire line coincident with one displayed
+    // ruling.  The target layer is the closest other solid struck by it.
+    struct RulingRayHit {
+        int sourceLayer = -1;
+        int targetLayer = -1;
+        int rulingIndex = -1;
+        bool bottomSkin = false;
+        Vec3 origin;
+        Vec3 direction;
+        Vec3 point;
+    };
+
+    struct RulingRayLine {
+        int sourceLayer = -1;
+        int rulingIndex = -1;
+        bool bottomSkin = false;
+        Vec3 origin;
+        Vec3 direction;
     };
 
     StackStripGeometry buildStackStripGeometry(int blockIndex, bool reversed) const {
@@ -634,8 +724,12 @@ private:
             result.labelPosition += position;
         }
         if (!result.positions.empty()) result.labelPosition /= static_cast<float>(result.positions.size());
-        for (const auto& [start, end] : block.walkEdges) {
+        for (const auto& [start, end] : blockRulingEdges(*data, block)) {
             result.rulings.push_back({toLocal(positions[start]), toLocal(positions[end])});
+            if (blockIndex < static_cast<int>(m_blockBottomPositions.size())) {
+                const std::vector<Vec3>& bottom = m_blockBottomPositions[blockIndex];
+                result.bottomRulings.push_back({toLocal(bottom[start]), toLocal(bottom[end])});
+            }
         }
         return result;
     }
@@ -804,6 +898,8 @@ private:
         }
         m_stackLayers.clear();
         m_stackGroupBounds.clear();
+        m_rulingRayHits.clear();
+        m_rulingRayLines.clear();
         m_stackBoundsValid = false;
     }
 
@@ -918,6 +1014,10 @@ private:
                     ruling.first += offset;
                     ruling.second += offset;
                 }
+                for (auto& ruling : geometry.bottomRulings) {
+                    ruling.first += offset;
+                    ruling.second += offset;
+                }
                 geometry.labelPosition += offset;
                 const int blockIndex = m_stackBlockIndices[stripIndex];
                 auto mesh = createSolidBlock("ribbon_stack_" + std::to_string(stackIndex) + "_layer_" +
@@ -926,12 +1026,138 @@ private:
                 if (!mesh) continue;
                 scene().addObject(mesh);
                 m_stackLayers.push_back({stripIndex, reversed, stackIndex, static_cast<int>(layer - begin),
-                                         geometry.labelPosition, std::move(geometry.rulings), std::move(mesh)});
+                                         geometry.labelPosition, std::move(geometry.rulings),
+                                         std::move(geometry.bottomRulings), std::move(geometry.positions),
+                                         std::move(geometry.bottomPositions), std::move(geometry.faces), std::move(mesh)});
             }
             m_stackGroupBounds.push_back(groupBounds);
         }
         m_stackBoundsValid = !m_stackLayers.empty();
         m_lastStackThickness = m_stripThickness;
+        if (m_showRulingRayCheck) rebuildRulingRayCheck();
+    }
+
+    static bool intersectRayTriangle(const Vec3& origin, const Vec3& direction,
+                                     const Vec3& a, const Vec3& b, const Vec3& c, float& distance) {
+        constexpr float epsilon = 1e-6f;
+        const Vec3 edgeAB = b - a;
+        const Vec3 edgeAC = c - a;
+        const Vec3 perpendicular = direction.cross(edgeAC);
+        const float determinant = edgeAB.dot(perpendicular);
+        if (std::abs(determinant) <= epsilon) return false;
+        const float inverseDeterminant = 1.0f / determinant;
+        const Vec3 toOrigin = origin - a;
+        const float u = toOrigin.dot(perpendicular) * inverseDeterminant;
+        if (u < -epsilon || u > 1.0f + epsilon) return false;
+        const Vec3 q = toOrigin.cross(edgeAB);
+        const float v = direction.dot(q) * inverseDeterminant;
+        if (v < -epsilon || u + v > 1.0f + epsilon) return false;
+        const float candidate = edgeAC.dot(q) * inverseDeterminant;
+        if (candidate <= epsilon) return false;
+        distance = candidate;
+        return true;
+    }
+
+    static bool intersectRayRibbonSkin(const std::vector<Vec3>& positions, const std::vector<std::vector<int>>& faces,
+                                       const Vec3& origin, const Vec3& direction, float& distance) {
+        bool hit = false;
+        distance = std::numeric_limits<float>::infinity();
+        for (const std::vector<int>& vertices : faces) {
+            if (vertices.size() < 3) continue;
+            for (size_t vertex = 1; vertex + 1 < vertices.size(); ++vertex) {
+                const int ia = vertices[0];
+                const int ib = vertices[vertex];
+                const int ic = vertices[vertex + 1];
+                if (ia < 0 || ib < 0 || ic < 0 || ia >= static_cast<int>(positions.size()) ||
+                    ib >= static_cast<int>(positions.size()) || ic >= static_cast<int>(positions.size())) continue;
+                float candidate = 0.0f;
+                if (intersectRayTriangle(origin, direction, positions[ia], positions[ib], positions[ic], candidate) &&
+                    candidate < distance) {
+                    distance = candidate;
+                    hit = true;
+                }
+            }
+        }
+        return hit;
+    }
+
+    void rebuildRulingRayCheck() {
+        m_rulingRayHits.clear();
+        m_rulingRayLines.clear();
+        if (!m_showRulingRayCheck || m_stackLayers.empty()) return;
+        for (int sourceIndex = 0; sourceIndex < static_cast<int>(m_stackLayers.size()); ++sourceIndex) {
+            const StackVisualLayer& source = m_stackLayers[sourceIndex];
+            const std::array<std::pair<const std::vector<std::pair<Vec3, Vec3>>*, bool>, 2> rulingSets{{
+                {&source.rulings, false},
+                {&source.bottomRulings, true},
+            }};
+            for (const auto& [rulings, bottomSkin] : rulingSets) {
+                for (int rulingIndex = 0; rulingIndex < static_cast<int>(rulings->size()); ++rulingIndex) {
+                    const auto& ruling = (*rulings)[rulingIndex];
+                    const Vec3 direction = (ruling.second - ruling.first).normalized();
+                    if (direction.lengthSquared() <= 1e-8f) continue;
+                    const Vec3 origin = (ruling.first + ruling.second) * 0.5f;
+                    m_rulingRayLines.push_back({sourceIndex, rulingIndex, bottomSkin, origin, direction});
+                    float closestDistance = std::numeric_limits<float>::infinity();
+                    int closestTarget = -1;
+                    Vec3 closestPoint;
+                    for (int targetIndex = 0; targetIndex < static_cast<int>(m_stackLayers.size()); ++targetIndex) {
+                        const StackVisualLayer& target = m_stackLayers[targetIndex];
+                        if (targetIndex == sourceIndex || target.stackIndex != source.stackIndex) continue;
+                        for (const float sign : {1.0f, -1.0f}) {
+                            const Vec3 rayDirection = direction * sign;
+                            float distance = 0.0f;
+                            float topDistance = 0.0f;
+                            float bottomDistance = 0.0f;
+                            const bool hitsTop = intersectRayRibbonSkin(target.topPositions, target.faces,
+                                                                         origin, rayDirection, topDistance);
+                            const bool hitsBottom = intersectRayRibbonSkin(target.bottomPositions, target.faces,
+                                                                            origin, rayDirection, bottomDistance);
+                            if (!hitsTop && !hitsBottom) continue;
+                            distance = std::min(hitsTop ? topDistance : std::numeric_limits<float>::infinity(),
+                                                hitsBottom ? bottomDistance : std::numeric_limits<float>::infinity());
+                            if (distance < closestDistance) {
+                                closestDistance = distance;
+                                closestTarget = targetIndex;
+                                closestPoint = origin + rayDirection * distance;
+                            }
+                        }
+                    }
+                    if (closestTarget >= 0) {
+                        m_rulingRayHits.push_back({sourceIndex, closestTarget, rulingIndex, bottomSkin,
+                                                   origin, direction, closestPoint});
+                    }
+                }
+            }
+        }
+        std::cout << "[DevelopableRibbon] ruling-ray toolpath check: " << m_rulingRayLines.size()
+                  << " top/bottom ruling lines; " << m_rulingRayHits.size()
+                  << " top/bottom-skin clashes within their own stacks (zero-radius infinite wire lines)\n";
+        constexpr size_t reportLimit = 24;
+        for (size_t index = 0; index < std::min(reportLimit, m_rulingRayHits.size()); ++index) {
+            const RulingRayHit& hit = m_rulingRayHits[index];
+            const StackVisualLayer& source = m_stackLayers[hit.sourceLayer];
+            const StackVisualLayer& target = m_stackLayers[hit.targetLayer];
+            std::cout << "  K" << source.stackIndex << " L" << source.layerInStack << " / S" << source.stripIndex
+                      << (hit.bottomSkin ? " bottom ruling " : " top ruling ") << hit.rulingIndex << " -> K" << target.stackIndex << " L"
+                      << target.layerInStack << " / S" << target.stripIndex << '\n';
+        }
+        if (m_rulingRayHits.size() > reportLimit) {
+            std::cout << "  ... " << (m_rulingRayHits.size() - reportLimit) << " additional clashes\n";
+        }
+        std::cout.flush();
+    }
+
+    void toggleRulingRayCheck() {
+        m_showRulingRayCheck = !m_showRulingRayCheck;
+        if (m_showRulingRayCheck && m_showStack) rebuildRulingRayCheck();
+        if (!m_showRulingRayCheck) {
+            m_rulingRayHits.clear();
+            m_rulingRayLines.clear();
+        }
+        m_status = m_showRulingRayCheck ?
+            "Ruling-ray toolpath check enabled (gray = clear; red = clash)." :
+            "Ruling-ray toolpath check disabled.";
     }
 
     void toggleStackVisualisation() {
@@ -947,7 +1173,7 @@ private:
         const std::shared_ptr<MeshData> data = m_mesh ? m_mesh->getMeshData() : nullptr;
         if (!data) return;
         for (const FaceBlock& block : m_faceBlocks) {
-            for (const auto& [start, end] : block.walkEdges) {
+            for (const auto& [start, end] : blockRulingEdges(*data, block)) {
                 if (start < 0 || end < 0 || start >= static_cast<int>(data->vertices.size()) ||
                     end >= static_cast<int>(data->vertices.size())) continue;
                 renderer.drawLine(data->vertices[start].position, data->vertices[end].position,
@@ -1014,6 +1240,57 @@ private:
         }
     }
 
+    void drawRulingRayHits(Renderer& renderer) const {
+        if (!m_stackBoundsValid) return;
+        for (const RulingRayLine& ray : m_rulingRayLines) {
+            if (ray.sourceLayer < 0 || ray.sourceLayer >= static_cast<int>(m_stackLayers.size())) continue;
+            const int stackIndex = m_stackLayers[ray.sourceLayer].stackIndex;
+            if (stackIndex < 0 || stackIndex >= static_cast<int>(m_stackGroupBounds.size())) continue;
+            Vec3 start;
+            Vec3 end;
+            if (!clipLineToBounds(ray.origin, ray.direction, m_stackGroupBounds[stackIndex], start, end)) continue;
+            renderer.drawLine(start, end, Color(0.42f, 0.42f, 0.42f, 1.0f), 0.8f);
+        }
+        for (const RulingRayHit& hit : m_rulingRayHits) {
+            if (hit.sourceLayer < 0 || hit.sourceLayer >= static_cast<int>(m_stackLayers.size())) continue;
+            const int stackIndex = m_stackLayers[hit.sourceLayer].stackIndex;
+            if (stackIndex < 0 || stackIndex >= static_cast<int>(m_stackGroupBounds.size())) continue;
+            Vec3 start;
+            Vec3 end;
+            if (!clipLineToBounds(hit.origin, hit.direction, m_stackGroupBounds[stackIndex], start, end)) continue;
+            renderer.drawLine(start, end, Color(0.92f, 0.02f, 0.04f, 1.0f), 1.8f);
+            renderer.drawPoint(hit.point, Color(1.0f, 0.78f, 0.02f, 1.0f), 6.0f);
+        }
+    }
+
+    static bool clipLineToBounds(const Vec3& origin, const Vec3& direction, const StackBounds& bounds,
+                                 Vec3& start, Vec3& end) {
+        constexpr float epsilon = 1e-7f;
+        float minimumT = -std::numeric_limits<float>::infinity();
+        float maximumT = std::numeric_limits<float>::infinity();
+        const std::array<float, 3> originComponents{origin.x, origin.y, origin.z};
+        const std::array<float, 3> directionComponents{direction.x, direction.y, direction.z};
+        const std::array<float, 3> minimumComponents{bounds.minimum.x, bounds.minimum.y, bounds.minimum.z};
+        const std::array<float, 3> maximumComponents{bounds.maximum.x, bounds.maximum.y, bounds.maximum.z};
+        for (size_t axis = 0; axis < 3; ++axis) {
+            const float coordinate = originComponents[axis];
+            const float slope = directionComponents[axis];
+            if (std::abs(slope) <= epsilon) {
+                if (coordinate < minimumComponents[axis] - epsilon || coordinate > maximumComponents[axis] + epsilon) return false;
+                continue;
+            }
+            float enter = (minimumComponents[axis] - coordinate) / slope;
+            float exit = (maximumComponents[axis] - coordinate) / slope;
+            if (enter > exit) std::swap(enter, exit);
+            minimumT = std::max(minimumT, enter);
+            maximumT = std::min(maximumT, exit);
+            if (minimumT > maximumT) return false;
+        }
+        start = origin + direction * minimumT;
+        end = origin + direction * maximumT;
+        return true;
+    }
+
     static std::string formatCost(double value) {
         std::ostringstream text;
         text << std::fixed << std::setprecision(4) << value;
@@ -1047,6 +1324,8 @@ private:
     std::vector<std::shared_ptr<MeshObject>> m_ribbonBlocks;
     std::vector<StackVisualLayer> m_stackLayers;
     std::vector<StackBounds> m_stackGroupBounds;
+    std::vector<RulingRayHit> m_rulingRayHits;
+    std::vector<RulingRayLine> m_rulingRayLines;
     std::string m_status{"Loading stereotomy.obj..."};
     int m_facesPerStrip{12};
     float m_facesPerStripSlider{8.0f};
@@ -1058,6 +1337,7 @@ private:
     double m_maxPlanarityDistance{0.0};
     bool m_showOriginal{true};
     bool m_showStack{false};
+    bool m_showRulingRayCheck{false};
     bool m_valid{false};
     Vec3 m_stackBoundsMin;
     Vec3 m_stackBoundsMax;
