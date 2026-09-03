@@ -562,8 +562,6 @@ private:
         std::vector<std::vector<int>> faces;
         std::vector<std::pair<Vec3, Vec3>> rulings;
         Vec3 labelPosition;
-        float minZ = 0.0f;
-        float maxZ = 0.0f;
     };
 
     struct StackVisualLayer {
@@ -592,14 +590,14 @@ private:
         if (block.sourceFaces.empty()) return result;
         const Vec3 firstCentre = faceCentre(*data, block.sourceFaces.front(), positions);
         const Vec3 lastCentre = faceCentre(*data, block.sourceFaces.back(), positions);
-        Vec3 longitudinal = (lastCentre - firstCentre).normalized();
-        Vec3 averageFaceNormal;
         Vec3 origin;
+        Vec3 averageFaceNormal;
         for (int faceIndex : block.sourceFaces) {
             origin += faceCentre(*data, faceIndex, positions);
             averageFaceNormal += faceNormal(*data, faceIndex, positions);
         }
         origin /= static_cast<float>(block.sourceFaces.size());
+        Vec3 longitudinal = (lastCentre - firstCentre).normalized();
         if (longitudinal.lengthSquared() <= 1e-8f) longitudinal = Vec3(1.0f, 0.0f, 0.0f);
         Vec3 normal = averageFaceNormal.normalized();
         if (normal.lengthSquared() <= 1e-8f) normal = Vec3(0.0f, 0.0f, 1.0f);
@@ -617,7 +615,6 @@ private:
             }
             return local;
         };
-
         std::unordered_map<int, int> vertexMap;
         for (int faceIndex : block.sourceFaces) {
             std::vector<int> face;
@@ -633,17 +630,111 @@ private:
             }
             result.faces.push_back(std::move(face));
         }
-        result.minZ = result.maxZ = result.positions.empty() ? 0.0f : result.positions.front().z;
         for (const Vec3& position : result.positions) {
             result.labelPosition += position;
-            result.minZ = std::min(result.minZ, position.z);
-            result.maxZ = std::max(result.maxZ, position.z);
         }
         if (!result.positions.empty()) result.labelPosition /= static_cast<float>(result.positions.size());
         for (const auto& [start, end] : block.walkEdges) {
             result.rulings.push_back({toLocal(positions[start]), toLocal(positions[end])});
         }
         return result;
+    }
+
+    struct ProjectedTriangle {
+        Vec3 a;
+        Vec3 b;
+        Vec3 c;
+    };
+
+    static double cross2D(const Vec3& a, const Vec3& b, const Vec3& c) {
+        return static_cast<double>(b.x - a.x) * static_cast<double>(c.y - a.y) -
+               static_cast<double>(b.y - a.y) * static_cast<double>(c.x - a.x);
+    }
+
+    static bool containsProjectedPoint(const ProjectedTriangle& triangle, const Vec3& point) {
+        constexpr double epsilon = 1e-7;
+        const double ab = cross2D(triangle.a, triangle.b, point);
+        const double bc = cross2D(triangle.b, triangle.c, point);
+        const double ca = cross2D(triangle.c, triangle.a, point);
+        return (ab >= -epsilon && bc >= -epsilon && ca >= -epsilon) ||
+               (ab <= epsilon && bc <= epsilon && ca <= epsilon);
+    }
+
+    static bool segmentIntersection2D(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d, Vec3& point) {
+        constexpr double epsilon = 1e-8;
+        const double rx = static_cast<double>(b.x - a.x);
+        const double ry = static_cast<double>(b.y - a.y);
+        const double sx = static_cast<double>(d.x - c.x);
+        const double sy = static_cast<double>(d.y - c.y);
+        const double denominator = rx * sy - ry * sx;
+        if (std::abs(denominator) <= epsilon) return false;
+        const double qpx = static_cast<double>(c.x - a.x);
+        const double qpy = static_cast<double>(c.y - a.y);
+        const double t = (qpx * sy - qpy * sx) / denominator;
+        const double u = (qpx * ry - qpy * rx) / denominator;
+        if (t < -epsilon || t > 1.0 + epsilon || u < -epsilon || u > 1.0 + epsilon) return false;
+        point = a + (b - a) * static_cast<float>(std::clamp(t, 0.0, 1.0));
+        return true;
+    }
+
+    static float projectedHeight(const ProjectedTriangle& triangle, const Vec3& point) {
+        const double area = cross2D(triangle.a, triangle.b, triangle.c);
+        if (std::abs(area) <= 1e-10) return triangle.a.z;
+        const double wa = cross2D(triangle.b, triangle.c, point) / area;
+        const double wb = cross2D(triangle.c, triangle.a, point) / area;
+        const double wc = 1.0 - wa - wb;
+        return static_cast<float>(wa * triangle.a.z + wb * triangle.b.z + wc * triangle.c.z);
+    }
+
+    static std::vector<ProjectedTriangle> projectedTriangles(const std::vector<Vec3>& positions,
+                                                              const std::vector<std::vector<int>>& faces) {
+        std::vector<ProjectedTriangle> result;
+        for (const std::vector<int>& face : faces) {
+            if (face.size() < 3) continue;
+            for (size_t vertex = 1; vertex + 1 < face.size(); ++vertex) {
+                const int a = face[0];
+                const int b = face[vertex];
+                const int c = face[vertex + 1];
+                if (a < 0 || b < 0 || c < 0 || a >= static_cast<int>(positions.size()) ||
+                    b >= static_cast<int>(positions.size()) || c >= static_cast<int>(positions.size())) continue;
+                const ProjectedTriangle triangle{positions[a], positions[b], positions[c]};
+                if (std::abs(cross2D(triangle.a, triangle.b, triangle.c)) <= 1e-10) continue;
+                result.push_back(triangle);
+            }
+        }
+        return result;
+    }
+
+    static float verticalSeparationOffset(const StackStripGeometry& lower, float lowerZ,
+                                          const StackStripGeometry& upper) {
+        const std::vector<ProjectedTriangle> lowerTriangles = projectedTriangles(lower.positions, lower.faces);
+        const std::vector<ProjectedTriangle> upperTriangles = projectedTriangles(upper.bottomPositions, upper.faces);
+        constexpr float clearance = 1e-4f;
+        float offset = lowerZ;
+        for (const ProjectedTriangle& lowerTriangle : lowerTriangles) {
+            for (const ProjectedTriangle& upperTriangle : upperTriangles) {
+                std::vector<Vec3> contacts;
+                const std::array<Vec3, 3> lowerVertices{lowerTriangle.a, lowerTriangle.b, lowerTriangle.c};
+                const std::array<Vec3, 3> upperVertices{upperTriangle.a, upperTriangle.b, upperTriangle.c};
+                for (const Vec3& point : lowerVertices) if (containsProjectedPoint(upperTriangle, point)) contacts.push_back(point);
+                for (const Vec3& point : upperVertices) if (containsProjectedPoint(lowerTriangle, point)) contacts.push_back(point);
+                for (size_t lowerEdge = 0; lowerEdge < 3; ++lowerEdge) {
+                    const Vec3& la = lowerVertices[lowerEdge];
+                    const Vec3& lb = lowerVertices[(lowerEdge + 1) % 3];
+                    for (size_t upperEdge = 0; upperEdge < 3; ++upperEdge) {
+                        Vec3 point;
+                        if (segmentIntersection2D(la, lb, upperVertices[upperEdge], upperVertices[(upperEdge + 1) % 3], point)) {
+                            contacts.push_back(point);
+                        }
+                    }
+                }
+                for (const Vec3& point : contacts) {
+                    offset = std::max(offset, lowerZ + projectedHeight(lowerTriangle, point) -
+                                               projectedHeight(upperTriangle, point) + clearance);
+                }
+            }
+        }
+        return offset;
     }
 
     std::shared_ptr<MeshObject> createSolidBlock(const std::string& name,
@@ -731,12 +822,9 @@ private:
 
         // Place layers only within their compatible stack group.  A threshold
         // break intentionally creates a separate, side-by-side stack rather
-        // than pretending that a high-cost interface nests.
-        auto bottomMinZ = [&](const StackStripGeometry& geometry) {
-            float result = std::numeric_limits<float>::infinity();
-            for (const Vec3& position : geometry.bottomPositions) result = std::min(result, position.z);
-            return result;
-        };
+        // than pretending that a high-cost interface nests.  Inter-layer
+        // placement clears every overlapping top/bottom triangle pair;
+        // bounds are used below only to centre and draw the finished group.
         const std::shared_ptr<MeshData> originalData = m_mesh ? m_mesh->getMeshData() : nullptr;
         Vec3 originalMin, originalMax;
         if (originalData && !originalData->vertices.empty()) originalData->updateBounds(originalMin, originalMax);
@@ -757,11 +845,29 @@ private:
         for (int stackIndex = 0; stackIndex < static_cast<int>(ranges.size()); ++stackIndex) {
             const auto [begin, end] = ranges[stackIndex];
             std::vector<float> layerZ(end - begin, 0.0f);
-            float stackMinZ = bottomMinZ(geometries[begin]);
-            float stackMaxZ = geometries[begin].maxZ;
             for (size_t layer = begin + 1; layer < end; ++layer) {
-                layerZ[layer - begin] = stackMaxZ - bottomMinZ(geometries[layer]);
-                stackMaxZ = layerZ[layer - begin] + geometries[layer].maxZ;
+                float offset = layerZ[layer - begin - 1];
+                // Clear the incoming layer against every layer already in
+                // this stack, not merely its immediate predecessor.
+                for (size_t lowerLayer = begin; lowerLayer < layer; ++lowerLayer) {
+                    offset = std::max(offset, verticalSeparationOffset(geometries[lowerLayer],
+                                                                         layerZ[lowerLayer - begin],
+                                                                         geometries[layer]));
+                }
+                layerZ[layer - begin] = offset;
+            }
+            float stackMinZ = std::numeric_limits<float>::infinity();
+            float stackMaxZ = -std::numeric_limits<float>::infinity();
+            for (size_t layer = begin; layer < end; ++layer) {
+                const float z = layerZ[layer - begin];
+                for (const Vec3& position : geometries[layer].positions) {
+                    stackMinZ = std::min(stackMinZ, position.z + z);
+                    stackMaxZ = std::max(stackMaxZ, position.z + z);
+                }
+                for (const Vec3& position : geometries[layer].bottomPositions) {
+                    stackMinZ = std::min(stackMinZ, position.z + z);
+                    stackMaxZ = std::max(stackMaxZ, position.z + z);
+                }
             }
             const float centreZ = 0.5f * (stackMinZ + stackMaxZ);
             for (float& z : layerZ) z -= centreZ;
