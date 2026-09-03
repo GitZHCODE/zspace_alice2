@@ -32,8 +32,14 @@ struct RibbonPlanarizationResult {
 struct RibbonSignature {
     int startFace = 0;
     int faceCount = 0;
+    // Normalized arclength location of each descriptor sample. Empty means
+    // uniformly spaced samples, retained for backwards-compatible callers.
+    std::vector<double> station;
     std::vector<double> bend;
     std::vector<double> rulingAngle;
+    // Physical length of the ruling at each sample. Empty means that width is
+    // unavailable and should not contribute to a compatibility cost.
+    std::vector<double> rulingLength;
 };
 
 struct RibbonMatch {

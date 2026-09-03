@@ -19,6 +19,7 @@ struct RibbonCurvatureTensor {
 struct RibbonPairCompatibility {
     double localCost = 0.0;
     double accumulatedCost = 0.0;
+    double widthCost = 0.0;
     double totalCost = 0.0;
     // True when the lower pairwise cost used B traversed in reverse. This is
     // pair-relative diagnostic data; the first ordering pass does not flip
@@ -29,6 +30,9 @@ struct RibbonPairCompatibility {
 struct RibbonStackingSettings {
     double localWeight = 1.0;
     double accumulatedWeight = 1.0;
+    // Relative ruling-width mismatch. This remains a small metric term; it
+    // is not a contact or collision calculation.
+    double widthWeight = 0.10;
     bool allowPairwiseReversal = true;
 };
 
@@ -40,6 +44,8 @@ struct RibbonStackResult {
     // layer in order.  This is globally consistent, unlike the historical
     // pairCosts[i][j].reversed diagnostic.
     std::vector<bool> reversedInOrder;
+    // Primary objective of the bottleneck-aware ordering heuristic.
+    double maxInterfaceCost = 0.0;
     double totalCost = 0.0;
     RibbonStackingCostMatrix pairCosts;
     // Costs for the interfaces actually used by order/reversedInOrder.

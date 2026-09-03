@@ -393,25 +393,36 @@ std::vector<RibbonSignature> buildRibbonSignatures(const QuadRibbon& ribbon,
         RibbonSignature signature;
         signature.startFace = start;
         signature.faceCount = facesPerStrip;
+        signature.station.reserve(facesPerStrip - 1);
         signature.bend.reserve(facesPerStrip - 1);
         signature.rulingAngle.reserve(facesPerStrip - 1);
+        signature.rulingLength.reserve(facesPerStrip - 1);
+        double accumulatedLength = 0.0;
         for (int localStation = 1; localStation < facesPerStrip; ++localStation) {
             const int station = start + localStation;
             const Vec3 ruling = (ribbon.vertices[ribbon.railQ[station]] - ribbon.vertices[ribbon.railP[station]]).normalized();
             const Vec3 previousNormal = normals[station - 1];
             const Vec3 nextNormal = normals[station];
-            const double bend = std::atan2(ruling.dot(previousNormal.cross(nextNormal)),
-                                           clampUnit(previousNormal.dot(nextNormal)));
 
             const Vec3 previousCentre = (ribbon.vertices[ribbon.railP[station - 1]] + ribbon.vertices[ribbon.railQ[station - 1]]) * 0.5f;
+            const Vec3 currentCentre = (ribbon.vertices[ribbon.railP[station]] + ribbon.vertices[ribbon.railQ[station]]) * 0.5f;
             const Vec3 nextCentre = (ribbon.vertices[ribbon.railP[station + 1]] + ribbon.vertices[ribbon.railQ[station + 1]]) * 0.5f;
+            const double stationLength = std::max(1e-8, static_cast<double>((currentCentre - previousCentre).length()));
+            const double dihedral = std::atan2(ruling.dot(previousNormal.cross(nextNormal)),
+                                                clampUnit(previousNormal.dot(nextNormal)));
             const Vec3 tangent = (nextCentre - previousCentre).normalized();
             Vec3 averageNormal = previousNormal + nextNormal;
             if (averageNormal.lengthSquared() <= kEpsilon) averageNormal = previousNormal;
             else averageNormal.normalize();
             const double beta = std::atan2(averageNormal.dot(tangent.cross(ruling)), tangent.dot(ruling));
-            signature.bend.push_back(bend);
+            signature.bend.push_back(dihedral / stationLength);
             signature.rulingAngle.push_back(beta);
+            signature.rulingLength.push_back((ribbon.vertices[ribbon.railQ[station]] - ribbon.vertices[ribbon.railP[station]]).length());
+            signature.station.push_back(accumulatedLength + 0.5 * stationLength);
+            accumulatedLength += stationLength;
+        }
+        if (accumulatedLength > 1e-8) {
+            for (double& station : signature.station) station /= accumulatedLength;
         }
         signatures.push_back(std::move(signature));
     }

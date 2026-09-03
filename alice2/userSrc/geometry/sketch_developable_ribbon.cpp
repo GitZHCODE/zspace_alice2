@@ -33,6 +33,7 @@ public:
         m_ui->addSlider("Faces per strip", Vec2{10.0f, 52.0f}, 210.0f, 2.0f,
                         static_cast<float>(kMaxFacesPerStrip), m_facesPerStripSlider);
         m_ui->addSlider("Thickness (vertex normals)", Vec2{10.0f, 80.0f}, 210.0f, 0.0f, 0.10f, m_stripThickness);
+        m_ui->addSlider("Max interface cost", Vec2{10.0f, 108.0f}, 210.0f, 0.0f, 2.0f, m_stackBreakThreshold);
         reload();
     }
 
@@ -45,6 +46,11 @@ public:
         }
         if (m_valid && std::abs(m_stripThickness - m_lastStackThickness) > 1e-6f) signaturesChanged = true;
         if (signaturesChanged) refreshSignatures();
+        if (m_valid && std::abs(m_stackBreakThreshold - m_lastStackBreakThreshold) > 1e-6f) {
+            m_lastStackBreakThreshold = m_stackBreakThreshold;
+            if (m_showStack) rebuildStackVisualisation();
+            printStackPartition();
+        }
     }
 
     void cleanup() override {
@@ -265,55 +271,35 @@ private:
         std::vector<Vec3> normals;
         normals.reserve(block.sourceFaces.size());
         for (int face : block.sourceFaces) normals.push_back(faceNormal(mesh, face, positions));
+        double accumulatedLength = 0.0;
         for (int station = 1; station < static_cast<int>(block.sourceFaces.size()); ++station) {
             const auto [edgeStart, edgeEnd] = block.walkEdges[station];
             const Vec3 ruling = (positions[edgeEnd] - positions[edgeStart]).normalized();
             const Vec3& previousNormal = normals[station - 1];
             const Vec3& nextNormal = normals[station];
-            const double bend = std::atan2(ruling.dot(previousNormal.cross(nextNormal)),
-                                           std::clamp(static_cast<double>(previousNormal.dot(nextNormal)), -1.0, 1.0));
             const Vec3 previousCentre = faceCentre(mesh, block.sourceFaces[station - 1], positions);
+            const Vec3 currentCentre = faceCentre(mesh, block.sourceFaces[station], positions);
             const int nextFace = std::min(station + 1, static_cast<int>(block.sourceFaces.size()) - 1);
             const Vec3 nextCentre = faceCentre(mesh, block.sourceFaces[nextFace], positions);
+            const double stationLength = std::max(1e-8, static_cast<double>((currentCentre - previousCentre).length()));
+            const double dihedral = std::atan2(ruling.dot(previousNormal.cross(nextNormal)),
+                                                std::clamp(static_cast<double>(previousNormal.dot(nextNormal)), -1.0, 1.0));
             const Vec3 tangent = (nextCentre - previousCentre).normalized();
             Vec3 averageNormal = previousNormal + nextNormal;
             if (averageNormal.lengthSquared() <= 1e-8f) averageNormal = previousNormal;
             else averageNormal.normalize();
-            signature.bend.push_back(bend);
+            // A dihedral is an angle, not curvature.  Divide by the dual
+            // longitudinal spacing before using it in the curvature tensor.
+            signature.bend.push_back(dihedral / stationLength);
             signature.rulingAngle.push_back(std::atan2(averageNormal.dot(tangent.cross(ruling)), tangent.dot(ruling)));
+            signature.rulingLength.push_back((positions[edgeEnd] - positions[edgeStart]).length());
+            signature.station.push_back(accumulatedLength + 0.5 * stationLength);
+            accumulatedLength += stationLength;
+        }
+        if (accumulatedLength > 1e-8) {
+            for (double& station : signature.station) station /= accumulatedLength;
         }
         return signature;
-    }
-
-    // Blocks that end at a centre-graph turn can have fewer faces than the
-    // selected window length.  Compare their shape evolution on the same
-    // normalized station domain instead of discarding them.  Geometry is not
-    // resampled: only the [bend, beta] descriptor used by the cost function.
-    static RibbonSignature resampleSignature(const RibbonSignature& source, int targetSampleCount) {
-        RibbonSignature result = source;
-        if (targetSampleCount <= 0 || source.bend.size() != source.rulingAngle.size() || source.bend.empty()) {
-            result.bend.clear();
-            result.rulingAngle.clear();
-            return result;
-        }
-        if (static_cast<int>(source.bend.size()) == targetSampleCount) return result;
-
-        result.bend.resize(static_cast<size_t>(targetSampleCount));
-        result.rulingAngle.resize(static_cast<size_t>(targetSampleCount));
-        const double sourceLast = static_cast<double>(source.bend.size() - 1);
-        const double targetLast = static_cast<double>(std::max(1, targetSampleCount - 1));
-        for (int sample = 0; sample < targetSampleCount; ++sample) {
-            const double sourcePosition = sourceLast * static_cast<double>(sample) / targetLast;
-            const size_t left = static_cast<size_t>(std::floor(sourcePosition));
-            const size_t right = std::min(left + 1, source.bend.size() - 1);
-            const double blend = sourcePosition - static_cast<double>(left);
-            result.bend[static_cast<size_t>(sample)] =
-                source.bend[left] + (source.bend[right] - source.bend[left]) * blend;
-            const double angleDelta = std::atan2(std::sin(source.rulingAngle[right] - source.rulingAngle[left]),
-                                                 std::cos(source.rulingAngle[right] - source.rulingAngle[left]));
-            result.rulingAngle[static_cast<size_t>(sample)] = source.rulingAngle[left] + angleDelta * blend;
-        }
-        return result;
     }
 
     static std::filesystem::path dataPath(const std::string& file) {
@@ -432,16 +418,13 @@ private:
         for (const FaceBlock& block : m_faceBlocks) {
             m_blockBottomPositions.push_back(offsetBlockAlongVertexNormals(*data, block, positions, m_stripThickness));
         }
-        // Every block participates in the stack.  Short turn remainders are
-        // compared after descriptor-only resampling to the common normalized
-        // station count; their mesh topology is deliberately left intact.
+        // Every block participates at its native face count.  The stacker
+        // evaluates signatures on a common normalized-arclength grid, so no
+        // geometry or ruling-line resampling is required here.
         for (int blockIndex = 0; blockIndex < static_cast<int>(m_faceBlocks.size()); ++blockIndex) {
             const FaceBlock& block = m_faceBlocks[blockIndex];
-            const int targetSampleCount = std::max(1, m_facesPerStrip - 1);
-            m_signatures.push_back(resampleSignature(
-                buildBlockSignature(*data, block, blockIndex, positions), targetSampleCount));
-            m_bottomSignatures.push_back(resampleSignature(
-                buildBlockSignature(*data, block, blockIndex, m_blockBottomPositions[blockIndex]), targetSampleCount));
+            m_signatures.push_back(buildBlockSignature(*data, block, blockIndex, positions));
+            m_bottomSignatures.push_back(buildBlockSignature(*data, block, blockIndex, m_blockBottomPositions[blockIndex]));
             m_stackBlockIndices.push_back(blockIndex);
         }
         m_matches = findSimilarRibbonStrips(m_signatures, 3);
@@ -490,8 +473,40 @@ private:
     std::string stackSummary() const {
         if (m_stackResult.order.empty()) return "No stack order.";
         std::ostringstream summary;
-        summary << "stack cost " << std::fixed << std::setprecision(3) << m_stackResult.totalCost;
+        summary << stackRanges().size() << " stacks; worst/total " << std::fixed << std::setprecision(3)
+                << m_stackResult.maxInterfaceCost << '/' << m_stackResult.totalCost;
         return summary.str();
+    }
+
+    std::vector<std::pair<size_t, size_t>> stackRanges() const {
+        std::vector<std::pair<size_t, size_t>> ranges;
+        if (m_stackResult.order.empty()) return ranges;
+        size_t begin = 0;
+        for (size_t layer = 1; layer < m_stackResult.order.size(); ++layer) {
+            const double cost = layer - 1 < m_stackResult.interfaceCosts.size() ?
+                m_stackResult.interfaceCosts[layer - 1].totalCost : std::numeric_limits<double>::infinity();
+            if (cost > static_cast<double>(m_stackBreakThreshold)) {
+                ranges.push_back({begin, layer});
+                begin = layer;
+            }
+        }
+        ranges.push_back({begin, m_stackResult.order.size()});
+        return ranges;
+    }
+
+    void printStackPartition() const {
+        const auto ranges = stackRanges();
+        if (ranges.empty()) return;
+        std::cout << "[DevelopableRibbon] stack break threshold=" << std::fixed << std::setprecision(6)
+                  << m_stackBreakThreshold << "; groups=" << ranges.size() << '\n';
+        for (size_t group = 0; group < ranges.size(); ++group) {
+            std::cout << "  stack " << group << ':';
+            for (size_t layer = ranges[group].first; layer < ranges[group].second; ++layer) {
+                std::cout << ' ' << m_stackResult.order[layer];
+            }
+            std::cout << '\n';
+        }
+        std::cout.flush();
     }
 
     // Stack diagnostics belong in the terminal: the on-screen view remains a
@@ -506,13 +521,13 @@ private:
         }
         std::cout << "[DevelopableRibbon] " << traversalDiagnostic
                   << "; thickness=" << std::fixed << std::setprecision(5) << m_stripThickness
-                  << "; stack strips=" << m_faceBlocks.size() << " (native " << completeBlocks
-                  << ", resampled " << remainderSizes.size() << ')'
-                  << "; descriptor samples/strip=" << std::max(0, m_facesPerStrip - 1)
+                  << "; stack strips=" << m_faceBlocks.size() << " (" << completeBlocks
+                  << " x " << m_facesPerStrip << " faces, " << remainderSizes.size() << " short native blocks)"
+                  << "; native descriptor samples=" << std::max(0, m_facesPerStrip - 1)
                   << "; quad plane distance mean/max=" << std::setprecision(8)
                   << m_meanPlanarityDistance << '/' << m_maxPlanarityDistance << '\n';
         if (!remainderSizes.empty()) {
-            std::cout << "[DevelopableRibbon] resampled partial block face counts:";
+            std::cout << "[DevelopableRibbon] short native block face counts:";
             for (const int count : remainderSizes) std::cout << ' ' << count;
             std::cout << '\n';
         }
@@ -520,8 +535,9 @@ private:
             std::cout << "[DevelopableRibbon] No valid stack order.\n";
             return;
         }
-        std::cout << "[DevelopableRibbon] state-aware stack: total="
-                  << std::setprecision(8) << m_stackResult.totalCost << '\n';
+        std::cout << "[DevelopableRibbon] bottleneck-aware stack: worst="
+                  << std::setprecision(8) << m_stackResult.maxInterfaceCost
+                  << "; total=" << m_stackResult.totalCost << '\n';
         for (size_t layer = 0; layer < m_stackResult.order.size(); ++layer) {
             const bool reversed = layer < m_stackResult.reversedInOrder.size() && m_stackResult.reversedInOrder[layer];
             std::cout << "  layer " << layer << ": strip " << m_stackResult.order[layer]
@@ -531,11 +547,13 @@ private:
                 std::cout << " | top(" << m_stackResult.order[layer - 1] << ") -> bottom("
                           << m_stackResult.order[layer] << "): local=" << cost.localCost
                           << ", accumulated=" << cost.accumulatedCost
+                          << ", width=" << cost.widthCost
                           << ", total=" << cost.totalCost;
             }
             std::cout << '\n';
         }
         std::cout.flush();
+        printStackPartition();
     }
 
     struct StackStripGeometry {
@@ -551,9 +569,16 @@ private:
     struct StackVisualLayer {
         int stripIndex = -1;
         bool reversed = false;
+        int stackIndex = -1;
+        int layerInStack = -1;
         Vec3 labelPosition;
         std::vector<std::pair<Vec3, Vec3>> rulings;
         std::shared_ptr<MeshObject> mesh;
+    };
+
+    struct StackBounds {
+        Vec3 minimum;
+        Vec3 maximum;
     };
 
     StackStripGeometry buildStackStripGeometry(int blockIndex, bool reversed) const {
@@ -687,6 +712,7 @@ private:
             if (layer.mesh) scene().removeObject(layer.mesh);
         }
         m_stackLayers.clear();
+        m_stackGroupBounds.clear();
         m_stackBoundsValid = false;
     }
 
@@ -703,84 +729,100 @@ private:
             geometries.push_back(buildStackStripGeometry(m_stackBlockIndices[stripIndex], reversed));
         }
 
-        // Place every layer at exact bounding-box contact with the preceding
-        // layer. This deliberately adds no arbitrary inter-layer clearance.
+        // Place layers only within their compatible stack group.  A threshold
+        // break intentionally creates a separate, side-by-side stack rather
+        // than pretending that a high-cost interface nests.
         auto bottomMinZ = [&](const StackStripGeometry& geometry) {
             float result = std::numeric_limits<float>::infinity();
             for (const Vec3& position : geometry.bottomPositions) result = std::min(result, position.z);
             return result;
         };
-        std::vector<float> layerZ(geometries.size(), 0.0f);
-        float stackMinZ = bottomMinZ(geometries.front());
-        float stackMaxZ = geometries.front().maxZ;
-        for (size_t layer = 1; layer < geometries.size(); ++layer) {
-            // The bottom face of this upper solid contacts the top face of the
-            // preceding solid.  This remains a bounding-box presentation
-            // placement, not a contact solver.
-            layerZ[layer] = stackMaxZ - bottomMinZ(geometries[layer]);
-            stackMaxZ = layerZ[layer] + geometries[layer].maxZ;
-        }
-        const float centreZ = 0.5f * (stackMinZ + stackMaxZ);
-        for (float& z : layerZ) z -= centreZ;
-
-        float stackMinX = std::numeric_limits<float>::infinity();
-        float stackMaxX = -std::numeric_limits<float>::infinity();
-        float stackMinY = std::numeric_limits<float>::infinity();
-        float stackMaxY = -std::numeric_limits<float>::infinity();
-        for (const StackStripGeometry& geometry : geometries) {
-            for (const Vec3& position : geometry.positions) {
-                stackMinX = std::min(stackMinX, position.x);
-                stackMaxX = std::max(stackMaxX, position.x);
-                stackMinY = std::min(stackMinY, position.y);
-                stackMaxY = std::max(stackMaxY, position.y);
-            }
-        }
         const std::shared_ptr<MeshData> originalData = m_mesh ? m_mesh->getMeshData() : nullptr;
         Vec3 originalMin, originalMax;
         if (originalData && !originalData->vertices.empty()) originalData->updateBounds(originalMin, originalMax);
-        const float displaySeparation = std::max(0.05f, 0.1f * std::max(originalMax.x - originalMin.x, stackMaxX - stackMinX));
-        const Vec3 stackOffset(originalMax.x - stackMinX + displaySeparation,
-                               0.5f * (originalMin.y + originalMax.y - stackMinY - stackMaxY),
-                               0.0f);
+        const float displaySeparation = std::max(0.05f, 0.1f * (originalMax.x - originalMin.x));
         m_stackBoundsMin = Vec3(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity());
         m_stackBoundsMax = Vec3(-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity());
-        for (int layer = 0; layer < static_cast<int>(geometries.size()); ++layer) {
-            StackStripGeometry& geometry = geometries[layer];
-            const int stripIndex = m_stackResult.order[layer];
-            const bool reversed = layer < static_cast<int>(m_stackResult.reversedInOrder.size()) &&
-                                  m_stackResult.reversedInOrder[layer];
-            const Vec3 offset = stackOffset + Vec3(0.0f, 0.0f, layerZ[layer]);
-            for (Vec3& position : geometry.positions) {
-                position += offset;
-                m_stackBoundsMin.x = std::min(m_stackBoundsMin.x, position.x);
-                m_stackBoundsMin.y = std::min(m_stackBoundsMin.y, position.y);
-                m_stackBoundsMin.z = std::min(m_stackBoundsMin.z, position.z);
-                m_stackBoundsMax.x = std::max(m_stackBoundsMax.x, position.x);
-                m_stackBoundsMax.y = std::max(m_stackBoundsMax.y, position.y);
-                m_stackBoundsMax.z = std::max(m_stackBoundsMax.z, position.z);
-            }
-            for (Vec3& position : geometry.bottomPositions) position += offset;
-            for (auto& ruling : geometry.rulings) {
-                ruling.first += offset;
-                ruling.second += offset;
-            }
-            geometry.labelPosition += offset;
+        auto includeInBounds = [&](const Vec3& point) {
+            m_stackBoundsMin.x = std::min(m_stackBoundsMin.x, point.x);
+            m_stackBoundsMin.y = std::min(m_stackBoundsMin.y, point.y);
+            m_stackBoundsMin.z = std::min(m_stackBoundsMin.z, point.z);
+            m_stackBoundsMax.x = std::max(m_stackBoundsMax.x, point.x);
+            m_stackBoundsMax.y = std::max(m_stackBoundsMax.y, point.y);
+            m_stackBoundsMax.z = std::max(m_stackBoundsMax.z, point.z);
+        };
 
-            const int blockIndex = m_stackBlockIndices[stripIndex];
-            auto mesh = createSolidBlock("ribbon_stack_layer_" + std::to_string(layer), geometry.positions,
-                                         geometry.bottomPositions, geometry.faces,
-                                         stripColour(blockIndex, static_cast<int>(m_faceBlocks.size())));
-            for (const Vec3& position : geometry.bottomPositions) {
-                m_stackBoundsMin.x = std::min(m_stackBoundsMin.x, position.x);
-                m_stackBoundsMin.y = std::min(m_stackBoundsMin.y, position.y);
-                m_stackBoundsMin.z = std::min(m_stackBoundsMin.z, position.z);
-                m_stackBoundsMax.x = std::max(m_stackBoundsMax.x, position.x);
-                m_stackBoundsMax.y = std::max(m_stackBoundsMax.y, position.y);
-                m_stackBoundsMax.z = std::max(m_stackBoundsMax.z, position.z);
+        float nextStackX = originalMax.x + displaySeparation;
+        const auto ranges = stackRanges();
+        for (int stackIndex = 0; stackIndex < static_cast<int>(ranges.size()); ++stackIndex) {
+            const auto [begin, end] = ranges[stackIndex];
+            std::vector<float> layerZ(end - begin, 0.0f);
+            float stackMinZ = bottomMinZ(geometries[begin]);
+            float stackMaxZ = geometries[begin].maxZ;
+            for (size_t layer = begin + 1; layer < end; ++layer) {
+                layerZ[layer - begin] = stackMaxZ - bottomMinZ(geometries[layer]);
+                stackMaxZ = layerZ[layer - begin] + geometries[layer].maxZ;
             }
-            if (!mesh) continue;
-            scene().addObject(mesh);
-            m_stackLayers.push_back({stripIndex, reversed, geometry.labelPosition, std::move(geometry.rulings), std::move(mesh)});
+            const float centreZ = 0.5f * (stackMinZ + stackMaxZ);
+            for (float& z : layerZ) z -= centreZ;
+
+            float minX = std::numeric_limits<float>::infinity();
+            float maxX = -std::numeric_limits<float>::infinity();
+            float minY = std::numeric_limits<float>::infinity();
+            float maxY = -std::numeric_limits<float>::infinity();
+            for (size_t layer = begin; layer < end; ++layer) {
+                for (const Vec3& position : geometries[layer].positions) {
+                    minX = std::min(minX, position.x);
+                    maxX = std::max(maxX, position.x);
+                    minY = std::min(minY, position.y);
+                    maxY = std::max(maxY, position.y);
+                }
+            }
+            const Vec3 stackOffset(nextStackX - minX,
+                                   0.5f * (originalMin.y + originalMax.y - minY - maxY), 0.0f);
+            nextStackX += maxX - minX + displaySeparation;
+            StackBounds groupBounds{
+                Vec3(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()),
+                Vec3(-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity())};
+            auto includeInGroupBounds = [&](const Vec3& point) {
+                groupBounds.minimum.x = std::min(groupBounds.minimum.x, point.x);
+                groupBounds.minimum.y = std::min(groupBounds.minimum.y, point.y);
+                groupBounds.minimum.z = std::min(groupBounds.minimum.z, point.z);
+                groupBounds.maximum.x = std::max(groupBounds.maximum.x, point.x);
+                groupBounds.maximum.y = std::max(groupBounds.maximum.y, point.y);
+                groupBounds.maximum.z = std::max(groupBounds.maximum.z, point.z);
+            };
+
+            for (size_t layer = begin; layer < end; ++layer) {
+                StackStripGeometry& geometry = geometries[layer];
+                const int stripIndex = m_stackResult.order[layer];
+                const bool reversed = layer < m_stackResult.reversedInOrder.size() && m_stackResult.reversedInOrder[layer];
+                const Vec3 offset = stackOffset + Vec3(0.0f, 0.0f, layerZ[layer - begin]);
+                for (Vec3& position : geometry.positions) {
+                    position += offset;
+                    includeInBounds(position);
+                    includeInGroupBounds(position);
+                }
+                for (Vec3& position : geometry.bottomPositions) {
+                    position += offset;
+                    includeInBounds(position);
+                    includeInGroupBounds(position);
+                }
+                for (auto& ruling : geometry.rulings) {
+                    ruling.first += offset;
+                    ruling.second += offset;
+                }
+                geometry.labelPosition += offset;
+                const int blockIndex = m_stackBlockIndices[stripIndex];
+                auto mesh = createSolidBlock("ribbon_stack_" + std::to_string(stackIndex) + "_layer_" +
+                                             std::to_string(layer - begin), geometry.positions, geometry.bottomPositions,
+                                             geometry.faces, stripColour(blockIndex, static_cast<int>(m_faceBlocks.size())));
+                if (!mesh) continue;
+                scene().addObject(mesh);
+                m_stackLayers.push_back({stripIndex, reversed, stackIndex, static_cast<int>(layer - begin),
+                                         geometry.labelPosition, std::move(geometry.rulings), std::move(mesh)});
+            }
+            m_stackGroupBounds.push_back(groupBounds);
         }
         m_stackBoundsValid = !m_stackLayers.empty();
         m_lastStackThickness = m_stripThickness;
@@ -837,9 +879,9 @@ private:
 
     void drawStackAnnotations(Renderer& renderer) const {
         renderer.setColor(Color(0.08f, 0.08f, 0.12f, 1.0f));
-        for (int layer = 0; layer < static_cast<int>(m_stackLayers.size()); ++layer) {
-            const StackVisualLayer& item = m_stackLayers[layer];
-            renderer.drawText("L" + std::to_string(layer) + " / S" + std::to_string(item.stripIndex) +
+        for (const StackVisualLayer& item : m_stackLayers) {
+            renderer.drawText("K" + std::to_string(item.stackIndex) + " L" + std::to_string(item.layerInStack) +
+                              " / S" + std::to_string(item.stripIndex) +
                               (item.reversed ? " R" : " F"),
                               item.labelPosition, 1.0f);
             for (const auto& ruling : item.rulings) {
@@ -850,15 +892,20 @@ private:
 
     void drawStackBounds(Renderer& renderer) const {
         if (!m_stackBoundsValid) return;
-        const Vec3& lo = m_stackBoundsMin;
-        const Vec3& hi = m_stackBoundsMax;
-        const std::array<Vec3, 8> corners = {
-            Vec3(lo.x, lo.y, lo.z), Vec3(hi.x, lo.y, lo.z), Vec3(hi.x, hi.y, lo.z), Vec3(lo.x, hi.y, lo.z),
-            Vec3(lo.x, lo.y, hi.z), Vec3(hi.x, lo.y, hi.z), Vec3(hi.x, hi.y, hi.z), Vec3(lo.x, hi.y, hi.z)};
         constexpr std::array<std::array<int, 2>, 12> edges = {{{0, 1}, {1, 2}, {2, 3}, {3, 0},
                                                                   {4, 5}, {5, 6}, {6, 7}, {7, 4},
                                                                   {0, 4}, {1, 5}, {2, 6}, {3, 7}}};
-        for (const auto& edge : edges) renderer.drawLine(corners[edge[0]], corners[edge[1]], Color(0.0f, 0.0f, 0.0f, 1.0f), 1.2f);
+        auto drawBounds = [&](const StackBounds& bounds, const Color& color, float width) {
+            const Vec3& lo = bounds.minimum;
+            const Vec3& hi = bounds.maximum;
+            const std::array<Vec3, 8> corners = {
+                Vec3(lo.x, lo.y, lo.z), Vec3(hi.x, lo.y, lo.z), Vec3(hi.x, hi.y, lo.z), Vec3(lo.x, hi.y, lo.z),
+                Vec3(lo.x, lo.y, hi.z), Vec3(hi.x, lo.y, hi.z), Vec3(hi.x, hi.y, hi.z), Vec3(lo.x, hi.y, hi.z)};
+            for (const auto& edge : edges) renderer.drawLine(corners[edge[0]], corners[edge[1]], color, width);
+        };
+        for (const StackBounds& bounds : m_stackGroupBounds) {
+            drawBounds(bounds, Color(0.0f, 0.0f, 0.0f, 1.0f), 1.5f);
+        }
     }
 
     static std::string formatCost(double value) {
@@ -893,11 +940,14 @@ private:
     RibbonStackResult m_stackResult;
     std::vector<std::shared_ptr<MeshObject>> m_ribbonBlocks;
     std::vector<StackVisualLayer> m_stackLayers;
+    std::vector<StackBounds> m_stackGroupBounds;
     std::string m_status{"Loading stereotomy.obj..."};
     int m_facesPerStrip{12};
     float m_facesPerStripSlider{8.0f};
     float m_stripThickness{0.015f};
     float m_lastStackThickness{-1.0f};
+    float m_stackBreakThreshold{0.10f};
+    float m_lastStackBreakThreshold{-1.0f};
     double m_meanPlanarityDistance{0.0};
     double m_maxPlanarityDistance{0.0};
     bool m_showOriginal{true};
