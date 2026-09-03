@@ -19,6 +19,25 @@ double cross2D(const Eigen::Vector2d& a, const Eigen::Vector2d& b) {
     return a.x() * b.y() - a.y() * b.x();
 }
 
+void centreRulingsInXY(std::vector<RuledSurfaceRuling>& rulings) {
+    if (rulings.empty()) return;
+    Eigen::Vector2d minimum = Eigen::Vector2d::Constant(std::numeric_limits<double>::infinity());
+    Eigen::Vector2d maximum = Eigen::Vector2d::Constant(-std::numeric_limits<double>::infinity());
+    for (const RuledSurfaceRuling& ruling : rulings) {
+        minimum = minimum.cwiseMin(projectXY(ruling.left));
+        minimum = minimum.cwiseMin(projectXY(ruling.right));
+        maximum = maximum.cwiseMax(projectXY(ruling.left));
+        maximum = maximum.cwiseMax(projectXY(ruling.right));
+    }
+    const Eigen::Vector2d centre = 0.5 * (minimum + maximum);
+    for (RuledSurfaceRuling& ruling : rulings) {
+        ruling.left.x() -= centre.x();
+        ruling.left.y() -= centre.y();
+        ruling.right.x() -= centre.x();
+        ruling.right.y() -= centre.y();
+    }
+}
+
 bool pointInTriangle(const Eigen::Vector2d& point,
                      const Eigen::Vector2d& a,
                      const Eigen::Vector2d& b,
@@ -232,8 +251,10 @@ std::vector<RuledSurface> makeProceduralRuledSurfaces(
                 faceNormal.normalize();
                 if (faceNormal.z() < 0.0) faceNormal = -faceNormal;
 
+                // Keep this orientation tied to rulingDirection x faceNormal:
+                // reversing it later in the walk would reverse the generated
+                // quad winding even though faceNormal itself points upward.
                 Eigen::Vector3d advance = rulingDirection.cross(faceNormal).normalized();
-                if (advance.x() < 0.0) advance = -advance;
                 const double requestedTurn = kMaxTurnRadians * rulingRotation * unit(random);
                 double acceptedTurn = requestedTurn;
                 Eigen::Vector3d nextDirection = rulingDirection;
@@ -244,12 +265,22 @@ std::vector<RuledSurface> makeProceduralRuledSurfaces(
                     if (std::abs(nextDirection.z()) <= 0.60) break;
                     acceptedTurn *= 0.5;
                 }
-                centre += advance * stepLength;
+                // A negative turn moves the next left endpoint back along
+                // the advance direction. Move the ruling centre farther when
+                // needed so the planar quad cannot fold over and reverse its
+                // normal, especially on a short, high-density strip.
+                const double noFoldAdvance = 0.5 * rulingLength *
+                    std::max(0.0, -std::sin(acceptedTurn)) + 0.05 * stepLength;
+                centre += advance * std::max(stepLength, noFoldAdvance);
                 rulings.push_back({centre - 0.5 * rulingLength * nextDirection,
                                     centre + 0.5 * rulingLength * nextDirection});
                 rulingDirection = nextDirection;
             }
         }
+        // Generated sweeps all begin at a construction-side ruling. Recenter
+        // their XY footprints before stacking so shorter or turned strips do
+        // not artificially enlarge the group bounding box in one direction.
+        centreRulingsInXY(rulings);
         result.push_back(makeRuledSurface(rulings));
     }
     return result;
