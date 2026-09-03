@@ -767,6 +767,9 @@ bool TnaSolver::solveVerticalEquilibrium(const TnaVerticalSettings& settings) {
     for (const int vertex : horizontal.fixedFormVertices) {
         if (validVertex(result.formDiagram, vertex)) fixed[vertex] = true;
     }
+    for (const int vertex : settings.fixedVertices) {
+        if (validVertex(result.formDiagram, vertex)) fixed[vertex] = true;
+    }
     const int fixedCount = static_cast<int>(std::count(fixed.begin(), fixed.end(), true));
     if (fixedCount == 0) {
         result.diagnostic = "Vertical equilibrium needs at least one fixed support vertex";

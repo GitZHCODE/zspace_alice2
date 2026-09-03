@@ -1,4 +1,4 @@
-// #define __MAIN__
+#define __MAIN__
 #ifdef __MAIN__
 
 #include <alice2.h>
@@ -34,7 +34,7 @@ public:
         m_ui->addSlider("H max iterations", Vec2{10.0f, 120.0f}, 190.0f, 1.0f, 500.0f, m_horizontalMaximumIterations);
         m_ui->addSlider("H target angle", Vec2{10.0f, 148.0f}, 190.0f, 0.0f, 10.0f, m_horizontalTargetAngle);
         m_ui->addSlider("V nodal load", Vec2{10.0f, 176.0f}, 190.0f, -0.01f, 0.01f, m_verticalLoad);
-        m_ui->addSlider("V self-weight density", Vec2{10.0f, 204.0f}, 190.0f, 0.0f, 10.0f, m_selfWeightDensity);
+        m_ui->addSlider("V self-weight density", Vec2{10.0f, 204.0f}, 190.0f, 0.0f, 1.0f, m_selfWeightDensity);
         reload();
     }
 
@@ -114,6 +114,9 @@ private:
             // Black vertex colours are explicit support tags. An ordinary OBJ
             // has no such tags, so the builder falls back to all boundaries.
             m_result = m_solver.makeFormDiagram(planarInput, blackVertexSupports(*m_inputMesh));
+            // Red tags are intentionally not supplied to the horizontal
+            // solver. They become fixed only when vertical equilibrium starts.
+            m_verticalOnlySupportVertices = redVertexSupports(*m_inputMesh);
             if (m_result.success) {
                 m_formMesh = std::make_shared<MeshData>(m_result.mesh);
                 m_forceResult = m_solver.makeForceDiagram(m_result);
@@ -229,6 +232,7 @@ private:
         settings.forceScale = m_verticalForceScale;
         settings.residualTolerance = m_verticalResidualTolerance;
         settings.maximumIterations = std::max(1, static_cast<int>(std::lround(m_verticalMaximumIterations)));
+        settings.fixedVertices = m_verticalOnlySupportVertices;
         settings.supportHeights.reserve(m_inputMesh->vertices.size());
         for (const MeshVertex& vertex : m_inputMesh->vertices) {
             settings.supportHeights.push_back(vertex.position.z);
@@ -287,6 +291,19 @@ private:
         return supports;
     }
 
+    static std::vector<int> redVertexSupports(const MeshData& mesh) {
+        constexpr float redThreshold = 0.98f;
+        constexpr float nonRedThreshold = 0.02f;
+        std::vector<int> supports;
+        for (int vertex = 0; vertex < static_cast<int>(mesh.vertices.size()); ++vertex) {
+            const Color& color = mesh.vertices[vertex].color;
+            if (color.r >= redThreshold && color.g <= nonRedThreshold && color.b <= nonRedThreshold) {
+                supports.push_back(vertex);
+            }
+        }
+        return supports;
+    }
+
     static void drawMesh(Renderer& renderer, const std::shared_ptr<MeshData>& mesh,
                          const Color& color, float width) {
         if (!mesh) return;
@@ -327,6 +344,10 @@ private:
         for (const int vertex : m_result.supportVertices) {
             if (vertex < 0 || vertex >= static_cast<int>(m_formMesh->vertices.size())) continue;
             renderer.drawPoint(m_formMesh->vertices[vertex].position, Color(0.0f, 0.0f, 0.0f, 1.0f), 8.0f);
+        }
+        for (const int vertex : m_verticalOnlySupportVertices) {
+            if (vertex < 0 || vertex >= static_cast<int>(m_formMesh->vertices.size())) continue;
+            renderer.drawPoint(m_formMesh->vertices[vertex].position, Color(0.9f, 0.05f, 0.03f, 1.0f), 8.0f);
         }
     }
 
@@ -421,6 +442,7 @@ private:
     TnaSolver m_solver;
     TnaFormDiagram m_result;
     TnaForceDiagram m_forceResult;
+    std::vector<int> m_verticalOnlySupportVertices;
     std::string m_status{"Loading TNA mesh"};
     float m_formWeight{0.5f};
     float m_horizontalTargetAngle{3.0f};

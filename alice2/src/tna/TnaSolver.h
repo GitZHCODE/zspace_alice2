@@ -134,6 +134,10 @@ struct TnaVerticalSettings {
     // Original vertex Z values. Only entries at support vertices are used;
     // this keeps the supports at their pre-flattening elevations.
     std::vector<float> supportHeights;
+    // Vertices fixed only for the vertical solve. This makes it possible to
+    // retain extra vertical supports without constraining horizontal form
+    // relaxation.
+    std::vector<int> fixedVertices;
     // Added outside faces are topology-only and must not contribute load.
     std::vector<int> unloadedFaces;
     int maximumIterations{100};
