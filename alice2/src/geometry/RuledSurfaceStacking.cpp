@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <random>
 
 namespace alice2 {
 namespace {
@@ -150,6 +151,108 @@ RuledSurface makeTwistedVariantRuledSurface() {
 std::vector<RuledSurface> makeDiagnosticRuledSurfaces() {
     return {makeFlatStraightRuledSurface(), makeBentRuledSurface(), makeTwistedRuledSurface(),
             makeElevatedFlatRuledSurface(), makeBentVariantRuledSurface(), makeTwistedVariantRuledSurface()};
+}
+
+std::vector<RuledSurface> makeProceduralRuledSurfaces(
+    const RuledSurfaceProceduralSettings& settings) {
+    const int surfaceCount = std::clamp(settings.surfaceCount, 1, 50);
+    const int faceCount = std::clamp(settings.faceCount, 2, 64);
+    const double length = std::max(settings.length, 1e-6);
+    const double nominalWidth = std::max(settings.width, 1e-6);
+    const double randomness = std::clamp(settings.randomness, 0.0, 1.0);
+    const double lengthRandomness = std::clamp(settings.lengthRandomness, 0.0, 1.0);
+    const double rulingRotation = std::clamp(settings.rulingRotation, 0.0, 1.0);
+
+    std::mt19937 random(settings.seed);
+    std::uniform_real_distribution<double> unit(-1.0, 1.0);
+    constexpr double twoPi = 6.28318530717958647692;
+    std::vector<RuledSurface> result;
+    result.reserve(surfaceCount);
+
+    for (int surface = 0; surface < surfaceCount; ++surface) {
+        // Every surface starts in a comparable local Z frame.  Random values
+        // change profile, width, and ruling slope, not a global Z placement;
+        // the stack solver is solely responsible for final placement.
+        const double phase = randomness * unit(random) * 0.5 * twoPi;
+        const double secondaryPhase = randomness * unit(random) * 0.5 * twoPi;
+        const double amplitude = 0.12 + randomness * (0.12 + 0.14 * (0.5 + 0.5 * unit(random)));
+        const double rulingRise = randomness * 0.45 * unit(random);
+        const double width = nominalWidth * (1.0 + randomness * 0.18 * unit(random));
+        const double surfaceLength = length * (1.0 - 0.85 * lengthRandomness *
+                                                std::uniform_real_distribution<double>(0.0, 1.0)(random));
+
+        std::vector<double> heights(faceCount + 1, 0.0);
+        for (int i = 0; i <= faceCount; ++i) {
+            const double t = static_cast<double>(i) / static_cast<double>(faceCount);
+            const double profile = 0.70 * std::sin(twoPi * t + phase) +
+                                   0.30 * std::sin(2.0 * twoPi * t + secondaryPhase);
+            const double localNoise = randomness * 0.06 * unit(random);
+            heights[i] = amplitude * profile + localNoise;
+        }
+        // Remove arbitrary random vertical drift. This makes generated strips
+        // comparable before the solver determines their stack translations.
+        const double meanHeight = std::accumulate(heights.begin(), heights.end(), 0.0) /
+                                  static_cast<double>(heights.size());
+        for (double& height : heights) height -= meanHeight;
+
+        std::vector<RuledSurfaceRuling> rulings;
+        rulings.reserve(faceCount + 1);
+        if (rulingRotation <= 1e-12) {
+            for (int i = 0; i <= faceCount; ++i) {
+                const double t = static_cast<double>(i) / static_cast<double>(faceCount);
+                const double x = -0.5 * surfaceLength + t * surfaceLength;
+                // The cross-strip Z difference is constant within this surface.
+                // Together with linear interpolation between consecutive rulings,
+                // that makes each four-vertex face exactly planar.
+                rulings.push_back({{x, -0.5 * width, heights[i] - 0.5 * rulingRise},
+                                    {x,  0.5 * width, heights[i] + 0.5 * rulingRise}});
+            }
+        } else {
+            // Build one face at a time.  The following ruling is rotated in
+            // the current face plane, so it is non-parallel to the preceding
+            // ruling while the shared quad remains exactly planar.
+            const Eigen::Vector3d initialRuling(0.0, width, rulingRise);
+            const double rulingLength = initialRuling.norm();
+            Eigen::Vector3d rulingDirection = initialRuling / rulingLength;
+            Eigen::Vector3d centre(-0.5 * surfaceLength, 0.0, heights.front());
+            rulings.push_back({centre - 0.5 * rulingLength * rulingDirection,
+                                centre + 0.5 * rulingLength * rulingDirection});
+
+            constexpr double kMaxTurnRadians = 0.3490658503988659; // 20 degrees
+            const double stepLength = surfaceLength / static_cast<double>(faceCount);
+            for (int i = 0; i < faceCount; ++i) {
+                const double targetSlope = (heights[i + 1] - heights[i]) / stepLength;
+                Eigen::Vector3d normalCandidate(-targetSlope, -rulingRise / width, 1.0);
+                Eigen::Vector3d faceNormal = normalCandidate -
+                    rulingDirection * normalCandidate.dot(rulingDirection);
+                if (faceNormal.norm() <= kDegenerateEpsilon || faceNormal.z() <= 1e-4) {
+                    faceNormal = Eigen::Vector3d::UnitZ() -
+                        rulingDirection * rulingDirection.z();
+                }
+                faceNormal.normalize();
+                if (faceNormal.z() < 0.0) faceNormal = -faceNormal;
+
+                Eigen::Vector3d advance = rulingDirection.cross(faceNormal).normalized();
+                if (advance.x() < 0.0) advance = -advance;
+                const double requestedTurn = kMaxTurnRadians * rulingRotation * unit(random);
+                double acceptedTurn = requestedTurn;
+                Eigen::Vector3d nextDirection = rulingDirection;
+                // Avoid near-vertical wire directions, which would make the
+                // next upward-facing supporting plane poorly conditioned.
+                for (int attempt = 0; attempt < 5; ++attempt) {
+                    nextDirection = Eigen::AngleAxisd(acceptedTurn, faceNormal) * rulingDirection;
+                    if (std::abs(nextDirection.z()) <= 0.60) break;
+                    acceptedTurn *= 0.5;
+                }
+                centre += advance * stepLength;
+                rulings.push_back({centre - 0.5 * rulingLength * nextDirection,
+                                    centre + 0.5 * rulingLength * nextDirection});
+                rulingDirection = nextDirection;
+            }
+        }
+        result.push_back(makeRuledSurface(rulings));
+    }
+    return result;
 }
 
 bool isValidForStackDirection(const RuledSurface& surface,
@@ -300,6 +403,58 @@ RuledSurfaceStackSolution findBestRuledSurfaceStackBruteForce(
             best.totalHeight = height;
         }
     } while (std::next_permutation(order.begin(), order.end()));
+    return best;
+}
+
+RuledSurfaceStackSolution findRuledSurfaceStack(
+    const std::vector<RuledSurface>& surfaces,
+    const Eigen::MatrixXd& gapMatrix,
+    int bruteForceLimit) {
+    const int count = static_cast<int>(surfaces.size());
+    if (count == 0 || gapMatrix.rows() != count || gapMatrix.cols() != count) return {};
+    if (count <= std::max(1, bruteForceLimit)) {
+        return findBestRuledSurfaceStackBruteForce(surfaces, gapMatrix);
+    }
+
+    // A different starting surface can produce a different directed path, so
+    // retain the best of all starts. At every step, select the next candidate
+    // that gives the lowest actual stack height, not merely the lowest gap to
+    // the immediately preceding layer.
+    RuledSurfaceStackSolution best;
+    best.totalHeight = std::numeric_limits<double>::infinity();
+    for (int start = 0; start < count; ++start) {
+        std::vector<int> order{start};
+        std::vector<bool> used(count, false);
+        used[start] = true;
+
+        while (static_cast<int>(order.size()) < count) {
+            int next = -1;
+            double nextHeight = std::numeric_limits<double>::infinity();
+            for (int candidate = 0; candidate < count; ++candidate) {
+                if (used[candidate]) continue;
+                std::vector<int> trial = order;
+                trial.push_back(candidate);
+                const std::vector<double> trialZ = solveRuledSurfaceStackHeights(trial, gapMatrix);
+                const double trialHeight = computeRuledSurfaceStackHeight(surfaces, trial, trialZ);
+                if (trialHeight + 1e-12 < nextHeight ||
+                    (std::abs(trialHeight - nextHeight) <= 1e-12 && candidate < next)) {
+                    next = candidate;
+                    nextHeight = trialHeight;
+                }
+            }
+            if (next < 0) return {};
+            order.push_back(next);
+            used[next] = true;
+        }
+
+        const std::vector<double> stackZ = solveRuledSurfaceStackHeights(order, gapMatrix);
+        const double height = computeRuledSurfaceStackHeight(surfaces, order, stackZ);
+        if (height + 1e-12 < best.totalHeight) {
+            best.order = std::move(order);
+            best.stackZ = stackZ;
+            best.totalHeight = height;
+        }
+    }
     return best;
 }
 

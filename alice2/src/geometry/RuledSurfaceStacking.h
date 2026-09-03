@@ -7,6 +7,7 @@
 #include <Eigen/Geometry>
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -48,6 +49,26 @@ struct RuledSurfaceStackSolution {
     double totalHeight = 0.0;
 };
 
+// Controls a deterministic family of similar, finite wire sweeps.  Each
+// generated strip has faceCount exactly planar quad faces and is single-valued
+// along +Z, so it is appropriate for the first vertical-stacking prototype.
+struct RuledSurfaceProceduralSettings {
+    int surfaceCount = 6;
+    int faceCount = 6;
+    double length = 6.0;
+    double width = 1.0;
+    // 0 creates coincident baseline strips; 1 allows the full profile/tilt
+    // variation used by the sketch.
+    double randomness = 0.50;
+    std::uint32_t seed = 12345u;
+    // 0 keeps the nominal length. At 1, individual strips range from 15% to
+    // 100% of it, allowing short sweeps in the same generated family.
+    double lengthRandomness = 0.0;
+    // Random turn between consecutive rulings, in the current face plane.
+    // A value of 1 maps to a capped 20-degree per-face turn.
+    double rulingRotation = 0.0;
+};
+
 // Construct a strip from consecutive left/right rulings.  Faces are wound so
 // an ordinary XY strip has +Z normals.  Invalid/degenerate rulings are kept
 // as faces with a zero normal, which makes direction validation fail clearly.
@@ -62,6 +83,8 @@ RuledSurface makeElevatedFlatRuledSurface();
 RuledSurface makeBentVariantRuledSurface();
 RuledSurface makeTwistedVariantRuledSurface();
 std::vector<RuledSurface> makeDiagnosticRuledSurfaces();
+std::vector<RuledSurface> makeProceduralRuledSurfaces(
+    const RuledSurfaceProceduralSettings& settings = {});
 
 bool isValidForStackDirection(const RuledSurface& surface,
                               const Eigen::Vector3d& stackDirection = Eigen::Vector3d::UnitZ(),
@@ -96,6 +119,14 @@ double computeRuledSurfaceStackHeight(const std::vector<RuledSurface>& surfaces,
 RuledSurfaceStackSolution findBestRuledSurfaceStackBruteForce(
     const std::vector<RuledSurface>& surfaces,
     const Eigen::MatrixXd& gapMatrix);
+
+// Uses exhaustive ordering through bruteForceLimit surfaces. Above that it
+// uses a deterministic multi-start greedy ordering, then always resolves all
+// lower-to-upper sampled-gap constraints for the selected order.
+RuledSurfaceStackSolution findRuledSurfaceStack(
+    const std::vector<RuledSurface>& surfaces,
+    const Eigen::MatrixXd& gapMatrix,
+    int bruteForceLimit = 8);
 
 } // namespace alice2
 

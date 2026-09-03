@@ -24,17 +24,44 @@ public:
         scene().setShowGrid(false);
         scene().setShowAxes(true);
         scene().setAxesLength(1.0f);
+        m_ui = std::make_unique<SimpleUI>(input());
+        m_ui->setTheme(SimpleUI::UITheme::Dark);
+        m_ui->addSlider("Surfaces", Vec2{10.0f, 78.0f}, 210.0f, 2.0f,
+                        static_cast<float>(kMaxSurfaceCount), m_surfaceCountSlider);
+        m_ui->addSlider("Planes per surface", Vec2{10.0f, 106.0f}, 210.0f, 2.0f,
+                        static_cast<float>(kMaxFacesPerSurface), m_facesPerSurfaceSlider);
+        m_ui->addSlider("Random variation", Vec2{10.0f, 134.0f}, 210.0f, 0.0f, 1.0f, m_randomnessSlider);
+        m_ui->addSlider("Length variation", Vec2{10.0f, 162.0f}, 210.0f, 0.0f, 1.0f, m_lengthRandomnessSlider);
+        m_ui->addSlider("Ruling turn", Vec2{10.0f, 190.0f}, 210.0f, 0.0f, 1.0f, m_rulingRotationSlider);
         solveAndBuild();
     }
 
     void cleanup() override { clearMeshes(); }
 
-    void update(float) override {}
+    void update(float) override {
+        const int surfaceCount = std::clamp(static_cast<int>(std::lround(m_surfaceCountSlider)), 2, kMaxSurfaceCount);
+        const int faceCount = std::clamp(static_cast<int>(std::lround(m_facesPerSurfaceSlider)), 2, kMaxFacesPerSurface);
+        const double randomness = std::clamp(static_cast<double>(m_randomnessSlider), 0.0, 1.0);
+        const double lengthRandomness = std::clamp(static_cast<double>(m_lengthRandomnessSlider), 0.0, 1.0);
+        const double rulingRotation = std::clamp(static_cast<double>(m_rulingRotationSlider), 0.0, 1.0);
+        if (surfaceCount != m_generation.surfaceCount || faceCount != m_generation.faceCount ||
+            std::abs(randomness - m_generation.randomness) > 1e-6 ||
+            std::abs(lengthRandomness - m_generation.lengthRandomness) > 1e-6 ||
+            std::abs(rulingRotation - m_generation.rulingRotation) > 1e-6) {
+            m_generation.surfaceCount = surfaceCount;
+            m_generation.faceCount = faceCount;
+            m_generation.randomness = randomness;
+            m_generation.lengthRandomness = lengthRandomness;
+            m_generation.rulingRotation = rulingRotation;
+            solveAndBuild();
+        }
+    }
 
     void draw(Renderer& renderer, Camera&) override {
         renderer.setColor(Color(0.05f, 0.05f, 0.05f, 1.0f));
-        renderer.drawString("r recompute diagnostic stack | red: rulings | blue: face normals | grey: stack bounds", 10.0f, 30.0f);
+        renderer.drawString("r rebuild | n new random family | red: rulings | blue: normals | grey: group bounds", 10.0f, 30.0f);
         renderer.drawString(m_summary, 10.0f, 52.0f);
+        if (m_ui) m_ui->draw(renderer);
         drawRulingsAndNormals(renderer);
         drawBounds(renderer);
     }
@@ -44,12 +71,33 @@ public:
             solveAndBuild();
             return true;
         }
+        if (key == 'n' || key == 'N') {
+            ++m_generation.seed;
+            solveAndBuild();
+            return true;
+        }
         return false;
+    }
+
+    bool onMousePress(int button, int state, int x, int y) override {
+        return m_ui && m_ui->onMousePress(button, state, x, y);
+    }
+
+    bool onMouseMove(int x, int y) override {
+        return m_ui && m_ui->onMouseMove(x, y);
     }
 
 private:
     static constexpr double kClearance = 0.05;
-    static constexpr int kSampleResolution = 100;
+    static constexpr int kMaxSurfaceCount = 50;
+    static constexpr int kMaxFacesPerSurface = 24;
+
+    int sampleResolution() const {
+        // Gap-matrix work grows with surfaceCount^2. Keep 100 samples for
+        // small diagnostic sets and reduce gradually for the 50-surface view.
+        const double count = std::max(1, m_generation.surfaceCount);
+        return std::clamp(static_cast<int>(std::lround(240.0 / std::sqrt(count))), 24, 100);
+    }
 
     void clearMeshes() {
         for (const auto& mesh : m_meshes) {
@@ -60,14 +108,14 @@ private:
 
     void solveAndBuild() {
         clearMeshes();
-        m_surfaces = makeDiagnosticRuledSurfaces();
+        m_surfaces = makeProceduralRuledSurfaces(m_generation);
         const Eigen::Vector3d stackDirection = Eigen::Vector3d::UnitZ();
         m_valid.assign(m_surfaces.size(), false);
         for (size_t i = 0; i < m_surfaces.size(); ++i) {
             m_valid[i] = isValidForStackDirection(m_surfaces[i], stackDirection);
         }
-        m_gapMatrix = buildRuledSurfaceGapMatrix(m_surfaces, kClearance, kSampleResolution);
-        m_solution = findBestRuledSurfaceStackBruteForce(m_surfaces, m_gapMatrix);
+        m_gapMatrix = buildRuledSurfaceGapMatrix(m_surfaces, kClearance, sampleResolution());
+        m_solution = findRuledSurfaceStack(m_surfaces, m_gapMatrix);
         buildMeshes();
         writeDiagnostics();
 
@@ -82,10 +130,11 @@ private:
     }
 
     void buildMeshes() {
-        static const std::array<Color, 6> colors{{
+        static const std::array<Color, 8> colors{{
             Color(0.90f, 0.22f, 0.18f, 0.82f), Color(0.12f, 0.48f, 0.90f, 0.82f),
             Color(0.16f, 0.70f, 0.28f, 0.82f), Color(0.82f, 0.45f, 0.08f, 0.82f),
-            Color(0.62f, 0.20f, 0.78f, 0.82f), Color(0.05f, 0.68f, 0.70f, 0.82f)}};
+            Color(0.62f, 0.20f, 0.78f, 0.82f), Color(0.05f, 0.68f, 0.70f, 0.82f),
+            Color(0.88f, 0.12f, 0.55f, 0.82f), Color(0.42f, 0.58f, 0.10f, 0.82f)}};
         m_meshes.resize(m_surfaces.size());
         m_stackZBySurface.assign(m_surfaces.size(), 0.0);
         for (size_t layer = 0; layer < m_solution.order.size(); ++layer) {
@@ -167,7 +216,13 @@ private:
     }
 
     void writeDiagnostics() const {
-        std::cout << "Ruled surface stacking diagnostics (clearance " << kClearance << ")\n";
+        std::cout << "Procedural ruled surface stack: count=" << m_generation.surfaceCount
+                  << " faces=" << m_generation.faceCount << " randomness=" << m_generation.randomness
+                  << " length randomness=" << m_generation.lengthRandomness << " seed=" << m_generation.seed
+                  << " ruling turn=" << m_generation.rulingRotation
+                  << " samples=" << sampleResolution()
+                  << " order=" << (m_generation.surfaceCount <= 8 ? "brute force" : "multi-start greedy")
+                  << " (clearance " << kClearance << ")\n";
         for (size_t i = 0; i < m_surfaces.size(); ++i) {
             double minDot = std::numeric_limits<double>::infinity();
             double minZ = std::numeric_limits<double>::infinity();
@@ -195,8 +250,15 @@ private:
     std::vector<std::shared_ptr<MeshObject>> m_meshes;
     std::vector<bool> m_valid;
     std::vector<double> m_stackZBySurface;
+    std::unique_ptr<SimpleUI> m_ui;
     Eigen::MatrixXd m_gapMatrix;
     RuledSurfaceStackSolution m_solution;
+    RuledSurfaceProceduralSettings m_generation;
+    float m_surfaceCountSlider{6.0f};
+    float m_facesPerSurfaceSlider{6.0f};
+    float m_randomnessSlider{0.50f};
+    float m_lengthRandomnessSlider{0.0f};
+    float m_rulingRotationSlider{0.0f};
     std::string m_summary;
 };
 
