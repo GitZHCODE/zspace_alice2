@@ -33,7 +33,7 @@ public:
         m_ui->addSlider("Faces per strip", Vec2{10.0f, 52.0f}, 210.0f, 2.0f,
                         static_cast<float>(kMaxFacesPerStrip), m_facesPerStripSlider);
         m_ui->addSlider("Thickness (vertex normals)", Vec2{10.0f, 80.0f}, 210.0f, 0.0f, 0.10f, m_stripThickness);
-        m_ui->addSlider("Max interface cost", Vec2{10.0f, 108.0f}, 210.0f, 0.0f, 2.0f, m_stackBreakThreshold);
+        m_ui->addSlider("Max interface cost", Vec2{10.0f, 108.0f}, 210.0f, 0.0f, 5.0f, m_stackBreakThreshold);
         reload();
     }
 
@@ -60,7 +60,7 @@ public:
 
     void draw(Renderer& renderer, Camera&) override {
         renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
-        renderer.drawString("r reload | p solve planar faces | s toggle stack | i ruling-ray check | o toggle original wire | [ / ] strip faces", 10.0f, 30.0f);
+        renderer.drawString("r reload | p solve planar faces | s toggle stack | i ruling-ray check | k toolpath-safe stack | o toggle original wire | [ / ] strip faces", 10.0f, 30.0f);
         if (m_ui) m_ui->draw(renderer);
         renderer.setColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
         renderer.drawString(m_status, 10.0f, 120.0f);
@@ -82,6 +82,7 @@ public:
             case 'p': case 'P': planarise(); return true;
             case 's': case 'S': toggleStackVisualisation(); return true;
             case 'i': case 'I': toggleRulingRayCheck(); return true;
+            case 'k': case 'K': rebuildToolpathSafeStack(); return true;
             case 'o': case 'O': m_showOriginal = !m_showOriginal; return true;
             case '[': m_facesPerStrip = std::max(2, m_facesPerStrip - 1); m_facesPerStripSlider = static_cast<float>(m_facesPerStrip); refreshSignatures(); return true;
             case ']': m_facesPerStrip = std::min(kMaxFacesPerStrip, m_facesPerStrip + 1); m_facesPerStripSlider = static_cast<float>(m_facesPerStrip); refreshSignatures(); return true;
@@ -494,6 +495,7 @@ private:
         }
         m_matches = findSimilarRibbonStrips(m_signatures, 3);
         m_stackResult = findBestRibbonStack(m_signatures, m_bottomSignatures);
+        m_toolpathBreakAfter.assign(m_stackResult.order.empty() ? 0 : m_stackResult.order.size() - 1, false);
         applyStripColours();
         rebuildRibbonBlockVisualisation();
         m_lastStackThickness = m_stripThickness;
@@ -550,7 +552,8 @@ private:
         for (size_t layer = 1; layer < m_stackResult.order.size(); ++layer) {
             const double cost = layer - 1 < m_stackResult.interfaceCosts.size() ?
                 m_stackResult.interfaceCosts[layer - 1].totalCost : std::numeric_limits<double>::infinity();
-            if (cost > static_cast<double>(m_stackBreakThreshold)) {
+            const bool toolpathBreak = layer - 1 < m_toolpathBreakAfter.size() && m_toolpathBreakAfter[layer - 1];
+            if (cost > static_cast<double>(m_stackBreakThreshold) || toolpathBreak) {
                 ranges.push_back({begin, layer});
                 begin = layer;
             }
@@ -563,7 +566,9 @@ private:
         const auto ranges = stackRanges();
         if (ranges.empty()) return;
         std::cout << "[DevelopableRibbon] stack break threshold=" << std::fixed << std::setprecision(6)
-                  << m_stackBreakThreshold << "; groups=" << ranges.size() << '\n';
+                  << m_stackBreakThreshold << "; toolpath forced breaks="
+                  << std::count(m_toolpathBreakAfter.begin(), m_toolpathBreakAfter.end(), true)
+                  << "; groups=" << ranges.size() << '\n';
         for (size_t group = 0; group < ranges.size(); ++group) {
             std::cout << "  stack " << group << ':';
             for (size_t layer = ranges[group].first; layer < ranges[group].second; ++layer) {
@@ -633,6 +638,7 @@ private:
     struct StackVisualLayer {
         int stripIndex = -1;
         bool reversed = false;
+        int orderIndex = -1;
         int stackIndex = -1;
         int layerInStack = -1;
         Vec3 labelPosition;
@@ -1025,7 +1031,7 @@ private:
                                              geometry.faces, stripColour(blockIndex, static_cast<int>(m_faceBlocks.size())));
                 if (!mesh) continue;
                 scene().addObject(mesh);
-                m_stackLayers.push_back({stripIndex, reversed, stackIndex, static_cast<int>(layer - begin),
+                m_stackLayers.push_back({stripIndex, reversed, static_cast<int>(layer), stackIndex, static_cast<int>(layer - begin),
                                          geometry.labelPosition, std::move(geometry.rulings),
                                          std::move(geometry.bottomRulings), std::move(geometry.positions),
                                          std::move(geometry.bottomPositions), std::move(geometry.faces), std::move(mesh)});
@@ -1158,6 +1164,66 @@ private:
         m_status = m_showRulingRayCheck ?
             "Ruling-ray toolpath check enabled (gray = clear; red = clash)." :
             "Ruling-ray toolpath check disabled.";
+    }
+
+    void rebuildToolpathSafeStack() {
+        if (!m_showRulingRayCheck) {
+            m_status = "Enable the ruling-ray check first with I.";
+            return;
+        }
+        if (!m_showStack) {
+            m_status = "Enable stack view first with S, then press K.";
+            return;
+        }
+        const size_t layerCount = m_stackResult.order.size();
+        if (layerCount < 2) return;
+
+        // Re-evaluate from the descriptor-threshold partition, then add the
+        // smallest set of layer cuts that separates every clashing pair.  A
+        // clash gives an interval [a,b]; choosing a cut inside each interval
+        // is the standard minimum interval-stabbing problem, solved greedily
+        // by selecting its rightmost available boundary.
+        m_toolpathBreakAfter.assign(layerCount - 1, false);
+        rebuildStackVisualisation();
+        for (size_t pass = 0; pass < layerCount && !m_rulingRayHits.empty(); ++pass) {
+            std::vector<std::pair<int, int>> intervals;
+            for (const RulingRayHit& hit : m_rulingRayHits) {
+                if (hit.sourceLayer < 0 || hit.targetLayer < 0 ||
+                    hit.sourceLayer >= static_cast<int>(m_stackLayers.size()) ||
+                    hit.targetLayer >= static_cast<int>(m_stackLayers.size())) continue;
+                const int a = m_stackLayers[hit.sourceLayer].orderIndex;
+                const int b = m_stackLayers[hit.targetLayer].orderIndex;
+                if (a < 0 || b < 0 || a == b) continue;
+                intervals.push_back({std::min(a, b), std::max(a, b)});
+            }
+            std::sort(intervals.begin(), intervals.end(), [](const auto& a, const auto& b) {
+                return a.second == b.second ? a.first < b.first : a.second < b.second;
+            });
+            bool addedBreak = false;
+            for (const auto& [begin, end] : intervals) {
+                bool separated = false;
+                for (int boundary = begin; boundary < end; ++boundary) {
+                    if (boundary >= 0 && boundary < static_cast<int>(m_toolpathBreakAfter.size()) &&
+                        m_toolpathBreakAfter[boundary]) {
+                        separated = true;
+                        break;
+                    }
+                }
+                if (!separated && end > begin) {
+                    m_toolpathBreakAfter[end - 1] = true;
+                    addedBreak = true;
+                }
+            }
+            if (!addedBreak) break;
+            rebuildStackVisualisation();
+        }
+        const int forcedBreaks = static_cast<int>(std::count(m_toolpathBreakAfter.begin(),
+                                                              m_toolpathBreakAfter.end(), true));
+        m_status = "Toolpath-aware stack: " + std::to_string(forcedBreaks) + " forced breaks; " +
+                   std::to_string(m_rulingRayHits.size()) + " remaining clashes.";
+        std::cout << "[DevelopableRibbon] toolpath-aware re-stack: forced breaks=" << forcedBreaks
+                  << "; remaining clashes=" << m_rulingRayHits.size() << '\n';
+        printStackPartition();
     }
 
     void toggleStackVisualisation() {
@@ -1326,6 +1392,7 @@ private:
     std::vector<StackBounds> m_stackGroupBounds;
     std::vector<RulingRayHit> m_rulingRayHits;
     std::vector<RulingRayLine> m_rulingRayLines;
+    std::vector<bool> m_toolpathBreakAfter;
     std::string m_status{"Loading stereotomy.obj..."};
     int m_facesPerStrip{12};
     float m_facesPerStripSlider{8.0f};
