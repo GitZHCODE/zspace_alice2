@@ -1,0 +1,306 @@
+#include "RuledSurfaceStacking.h"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <numeric>
+
+namespace alice2 {
+namespace {
+
+constexpr double kDegenerateEpsilon = 1e-12;
+
+Eigen::Vector2d projectXY(const Eigen::Vector3d& point) {
+    return {point.x(), point.y()};
+}
+
+double cross2D(const Eigen::Vector2d& a, const Eigen::Vector2d& b) {
+    return a.x() * b.y() - a.y() * b.x();
+}
+
+bool pointInTriangle(const Eigen::Vector2d& point,
+                     const Eigen::Vector2d& a,
+                     const Eigen::Vector2d& b,
+                     const Eigen::Vector2d& c,
+                     double epsilon) {
+    const double area = cross2D(b - a, c - a);
+    if (std::abs(area) <= epsilon) return false;
+
+    const double u = cross2D(b - a, point - a);
+    const double v = cross2D(c - b, point - b);
+    const double w = cross2D(a - c, point - c);
+    return area > 0.0 ? (u >= -epsilon && v >= -epsilon && w >= -epsilon)
+                      : (u <= epsilon && v <= epsilon && w <= epsilon);
+}
+
+std::pair<double, double> localZRange(const RuledSurface& surface) {
+    double minZ = std::numeric_limits<double>::infinity();
+    double maxZ = -std::numeric_limits<double>::infinity();
+    for (const RuledSurfaceFace& face : surface.faces) {
+        for (const Eigen::Vector3d& vertex : face.vertices) {
+            minZ = std::min(minZ, vertex.z());
+            maxZ = std::max(maxZ, vertex.z());
+        }
+    }
+    return std::isfinite(minZ) ? std::pair<double, double>{minZ, maxZ}
+                               : std::pair<double, double>{0.0, 0.0};
+}
+
+} // namespace
+
+RuledSurface makeRuledSurface(const std::vector<RuledSurfaceRuling>& rulings) {
+    RuledSurface result;
+    result.rulings = rulings;
+    if (rulings.size() < 2) return result;
+
+    result.faces.reserve(rulings.size() - 1);
+    for (size_t i = 0; i + 1 < rulings.size(); ++i) {
+        // The order L_i, L_(i+1), R_(i+1), R_i gives an upward normal for
+        // the conventional strip whose left edge has lower Y coordinates.
+        RuledSurfaceFace face;
+        face.vertices = {rulings[i].left, rulings[i + 1].left,
+                         rulings[i + 1].right, rulings[i].right};
+        const Eigen::Vector3d e0 = face.vertices[1] - face.vertices[0];
+        const Eigen::Vector3d e1 = face.vertices[3] - face.vertices[0];
+        const Eigen::Vector3d unnormalized = e0.cross(e1);
+        const double length = unnormalized.norm();
+        if (length > kDegenerateEpsilon) {
+            face.plane.n = unnormalized / length;
+        } else {
+            face.plane.n = Eigen::Vector3d::Zero();
+        }
+        face.plane.d = face.plane.n.dot(face.vertices[0]);
+        result.faces.push_back(face);
+    }
+    return result;
+}
+
+RuledSurface makeFlatStraightRuledSurface() {
+    return makeRuledSurface({
+        {{-3.0, -0.5, 0.0}, {-3.0, 0.5, 0.0}},
+        {{-1.0, -0.5, 0.0}, {-1.0, 0.5, 0.0}},
+        {{ 1.0, -0.5, 0.0}, { 1.0, 0.5, 0.0}},
+        {{ 3.0, -0.5, 0.0}, { 3.0, 0.5, 0.0}}
+    });
+}
+
+RuledSurface makeBentRuledSurface() {
+    const std::array<double, 4> heights{0.0, 0.3, 0.6, 0.3};
+    const std::array<double, 4> xs{-3.0, -1.0, 1.0, 3.0};
+    std::vector<RuledSurfaceRuling> rulings;
+    rulings.reserve(xs.size());
+    for (size_t i = 0; i < xs.size(); ++i) {
+        rulings.push_back({{xs[i], -0.5, heights[i]}, {xs[i], 0.5, heights[i]}});
+    }
+    return makeRuledSurface(rulings);
+}
+
+RuledSurface makeTwistedRuledSurface() {
+    // Parallel but sloped rulings keep each quad exactly planar.  Their
+    // pronounced, alternating longitudinal slope creates strong normal
+    // variation while preserving the single-valued Z assumption.
+    const std::array<double, 5> xs{-3.0, -1.5, 0.0, 1.5, 3.0};
+    const std::array<double, 5> baseZ{0.0, 0.45, -0.15, 0.55, 0.10};
+    std::vector<RuledSurfaceRuling> rulings;
+    rulings.reserve(xs.size());
+    for (size_t i = 0; i < xs.size(); ++i) {
+        rulings.push_back({{xs[i], -0.5, baseZ[i]}, {xs[i], 0.5, baseZ[i] + 0.35}});
+    }
+    return makeRuledSurface(rulings);
+}
+
+RuledSurface makeElevatedFlatRuledSurface() {
+    // Exact control: it is Surface 0 translated upward by 0.5.  With a 0.05
+    // clearance, G(flat, elevatedFlat) is zero whereas the reverse is 0.55.
+    return makeRuledSurface({
+        {{-3.0, -0.5, 0.5}, {-3.0, 0.5, 0.5}},
+        {{-1.0, -0.5, 0.5}, {-1.0, 0.5, 0.5}},
+        {{ 1.0, -0.5, 0.5}, { 1.0, 0.5, 0.5}},
+        {{ 3.0, -0.5, 0.5}, { 3.0, 0.5, 0.5}}
+    });
+}
+
+RuledSurface makeBentVariantRuledSurface() {
+    // A close counterpart of Surface 1: same footprint and profile, lifted
+    // by 0.15.  This is a second directional control with non-flat faces.
+    const std::array<double, 4> heights{0.15, 0.45, 0.75, 0.45};
+    const std::array<double, 4> xs{-3.0, -1.0, 1.0, 3.0};
+    std::vector<RuledSurfaceRuling> rulings;
+    rulings.reserve(xs.size());
+    for (size_t i = 0; i < xs.size(); ++i) {
+        rulings.push_back({{xs[i], -0.5, heights[i]}, {xs[i], 0.5, heights[i]}});
+    }
+    return makeRuledSurface(rulings);
+}
+
+RuledSurface makeTwistedVariantRuledSurface() {
+    // Similar to Surface 3, but with a changed longitudinal profile and
+    // ruling slope. Each face remains exactly planar because the difference
+    // between the two boundary heights is constant along the strip.
+    const std::array<double, 5> xs{-3.0, -1.5, 0.0, 1.5, 3.0};
+    const std::array<double, 5> baseZ{0.10, 0.40, -0.10, 0.65, 0.20};
+    std::vector<RuledSurfaceRuling> rulings;
+    rulings.reserve(xs.size());
+    for (size_t i = 0; i < xs.size(); ++i) {
+        rulings.push_back({{xs[i], -0.5, baseZ[i]}, {xs[i], 0.5, baseZ[i] + 0.25}});
+    }
+    return makeRuledSurface(rulings);
+}
+
+std::vector<RuledSurface> makeDiagnosticRuledSurfaces() {
+    return {makeFlatStraightRuledSurface(), makeBentRuledSurface(), makeTwistedRuledSurface(),
+            makeElevatedFlatRuledSurface(), makeBentVariantRuledSurface(), makeTwistedVariantRuledSurface()};
+}
+
+bool isValidForStackDirection(const RuledSurface& surface,
+                              const Eigen::Vector3d& stackDirection,
+                              double epsilon) {
+    const double length = stackDirection.norm();
+    if (surface.faces.empty() || length <= kDegenerateEpsilon) return false;
+    const Eigen::Vector3d direction = stackDirection / length;
+    for (const RuledSurfaceFace& face : surface.faces) {
+        if (face.plane.n.dot(direction) <= epsilon) return false;
+    }
+    return true;
+}
+
+double ruledSurfacePlaneHeight(const RuledSurfacePlane& plane, const Eigen::Vector2d& xy) {
+    return (plane.d - plane.n.x() * xy.x() - plane.n.y() * xy.y()) / plane.n.z();
+}
+
+RuledSurfaceBounds2D ruledSurfaceBoundsXY(const RuledSurface& surface) {
+    RuledSurfaceBounds2D result;
+    if (surface.faces.empty()) return result;
+    result.min = Eigen::Vector2d::Constant(std::numeric_limits<double>::infinity());
+    result.max = Eigen::Vector2d::Constant(-std::numeric_limits<double>::infinity());
+    for (const RuledSurfaceFace& face : surface.faces) {
+        for (const Eigen::Vector3d& vertex : face.vertices) {
+            result.min = result.min.cwiseMin(projectXY(vertex));
+            result.max = result.max.cwiseMax(projectXY(vertex));
+        }
+    }
+    return result;
+}
+
+int findRuledSurfaceFaceAtXY(const RuledSurface& surface,
+                             const Eigen::Vector2d& xy,
+                             double epsilon) {
+    for (size_t index = 0; index < surface.faces.size(); ++index) {
+        const auto& v = surface.faces[index].vertices;
+        const Eigen::Vector2d a = projectXY(v[0]);
+        const Eigen::Vector2d b = projectXY(v[1]);
+        const Eigen::Vector2d c = projectXY(v[2]);
+        const Eigen::Vector2d d = projectXY(v[3]);
+        if (pointInTriangle(xy, a, b, c, epsilon) || pointInTriangle(xy, a, c, d, epsilon)) {
+            return static_cast<int>(index);
+        }
+    }
+    return -1;
+}
+
+std::optional<double> ruledSurfaceHeightAtXY(const RuledSurface& surface,
+                                             const Eigen::Vector2d& xy,
+                                             double epsilon) {
+    const int face = findRuledSurfaceFaceAtXY(surface, xy, epsilon);
+    if (face < 0 || std::abs(surface.faces[face].plane.n.z()) <= epsilon) return std::nullopt;
+    return ruledSurfacePlaneHeight(surface.faces[face].plane, xy);
+}
+
+double sampledRuledSurfaceNestingGap(const RuledSurface& below,
+                                     const RuledSurface& above,
+                                     double clearance,
+                                     int resolution) {
+    if (below.faces.empty() || above.faces.empty() || resolution < 1) return 0.0;
+    const RuledSurfaceBounds2D lowerBounds = ruledSurfaceBoundsXY(below);
+    const RuledSurfaceBounds2D upperBounds = ruledSurfaceBoundsXY(above);
+    const Eigen::Vector2d minimum = lowerBounds.min.cwiseMax(upperBounds.min);
+    const Eigen::Vector2d maximum = lowerBounds.max.cwiseMin(upperBounds.max);
+    if (minimum.x() > maximum.x() || minimum.y() > maximum.y()) return 0.0;
+
+    bool foundOverlap = false;
+    double maxDifference = -std::numeric_limits<double>::infinity();
+    for (int y = 0; y < resolution; ++y) {
+        const double ty = resolution == 1 ? 0.5 : static_cast<double>(y) / (resolution - 1);
+        for (int x = 0; x < resolution; ++x) {
+            const double tx = resolution == 1 ? 0.5 : static_cast<double>(x) / (resolution - 1);
+            const Eigen::Vector2d point = minimum + Eigen::Vector2d(tx, ty).cwiseProduct(maximum - minimum);
+            const auto lowerHeight = ruledSurfaceHeightAtXY(below, point);
+            const auto upperHeight = ruledSurfaceHeightAtXY(above, point);
+            if (!lowerHeight || !upperHeight) continue;
+            foundOverlap = true;
+            maxDifference = std::max(maxDifference, *lowerHeight - *upperHeight);
+        }
+    }
+    return foundOverlap ? std::max(0.0, maxDifference + std::max(0.0, clearance)) : 0.0;
+}
+
+Eigen::MatrixXd buildRuledSurfaceGapMatrix(const std::vector<RuledSurface>& surfaces,
+                                           double clearance,
+                                           int resolution) {
+    const Eigen::Index count = static_cast<Eigen::Index>(surfaces.size());
+    Eigen::MatrixXd result = Eigen::MatrixXd::Zero(count, count);
+    for (Eigen::Index lower = 0; lower < count; ++lower) {
+        for (Eigen::Index upper = 0; upper < count; ++upper) {
+            if (lower != upper) {
+                result(lower, upper) = sampledRuledSurfaceNestingGap(
+                    surfaces[lower], surfaces[upper], clearance, resolution);
+            }
+        }
+    }
+    return result;
+}
+
+std::vector<double> solveRuledSurfaceStackHeights(const std::vector<int>& order,
+                                                  const Eigen::MatrixXd& gapMatrix) {
+    std::vector<double> result(order.size(), 0.0);
+    for (size_t upperLayer = 1; upperLayer < order.size(); ++upperLayer) {
+        const int upper = order[upperLayer];
+        if (upper < 0 || upper >= gapMatrix.cols()) return {};
+        for (size_t lowerLayer = 0; lowerLayer < upperLayer; ++lowerLayer) {
+            const int lower = order[lowerLayer];
+            if (lower < 0 || lower >= gapMatrix.rows()) return {};
+            result[upperLayer] = std::max(result[upperLayer], result[lowerLayer] + gapMatrix(lower, upper));
+        }
+    }
+    return result;
+}
+
+double computeRuledSurfaceStackHeight(const std::vector<RuledSurface>& surfaces,
+                                      const std::vector<int>& order,
+                                      const std::vector<double>& stackZ) {
+    if (order.empty() || order.size() != stackZ.size()) return 0.0;
+    double bottom = std::numeric_limits<double>::infinity();
+    double top = -std::numeric_limits<double>::infinity();
+    for (size_t layer = 0; layer < order.size(); ++layer) {
+        const int surface = order[layer];
+        if (surface < 0 || surface >= static_cast<int>(surfaces.size())) return std::numeric_limits<double>::infinity();
+        const auto [minZ, maxZ] = localZRange(surfaces[surface]);
+        bottom = std::min(bottom, stackZ[layer] + minZ);
+        top = std::max(top, stackZ[layer] + maxZ);
+    }
+    return top - bottom;
+}
+
+RuledSurfaceStackSolution findBestRuledSurfaceStackBruteForce(
+    const std::vector<RuledSurface>& surfaces,
+    const Eigen::MatrixXd& gapMatrix) {
+    RuledSurfaceStackSolution best;
+    if (surfaces.empty() || gapMatrix.rows() != static_cast<Eigen::Index>(surfaces.size()) ||
+        gapMatrix.cols() != static_cast<Eigen::Index>(surfaces.size())) return best;
+
+    std::vector<int> order(surfaces.size());
+    std::iota(order.begin(), order.end(), 0);
+    best.totalHeight = std::numeric_limits<double>::infinity();
+    do {
+        const std::vector<double> stackZ = solveRuledSurfaceStackHeights(order, gapMatrix);
+        const double height = computeRuledSurfaceStackHeight(surfaces, order, stackZ);
+        if (height + 1e-12 < best.totalHeight) {
+            best.order = order;
+            best.stackZ = stackZ;
+            best.totalHeight = height;
+        }
+    } while (std::next_permutation(order.begin(), order.end()));
+    return best;
+}
+
+} // namespace alice2
