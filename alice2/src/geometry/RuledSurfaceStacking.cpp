@@ -240,6 +240,43 @@ RuledSurface makeRuledSurface(const std::vector<RuledSurfaceRuling>& rulings) {
     return result;
 }
 
+std::optional<RuledSurface> flipRuledSurfaceForStack(const RuledSurface& surface, double epsilon) {
+    if (surface.rulings.size() < 2) return std::nullopt;
+    Eigen::Vector3d centre = Eigen::Vector3d::Zero();
+    for (const RuledSurfaceRuling& ruling : surface.rulings) centre += ruling.left + ruling.right;
+    centre /= static_cast<double>(surface.rulings.size() * 2);
+
+    const Eigen::Vector3d firstCentre = 0.5 * (surface.rulings.front().left + surface.rulings.front().right);
+    const Eigen::Vector3d lastCentre = 0.5 * (surface.rulings.back().left + surface.rulings.back().right);
+    const Eigen::Vector3d longitudinal = lastCentre - firstCentre;
+    // The flip axis must be horizontal. A 180-degree rotation about any XY
+    // axis reverses the Z component of every face normal coherently; a fully
+    // 3D axis could leave a strongly twisted strip with mixed winding signs.
+    Eigen::Vector3d axis(longitudinal.x(), longitudinal.y(), 0.0);
+    if (axis.norm() <= kDegenerateEpsilon) axis = Eigen::Vector3d::UnitX();
+    else axis.normalize();
+    const auto flipPoint = [&](const Eigen::Vector3d& point) -> Eigen::Vector3d {
+        const Eigen::Vector3d relative = point - centre;
+        // 180-degree Rodrigues rotation: 2 uu^T - I.
+        return (centre + 2.0 * axis * axis.dot(relative) - relative).eval();
+    };
+
+    std::vector<RuledSurfaceRuling> rulings;
+    rulings.reserve(surface.rulings.size());
+    for (const RuledSurfaceRuling& ruling : surface.rulings) {
+        rulings.push_back({flipPoint(ruling.left), flipPoint(ruling.right)});
+    }
+    RuledSurface result = makeRuledSurface(rulings);
+    if (isValidForStackDirection(result, Eigen::Vector3d::UnitZ(), epsilon)) return result;
+
+    // The physical flip reverses the coherent winding. Swap each ruling end
+    // to restore an upward face orientation without changing geometry.
+    for (RuledSurfaceRuling& ruling : rulings) std::swap(ruling.left, ruling.right);
+    result = makeRuledSurface(rulings);
+    if (!isValidForStackDirection(result, Eigen::Vector3d::UnitZ(), epsilon)) return std::nullopt;
+    return result;
+}
+
 RuledSurface makeFlatStraightRuledSurface() {
     return makeRuledSurface({
         {{-3.0, -0.5, 0.0}, {-3.0, 0.5, 0.0}},
@@ -670,6 +707,84 @@ RuledSurfaceStackSolution findRuledSurfaceStack(
         }
     }
     return best;
+}
+
+RuledSurfaceStackSolution findExtendedSweepStackWithFlips(
+    const std::vector<RuledSurface>& surfaces,
+    const RuledSurfaceBounds2D& foamFootprint,
+    double clearance,
+    int bruteForceLimit) {
+    return findRuledSurfaceStackWithFlips(surfaces, foamFootprint, clearance, true, 100, bruteForceLimit);
+}
+
+RuledSurfaceStackSolution findRuledSurfaceStackWithFlips(
+    const std::vector<RuledSurface>& surfaces,
+    const RuledSurfaceBounds2D& foamFootprint,
+    double clearance,
+    bool useExtendedSweeps,
+    int sampledResolution,
+    int bruteForceLimit) {
+    const int count = static_cast<int>(surfaces.size());
+    if (count == 0) return {};
+
+    std::vector<RuledSurface> variants;
+    variants.reserve(static_cast<size_t>(count) * 2);
+    std::vector<bool> flipAvailable(count, false);
+    for (int i = 0; i < count; ++i) {
+        variants.push_back(surfaces[i]);
+        const auto flipped = flipRuledSurfaceForStack(surfaces[i]);
+        if (flipped) {
+            variants.push_back(*flipped);
+            flipAvailable[i] = true;
+        } else {
+            // Keep the indexing regular; this state is excluded below.
+            variants.push_back(surfaces[i]);
+        }
+    }
+    const Eigen::MatrixXd variantGaps = useExtendedSweeps
+        ? buildExtendedSweepGapMatrix(variants, foamFootprint, clearance)
+        : buildRuledSurfaceGapMatrix(variants, clearance, sampledResolution);
+
+    const auto solveForFlips = [&](const std::vector<bool>& flips) {
+        RuledSurfaceStackSolution invalid;
+        invalid.totalHeight = std::numeric_limits<double>::infinity();
+        if (flips.size() != surfaces.size()) return invalid;
+        std::vector<RuledSurface> oriented;
+        oriented.reserve(surfaces.size());
+        Eigen::MatrixXd gaps(count, count);
+        for (int i = 0; i < count; ++i) {
+            if (flips[i] && !flipAvailable[i]) return invalid;
+            oriented.push_back(variants[2 * i + (flips[i] ? 1 : 0)]);
+            for (int j = 0; j < count; ++j) {
+                gaps(i, j) = variantGaps(2 * i + (flips[i] ? 1 : 0),
+                                          2 * j + (flips[j] ? 1 : 0));
+            }
+        }
+        RuledSurfaceStackSolution result = findRuledSurfaceStack(oriented, gaps, bruteForceLimit);
+        result.flippedBySurface = flips;
+        return result;
+    };
+
+    RuledSurfaceStackSolution current = solveForFlips(std::vector<bool>(count, false));
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        RuledSurfaceStackSolution bestSingleFlip = current;
+        for (int surface = 0; surface < count; ++surface) {
+            if (!flipAvailable[surface]) continue;
+            std::vector<bool> toggled = current.flippedBySurface;
+            toggled[surface] = !toggled[surface];
+            RuledSurfaceStackSolution candidate = solveForFlips(toggled);
+            if (candidate.totalHeight + 1e-9 < bestSingleFlip.totalHeight) {
+                bestSingleFlip = std::move(candidate);
+            }
+        }
+        if (bestSingleFlip.totalHeight + 1e-9 < current.totalHeight) {
+            current = std::move(bestSingleFlip);
+            changed = true;
+        }
+    }
+    return current;
 }
 
 } // namespace alice2

@@ -47,6 +47,8 @@ struct RuledSurfaceStackSolution {
     // Translation along the stack direction, indexed by layer in order.
     std::vector<double> stackZ;
     double totalHeight = 0.0;
+    // Selected physical orientation, indexed by original surface index.
+    std::vector<bool> flippedBySurface;
 };
 
 // Controls a deterministic family of similar, finite wire sweeps.  Each
@@ -73,6 +75,10 @@ struct RuledSurfaceProceduralSettings {
 // an ordinary XY strip has +Z normals.  Invalid/degenerate rulings are kept
 // as faces with a zero normal, which makes direction validation fail clearly.
 RuledSurface makeRuledSurface(const std::vector<RuledSurfaceRuling>& rulings);
+// A physical 180-degree flip about the strip's local longitudinal axis. A
+// result is returned only if the flipped geometry remains a +Z height field.
+std::optional<RuledSurface> flipRuledSurfaceForStack(const RuledSurface& surface,
+                                                      double epsilon = 1e-6);
 
 RuledSurface makeFlatStraightRuledSurface();
 RuledSurface makeBentRuledSurface();
@@ -135,6 +141,26 @@ RuledSurfaceStackSolution findBestRuledSurfaceStackBruteForce(
 RuledSurfaceStackSolution findRuledSurfaceStack(
     const std::vector<RuledSurface>& surfaces,
     const Eigen::MatrixXd& gapMatrix,
+    int bruteForceLimit = 8);
+
+// Optimises stack order together with a binary physical flip state per
+// surface. It starts unflipped, tests each individual flip against the full
+// re-solved stack, and retains only height-improving flip states.
+RuledSurfaceStackSolution findExtendedSweepStackWithFlips(
+    const std::vector<RuledSurface>& surfaces,
+    const RuledSurfaceBounds2D& foamFootprint,
+    double clearance = 0.0,
+    int bruteForceLimit = 8);
+
+// Flip-aware variant with a selectable collision model. When
+// useExtendedSweeps is false, finite strip gaps use the sampled baseline
+// model; when true, box-extended ruling sweeps are used.
+RuledSurfaceStackSolution findRuledSurfaceStackWithFlips(
+    const std::vector<RuledSurface>& surfaces,
+    const RuledSurfaceBounds2D& foamFootprint,
+    double clearance,
+    bool useExtendedSweeps,
+    int sampledResolution = 100,
     int bruteForceLimit = 8);
 
 } // namespace alice2

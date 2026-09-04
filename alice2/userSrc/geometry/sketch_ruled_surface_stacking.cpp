@@ -33,6 +33,9 @@ public:
         m_ui->addSlider("Random variation", Vec2{10.0f, 134.0f}, 210.0f, 0.0f, 1.0f, m_randomnessSlider);
         m_ui->addSlider("Length variation", Vec2{10.0f, 162.0f}, 210.0f, 0.0f, 1.0f, m_lengthRandomnessSlider);
         m_ui->addSlider("Ruling turn", Vec2{10.0f, 190.0f}, 210.0f, 0.0f, 1.0f, m_rulingRotationSlider);
+        m_ui->addToggle("Optimise physical flips", UIRect{10.0f, 218.0f, 210.0f, 22.0f}, m_optimiseFlips);
+        m_ui->addToggle("Hot-wire collision", UIRect{10.0f, 246.0f, 210.0f, 22.0f}, m_hotWireCollision);
+        m_ui->addToggle("Show face normals", UIRect{10.0f, 274.0f, 210.0f, 22.0f}, m_showFaceNormals);
         solveAndBuild();
     }
 
@@ -47,12 +50,16 @@ public:
         if (surfaceCount != m_generation.surfaceCount || faceCount != m_generation.faceCount ||
             std::abs(randomness - m_generation.randomness) > 1e-6 ||
             std::abs(lengthRandomness - m_generation.lengthRandomness) > 1e-6 ||
-            std::abs(rulingRotation - m_generation.rulingRotation) > 1e-6) {
+            std::abs(rulingRotation - m_generation.rulingRotation) > 1e-6 ||
+            m_optimiseFlips != m_lastOptimiseFlips ||
+            m_hotWireCollision != m_lastHotWireCollision) {
             m_generation.surfaceCount = surfaceCount;
             m_generation.faceCount = faceCount;
             m_generation.randomness = randomness;
             m_generation.lengthRandomness = lengthRandomness;
             m_generation.rulingRotation = rulingRotation;
+            m_lastOptimiseFlips = m_optimiseFlips;
+            m_lastHotWireCollision = m_hotWireCollision;
             solveAndBuild();
         }
     }
@@ -102,14 +109,26 @@ private:
     void solveAndBuild() {
         clearMeshes();
         m_surfaces = makeProceduralRuledSurfaces(m_generation);
+        const RuledSurfaceBounds2D foamFootprint = ruledSurfaceGroupBoundsXY(m_surfaces);
+        if (m_optimiseFlips) {
+            m_solution = findRuledSurfaceStackWithFlips(
+                m_surfaces, foamFootprint, kClearance, m_hotWireCollision);
+            for (size_t i = 0; i < m_surfaces.size() && i < m_solution.flippedBySurface.size(); ++i) {
+                if (!m_solution.flippedBySurface[i]) continue;
+                if (const auto flipped = flipRuledSurfaceForStack(m_surfaces[i])) m_surfaces[i] = *flipped;
+            }
+        } else {
+            m_solution = RuledSurfaceStackSolution{};
+        }
         const Eigen::Vector3d stackDirection = Eigen::Vector3d::UnitZ();
         m_valid.assign(m_surfaces.size(), false);
         for (size_t i = 0; i < m_surfaces.size(); ++i) {
             m_valid[i] = isValidForStackDirection(m_surfaces[i], stackDirection);
         }
-        const RuledSurfaceBounds2D foamFootprint = ruledSurfaceGroupBoundsXY(m_surfaces);
-        m_gapMatrix = buildExtendedSweepGapMatrix(m_surfaces, foamFootprint, kClearance);
-        m_solution = findRuledSurfaceStack(m_surfaces, m_gapMatrix);
+        m_gapMatrix = m_hotWireCollision
+            ? buildExtendedSweepGapMatrix(m_surfaces, foamFootprint, kClearance)
+            : buildRuledSurfaceGapMatrix(m_surfaces, kClearance);
+        if (!m_optimiseFlips) m_solution = findRuledSurfaceStack(m_surfaces, m_gapMatrix);
         buildMeshes();
         writeDiagnostics();
 
@@ -167,6 +186,7 @@ private:
                 renderer.drawLine(toVec3(ruling.left, z), toVec3(ruling.right, z),
                                   Color(0.88f, 0.10f, 0.08f, 1.0f), 1.4f);
             }
+            if (!m_showFaceNormals) continue;
             for (const RuledSurfaceFace& face : m_surfaces[surfaceIndex].faces) {
                 Eigen::Vector3d centre = Eigen::Vector3d::Zero();
                 for (const Eigen::Vector3d& vertex : face.vertices) centre += vertex;
@@ -214,7 +234,8 @@ private:
                   << " faces=" << m_generation.faceCount << " randomness=" << m_generation.randomness
                   << " length randomness=" << m_generation.lengthRandomness << " seed=" << m_generation.seed
                   << " ruling turn=" << m_generation.rulingRotation
-                  << " gaps=exact extended-ruling sweep"
+                  << " gaps=" << (m_hotWireCollision ? "exact extended-ruling sweep" : "sampled finite strips")
+                  << " flips=" << (m_optimiseFlips ? "optimised" : "off")
                   << " order=" << (m_generation.surfaceCount <= 8 ? "brute force" : "multi-start greedy")
                   << " (clearance " << kClearance << ")\n";
         for (size_t i = 0; i < m_surfaces.size(); ++i) {
@@ -237,6 +258,17 @@ private:
             if (layer) std::cout << " -> ";
             std::cout << m_solution.order[layer] << " (z=" << m_solution.stackZ[layer] << ')';
         }
+        if (m_solution.flippedBySurface.size() == m_surfaces.size()) {
+            std::cout << "\nFlipped surfaces:";
+            bool anyFlipped = false;
+            for (size_t i = 0; i < m_solution.flippedBySurface.size(); ++i) {
+                if (m_solution.flippedBySurface[i]) {
+                    std::cout << ' ' << i;
+                    anyFlipped = true;
+                }
+            }
+            if (!anyFlipped) std::cout << " none";
+        }
         std::cout << "\nFinal stack height: " << m_solution.totalHeight << "\n";
     }
 
@@ -253,6 +285,11 @@ private:
     float m_randomnessSlider{0.50f};
     float m_lengthRandomnessSlider{0.0f};
     float m_rulingRotationSlider{0.0f};
+    bool m_optimiseFlips{true};
+    bool m_lastOptimiseFlips{true};
+    bool m_hotWireCollision{true};
+    bool m_lastHotWireCollision{true};
+    bool m_showFaceNormals{true};
     std::string m_summary;
 };
 
