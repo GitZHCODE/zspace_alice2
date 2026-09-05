@@ -4,6 +4,7 @@
 #include <alice2.h>
 #include <sketches/SketchRegistry.h>
 #include <computeGeom/ComputeMesh.h>
+#include <geometry/Stereotomy.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -101,105 +102,11 @@ public:
 private:
     static constexpr int kMaxFacesPerStrip = 36;
 
-    struct FaceBlock {
-        std::vector<int> sourceFaces;
-        std::vector<std::pair<int, int>> walkEdges;
-    };
+    using FaceBlock = geometry::StereotomyFaceBlock;
 
     static bool extractFaceBlocks(const ComputeMesh& mesh, int facesPerBlock,
                                   std::vector<FaceBlock>& blocks, std::string* diagnostic) {
-        const std::shared_ptr<MeshData> data = mesh.getMeshData();
-        if (!data || data->faces.empty()) {
-            if (diagnostic) *diagnostic = "Stereotomy mesh contains no faces.";
-            return false;
-        }
-        blocks.clear();
-        const auto& vertices = mesh.getVertices();
-        std::vector<std::shared_ptr<HeMeshVertex>> starts;
-        for (const auto& vertex : vertices) {
-            if (!vertex || vertex->getValency() != 3) continue;
-            int valencyTwo = 0;
-            int valencyFour = 0;
-            for (const auto& neighbour : vertex->getConnectedVertices()) {
-                if (!neighbour) continue;
-                valencyTwo += neighbour->getValency() == 2;
-                valencyFour += neighbour->getValency() == 4;
-            }
-            if (valencyTwo == 2 && valencyFour == 1) starts.push_back(vertex);
-        }
-        if (starts.empty()) {
-            if (diagnostic) *diagnostic = "No valency-3 centre-graph endpoint with two valency-2 neighbours was found.";
-            return false;
-        }
-
-        std::vector<bool> assigned(data->faces.size(), false);
-        int assignedCount = 0;
-        auto flush = [&](FaceBlock& pending) {
-            if (!pending.sourceFaces.empty()) {
-                blocks.push_back(std::move(pending));
-                pending = FaceBlock{};
-            }
-        };
-        auto walkFrom = [&](const std::shared_ptr<HeMeshVertex>& start) -> bool {
-            std::shared_ptr<HeMeshHalfedge> startHalfedge;
-            for (const auto& halfedge : start->getHalfedges()) {
-                if (halfedge && halfedge->getVertex() && halfedge->getVertex()->getValency() == 4) {
-                    startHalfedge = halfedge;
-                    break;
-                }
-            }
-            if (!startHalfedge) return false;
-
-            FaceBlock pending;
-            std::shared_ptr<HeMeshHalfedge> current = startHalfedge;
-            bool firstStep = true;
-            const int guardLimit = std::max(1, static_cast<int>(mesh.getHalfedges().size()) * 2);
-            for (int step = 0; step < guardLimit; ++step) {
-                if (!firstStep && current == startHalfedge) {
-                    flush(pending);
-                    return true;
-                }
-                firstStep = false;
-                if (!current || !current->getFace() || !current->getStartVertex() || !current->getVertex()) return false;
-                const int face = current->getFace()->getId();
-                if (face < 0 || face >= static_cast<int>(assigned.size())) return false;
-                if (!assigned[face]) {
-                    assigned[face] = true;
-                    ++assignedCount;
-                    pending.sourceFaces.push_back(face);
-                    pending.walkEdges.push_back({current->getStartVertex()->getId(), current->getVertex()->getId()});
-                    if (static_cast<int>(pending.sourceFaces.size()) == facesPerBlock) flush(pending);
-                }
-
-                if (current->getVertex()->getValency() == 3) {
-                    flush(pending); // Turning always resets the N-face count.
-                    current = current->getSymmetry();
-                    if (!current || current->onBoundary()) return false;
-                    continue;
-                }
-                const auto next = current->getNext();
-                const auto twin = next ? next->getSymmetry() : nullptr;
-                current = twin ? twin->getNext() : nullptr; // next -> twin -> next
-                if (!current || current->onBoundary()) return false;
-            }
-            return false;
-        };
-
-        for (const auto& start : starts) {
-            if (assignedCount == static_cast<int>(data->faces.size())) break;
-            if (!walkFrom(start)) {
-                if (diagnostic) *diagnostic = "Centre-graph next/twin/next walk did not close.";
-                return false;
-            }
-        }
-        if (assignedCount != static_cast<int>(data->faces.size())) {
-            if (diagnostic) *diagnostic = "Centre-graph walks assigned " + std::to_string(assignedCount) + " of " +
-                                          std::to_string(data->faces.size()) + " faces.";
-            return false;
-        }
-        if (diagnostic) *diagnostic = "Stereotomy walk: " + std::to_string(blocks.size()) + " blocks from " +
-                                      std::to_string(data->faces.size()) + " faces.";
-        return true;
+        return geometry::Stereotomy::walkFaceBlocks(mesh, facesPerBlock, blocks, diagnostic);
     }
 
     static Vec3 faceCentre(const MeshData& mesh, int faceIndex, const std::vector<Vec3>& positions) {
@@ -255,27 +162,7 @@ private:
     }
 
     static std::vector<std::pair<int, int>> blockRulingEdges(const MeshData& mesh, const FaceBlock& block) {
-        std::vector<std::pair<int, int>> result;
-        if (block.sourceFaces.size() < 2) return result;
-        std::vector<std::pair<int, int>> interior;
-        interior.reserve(block.sourceFaces.size() - 1);
-        for (size_t face = 1; face < block.sourceFaces.size(); ++face) {
-            std::pair<int, int> edge;
-            if (sharedFaceEdge(mesh, block.sourceFaces[face - 1], block.sourceFaces[face], edge)) {
-                interior.push_back(edge);
-            }
-        }
-        if (interior.empty()) return result;
-        std::pair<int, int> startBoundary;
-        if (oppositeQuadEdge(mesh, block.sourceFaces.front(), interior.front(), startBoundary)) {
-            result.push_back(startBoundary);
-        }
-        result.insert(result.end(), interior.begin(), interior.end());
-        std::pair<int, int> endBoundary;
-        if (oppositeQuadEdge(mesh, block.sourceFaces.back(), interior.back(), endBoundary)) {
-            result.push_back(endBoundary);
-        }
-        return result;
+        return geometry::Stereotomy::blockRulingEdges(mesh, block);
     }
 
     // Each solid must use normals averaged over its own faces.  Averaging over
@@ -283,21 +170,7 @@ private:
     // skin at shared vertices and corrupts both the solid and its signature.
     static std::vector<Vec3> offsetBlockAlongVertexNormals(const MeshData& mesh, const FaceBlock& block,
                                                             const std::vector<Vec3>& topPositions, float thickness) {
-        std::vector<Vec3> result = topPositions;
-        std::vector<Vec3> normalSums(topPositions.size(), Vec3{});
-        for (int faceIndex : block.sourceFaces) {
-            if (faceIndex < 0 || faceIndex >= static_cast<int>(mesh.faces.size())) continue;
-            const Vec3 normal = faceNormal(mesh, faceIndex, topPositions);
-            for (int vertex : mesh.faces[faceIndex].vertices) {
-                if (vertex >= 0 && vertex < static_cast<int>(normalSums.size())) normalSums[vertex] += normal;
-            }
-        }
-        for (size_t vertex = 0; vertex < result.size(); ++vertex) {
-            if (normalSums[vertex].lengthSquared() > 1e-8f) {
-                result[vertex] -= normalSums[vertex].normalized() * thickness;
-            }
-        }
-        return result;
+        return geometry::Stereotomy::offsetBlockAlongVertexNormals(mesh, block, topPositions, thickness);
     }
 
     // Absolute distance of the fourth quad vertex from the plane through the
@@ -844,19 +717,11 @@ private:
                                                  const Color& colour) const {
         if (topPositions.empty() || topPositions.size() != bottomPositions.size() || topFaces.empty()) return nullptr;
 
-        MeshObject bottom(name + "_bottom");
-        bottom.createFromVerticesAndFaces(bottomPositions, topFaces);
-        std::vector<Vec3> offsets;
-        offsets.reserve(topPositions.size());
-        for (size_t i = 0; i < topPositions.size(); ++i) offsets.push_back(topPositions[i] - bottomPositions[i]);
-        auto mesh = std::make_shared<MeshObject>(bottom.extrudeMesh(0.0f, MeshExtrudeMode::SmoothSolid, offsets));
-        mesh->setUseFaceColors(true);
-        mesh->setShowEdges(true);
-        mesh->setEdgeWidth(2.0f);
-        const std::shared_ptr<MeshData> data = mesh->getMeshData();
-        for (MeshFace& face : data->faces) face.color = colour;
-        for (MeshEdge& edge : data->edges) edge.color = Color(0.0f, 0.0f, 0.0f, 1.0f);
-        return mesh;
+        geometry::StereotomySolid solid;
+        solid.topVertices = topPositions;
+        solid.bottomVertices = bottomPositions;
+        solid.faces = topFaces;
+        return geometry::Stereotomy::makeSolidMesh(name, solid, colour);
     }
 
     void clearRibbonBlockVisualisation() {
