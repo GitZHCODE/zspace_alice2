@@ -30,6 +30,11 @@ struct RuledSurfaceRuling {
 struct RuledSurface {
     std::vector<RuledSurfaceFace> faces;
     std::vector<RuledSurfaceRuling> rulings;
+    // Optional second skin using the same ruling stations as rulings.  When
+    // populated, its faces are appended to faces so the stack solver tests
+    // both actual material skins.  Hot-wire validation additionally derives
+    // the boundary walls from these matching ruling stations.
+    std::vector<RuledSurfaceRuling> bottomRulings;
 };
 
 struct RuledSurfaceBounds2D {

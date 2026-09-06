@@ -38,9 +38,12 @@ struct StackTriangleProxy {
 
 struct OrientedStackSurface {
     RuledSurface geometry;
+    RuledSurfaceBounds2D foamBounds;
     double localMinZ = 0.0;
     double localMaxZ = 0.0;
     std::vector<StackTriangleProxy> finiteTriangles;
+    std::vector<StackTriangleProxy> topTriangles;
+    std::vector<StackTriangleProxy> bottomTriangles;
     std::vector<StackTriangleProxy> extendedTriangles;
     AABB2 finiteBounds;
 };

@@ -55,15 +55,36 @@ std::optional<RuledSurface> flipRuledSurfaceForStack(const RuledSurface& surface
         // 180-degree rotation around the strip's horizontal longitudinal axis.
         return (centre + 2.0 * axis * axis.dot(relative) - relative).eval();
     };
-    RuledSurface flipped;
-    flipped.rulings.reserve(surface.rulings.size());
+    std::vector<RuledSurfaceRuling> flippedTop;
+    std::vector<RuledSurfaceRuling> flippedBottom;
+    flippedTop.reserve(surface.rulings.size());
+    flippedBottom.reserve(surface.bottomRulings.size());
     for (const auto& ruling : surface.rulings) {
-        flipped.rulings.push_back({flipPoint(ruling.a), flipPoint(ruling.b)});
+        flippedTop.push_back({flipPoint(ruling.a), flipPoint(ruling.b)});
     }
-    flipped = makeRuledSurface(flipped.rulings);
+    for (const auto& ruling : surface.bottomRulings) {
+        flippedBottom.push_back({flipPoint(ruling.a), flipPoint(ruling.b)});
+    }
+    const auto makeWithBottomSkin = [](const std::vector<RuledSurfaceRuling>& top,
+                                       const std::vector<RuledSurfaceRuling>& bottom) {
+        RuledSurface result = makeRuledSurface(top);
+        if (bottom.empty()) return result;
+        RuledSurface lower = makeRuledSurface(bottom);
+        result.bottomRulings = bottom;
+        result.faces.insert(result.faces.end(), lower.faces.begin(), lower.faces.end());
+        return result;
+    };
+    // A physical 180-degree turn sends the original upper skin to the lower
+    // side.  Preserve geometric roles (top first, bottom second) so volume
+    // interval constraints remain valid for flipped solids.
+    const bool hasBottomSkin = !flippedBottom.empty();
+    RuledSurface flipped = hasBottomSkin ? makeWithBottomSkin(flippedBottom, flippedTop)
+                                         : makeWithBottomSkin(flippedTop, flippedBottom);
     if (isValidForStackDirection(flipped, normalEpsilon)) return flipped;
-    for (auto& ruling : flipped.rulings) std::swap(ruling.a, ruling.b);
-    flipped = makeRuledSurface(flipped.rulings);
+    for (auto& ruling : flippedTop) std::swap(ruling.a, ruling.b);
+    for (auto& ruling : flippedBottom) std::swap(ruling.a, ruling.b);
+    flipped = hasBottomSkin ? makeWithBottomSkin(flippedBottom, flippedTop)
+                             : makeWithBottomSkin(flippedTop, flippedBottom);
     return isValidForStackDirection(flipped, normalEpsilon) ? std::optional<RuledSurface>(std::move(flipped)) : std::nullopt;
 }
 
